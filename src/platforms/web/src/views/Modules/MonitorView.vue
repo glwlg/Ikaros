@@ -123,7 +123,7 @@ onMounted(() => {
         <div class="p-4 space-y-4">
           <div>
             <label class="block text-sm text-slate-500 mb-1">监控指令或设备信息</label>
-            <input v-model="formData.item" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500" placeholder="例如: 检查服务器状态">
+            <textarea v-model="formData.item" rows="3" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 resize-none" placeholder="例如: 检查服务器状态"></textarea>
           </div>
         </div>
         <div class="p-4 flex gap-3 border-t border-slate-100 dark:border-slate-700">

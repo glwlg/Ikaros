@@ -85,6 +85,19 @@ const router = createRouter({
                     meta: { title: '多人统计详情' },
                 },
                 {
+                    path: 'stats/panels',
+                    name: 'StatsPanelManage',
+                    component: () => import('@/views/Accounting/StatsPanelManageView.vue'),
+                    meta: { title: '统计面板管理' },
+                },
+                {
+                    path: 'stats/panels/edit/:id?',
+                    name: 'StatsPanelEdit',
+                    component: () => import('@/views/Accounting/StatsPanelEditView.vue'),
+                    meta: { title: '编辑统计' },
+                    props: true,
+                },
+                {
                     path: 'more',
                     name: 'AccountingMore',
                     component: () => import('@/views/Accounting/MoreView.vue'),

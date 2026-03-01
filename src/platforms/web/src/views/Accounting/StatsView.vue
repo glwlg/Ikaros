@@ -19,6 +19,10 @@ import {
     type Granularity,
     type RangePreset,
 } from './statsRange'
+import {
+    loadStatsPanels,
+    type StatsPanelConfig,
+} from '@/utils/accountingLocal'
 
 type StatType = '支出' | '收入'
 
@@ -30,10 +34,29 @@ const statType = ref<StatType>('支出')
 const rangePreset = ref<RangePreset>('last_12_months')
 const customRange = ref(createDefaultCustomRangeState(now))
 const showRangeDialog = ref(false)
+const statsPanels = ref<StatsPanelConfig[]>([])
 
 const timeWindow = computed(() => getRangeWindow(rangePreset.value, customRange.value, now))
 const timeLabel = computed(() => timeWindow.value.label)
 const isCustomRange = computed(() => isCustomPreset(rangePreset.value))
+
+const enabledPanels = computed(() => {
+    return statsPanels.value
+        .filter(panel => panel.enabled)
+        .sort((a, b) => a.sort_order - b.sort_order)
+})
+
+const primaryCategoryPanelId = computed(() => {
+    return enabledPanels.value.find(panel => panel.kind === 'category')?.id || ''
+})
+
+const primaryTrendPanelId = computed(() => {
+    return enabledPanels.value.find(panel => panel.kind === 'trend')?.id || ''
+})
+
+const primaryTeamPanelId = computed(() => {
+    return enabledPanels.value.find(panel => panel.kind === 'team')?.id || ''
+})
 
 const categoryData = ref<CategorySummaryItem[]>([])
 const trendData = ref<PeriodSummaryItem[]>([])
@@ -67,6 +90,27 @@ const formatPeriodLabel = (period: string) => {
     if (currentGranularity.value === 'week') return period.replace(/^\d{4}-/, '')
     if (currentGranularity.value === 'month') return period.replace('-', '/')
     return period
+}
+
+const subjectLabels: Record<string, string> = {
+    dynamic: '动态日期',
+    year: '年',
+    quarter: '季',
+    month: '月',
+    week: '周',
+    day: '日',
+    amount: '金额',
+    category: '分类',
+    account: '账户',
+    project: '项目',
+}
+
+const metricLabels: Record<string, string> = {
+    sum: '总额',
+    avg: '平均值',
+    max: '最大值',
+    min: '最小值',
+    count: '数量',
 }
 
 const tealColors = [
@@ -225,32 +269,63 @@ const loadData = async () => {
     await renderChartsSafely()
 }
 
+const reloadPanels = () => {
+    statsPanels.value = loadStatsPanels(store.currentBookId)
+}
+
 const selectRange = (nextPreset: RangePreset) => {
     rangePreset.value = nextPreset
     showRangeDialog.value = false
 }
 
-const makeDetailQuery = () => {
+const metricValueForPanel = (panel: StatsPanelConfig) => {
+    const amountSeries = trendData.value.map(item => panel.default_type === '收入' ? item.income : item.expense)
+    const countSeries = trendData.value.map(item => panel.default_type === '收入' ? (item.income_count || 0) : (item.expense_count || 0))
+
+    if (panel.metric === 'count') {
+        return countSeries.reduce((sum, n) => sum + n, 0)
+    }
+
+    if (amountSeries.length === 0) return 0
+    if (panel.metric === 'sum') return amountSeries.reduce((sum, n) => sum + n, 0)
+    if (panel.metric === 'avg') return amountSeries.reduce((sum, n) => sum + n, 0) / amountSeries.length
+    if (panel.metric === 'max') return Math.max(...amountSeries)
+    if (panel.metric === 'min') return Math.min(...amountSeries)
+    return 0
+}
+
+const makeDetailQueryForPanel = (panel: StatsPanelConfig) => {
     const window = timeWindow.value
+    const type = panel.id === primaryCategoryPanelId.value || panel.id === primaryTrendPanelId.value
+        ? statType.value
+        : panel.default_type
+
     return {
         start: toIsoLocal(window.start),
         end: toIsoLocal(window.end),
         label: window.label,
         granularity: window.granularity,
-        type: statType.value,
+        type,
+        panel_id: panel.id,
+        category: panel.default_category,
     }
 }
 
-const goCategoryDetail = () => {
-    router.push({ name: 'StatsCategoryDetail', query: makeDetailQuery() })
+const openPanelDetail = (panel: StatsPanelConfig) => {
+    const query = makeDetailQueryForPanel(panel)
+    if (panel.kind === 'category') {
+        router.push({ name: 'StatsCategoryDetail', query })
+        return
+    }
+    if (panel.kind === 'team') {
+        router.push({ name: 'StatsTeamDetail', query })
+        return
+    }
+    router.push({ name: 'StatsTrendDetail', query })
 }
 
-const goTrendDetail = () => {
-    router.push({ name: 'StatsTrendDetail', query: makeDetailQuery() })
-}
-
-const goTeamDetail = () => {
-    router.push({ name: 'StatsTeamDetail', query: makeDetailQuery() })
+const goPanelManager = () => {
+    router.push({ name: 'StatsPanelManage' })
 }
 
 watch([statType, rangePreset], () => {
@@ -267,8 +342,16 @@ watch(
     { deep: true }
 )
 
+watch(
+    () => store.currentBookId,
+    () => {
+        reloadPanels()
+    }
+)
+
 onMounted(async () => {
     if (!store.currentBookId) await store.fetchBooks()
+    reloadPanels()
     await loadData()
 
     if (typeof ResizeObserver !== 'undefined') {
@@ -363,68 +446,81 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <div class="mx-4 mt-2 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
-      <div class="relative z-10 flex items-center justify-between mb-1">
-        <h3 class="font-bold text-theme-primary">分类统计</h3>
-        <button type="button" @click="goCategoryDetail" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-slate-700">
-          <ChevronRight class="w-4 h-4 text-teal-500" />
-        </button>
-      </div>
-      <p class="text-xs text-theme-muted mb-3">
-        ¥{{ formatMoney(totalCategory()) }} · {{ timeLabel }} · {{ statType }}
-      </p>
-
-      <div class="flex gap-2 mb-3">
-        <button
-          @click="statType = '支出'"
-          :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '支出' ? 'bg-teal-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
-        >支出</button>
-        <button
-          @click="statType = '收入'"
-          :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '收入' ? 'bg-teal-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
-        >收入</button>
-      </div>
-
-      <div class="relative">
-        <div ref="pieRef" class="w-full h-[220px] pointer-events-none"></div>
-        <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-white/30 dark:bg-slate-800/30 rounded-xl">
-          <Loader2 class="w-5 h-5 animate-spin text-teal-400" />
+    <template v-for="(panel, index) in enabledPanels" :key="panel.id">
+      <div :class="['mx-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4', index === 0 ? 'mt-2' : 'mt-4']">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="font-bold text-theme-primary">{{ panel.name }}</h3>
+          <button type="button" @click="openPanelDetail(panel)" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-slate-700">
+            <ChevronRight class="w-4 h-4 text-teal-500" />
+          </button>
         </div>
-      </div>
-    </div>
 
-    <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
-      <div class="relative z-10 flex items-center justify-between mb-1">
-        <h3 class="font-bold text-theme-primary">年度统计</h3>
-        <button type="button" @click="goTrendDetail" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-slate-700">
-          <ChevronRight class="w-4 h-4 text-teal-500" />
-        </button>
-      </div>
-      <p class="text-xs text-theme-muted mb-3">{{ timeLabel }} · 按{{ granularityLabel }} · {{ statType }}</p>
+        <template v-if="panel.id === primaryCategoryPanelId && panel.kind === 'category'">
+          <p class="text-xs text-theme-muted mb-3">
+            ¥{{ formatMoney(totalCategory()) }} · {{ timeLabel }} · {{ statType }}
+          </p>
 
-      <div class="relative">
-        <div ref="barRef" class="w-full h-[220px] pointer-events-none"></div>
-        <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-white/30 dark:bg-slate-800/30 rounded-xl">
-          <Loader2 class="w-5 h-5 animate-spin text-teal-400" />
-        </div>
-      </div>
-    </div>
+          <div class="flex gap-2 mb-3">
+            <button
+              @click="statType = '支出'"
+              :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '支出' ? 'bg-teal-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
+            >支出</button>
+            <button
+              @click="statType = '收入'"
+              :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '收入' ? 'bg-teal-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
+            >收入</button>
+          </div>
 
-    <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
-      <div class="flex items-center justify-between mb-1">
-        <h3 class="font-bold text-theme-primary">多人统计</h3>
-        <button type="button" @click="goTeamDetail" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-slate-700">
-          <ChevronRight class="w-4 h-4 text-teal-500" />
-        </button>
+          <div class="relative">
+            <div ref="pieRef" class="w-full h-[220px] pointer-events-none"></div>
+            <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-white/30 dark:bg-slate-800/30 rounded-xl">
+              <Loader2 class="w-5 h-5 animate-spin text-teal-400" />
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="panel.id === primaryTrendPanelId && panel.kind === 'trend'">
+          <p class="text-xs text-theme-muted mb-3">{{ timeLabel }} · 按{{ granularityLabel }} · {{ statType }}</p>
+
+          <div class="relative">
+            <div ref="barRef" class="w-full h-[220px] pointer-events-none"></div>
+            <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-white/30 dark:bg-slate-800/30 rounded-xl">
+              <Loader2 class="w-5 h-5 animate-spin text-teal-400" />
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="panel.id === primaryTeamPanelId && panel.kind === 'team'">
+          <p class="text-xs text-theme-muted mb-3">¥0 · {{ timeLabel }} · 支出</p>
+          <div class="w-32 h-32 mx-auto rounded-full border-[8px] border-gray-100 dark:border-slate-700 flex items-center justify-center">
+            <div class="text-center">
+              <p class="text-xs text-theme-muted">全部</p>
+              <p class="text-lg font-bold text-theme-primary">0</p>
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <p class="text-xs text-theme-muted mb-3">{{ panel.description || '自定义统计面板' }}</p>
+          <div class="rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-700 p-3">
+            <p class="text-xs text-theme-muted">{{ metricLabels[panel.metric] || '统计值' }}</p>
+            <p class="text-xl font-semibold text-theme-primary mt-1">{{ panel.metric === 'count' ? metricValueForPanel(panel) : `¥${formatMoney(metricValueForPanel(panel))}` }}</p>
+            <p class="text-xs text-theme-muted mt-1">对象：{{ subjectLabels[panel.subject] || panel.subject }} · {{ panel.default_type }}</p>
+          </div>
+        </template>
       </div>
-      <p class="text-xs text-theme-muted mb-3">¥0 · {{ timeLabel }} · 支出</p>
-      <div class="w-32 h-32 mx-auto rounded-full border-[8px] border-gray-100 dark:border-slate-700 flex items-center justify-center">
-        <div class="text-center">
-          <p class="text-xs text-theme-muted">全部</p>
-          <p class="text-lg font-bold text-theme-primary">0</p>
-        </div>
+    </template>
+
+    <button
+      @click="goPanelManager"
+      class="mx-4 mt-4 w-[calc(100%-2rem)] rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4 flex items-center justify-between"
+    >
+      <div class="text-left">
+        <p class="text-sm font-semibold text-theme-primary">管理统计面板</p>
+        <p class="text-xs text-theme-muted mt-1">预设模板与自定义统计</p>
       </div>
-    </div>
+      <ChevronRight class="w-4 h-4 text-teal-500" />
+    </button>
 
     <div
       v-if="showRangeDialog"

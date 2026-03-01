@@ -26,6 +26,8 @@ const isSubPage = computed(() => [
     'StatsCategoryDetail',
     'StatsTrendDetail',
     'StatsTeamDetail',
+    'StatsPanelManage',
+    'StatsPanelEdit',
     'BudgetList',
     'DebtList',
     'ScheduledTaskList',

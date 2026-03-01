@@ -134,7 +134,7 @@ onMounted(() => {
           </div>
           <div>
             <label class="block text-sm text-slate-500 mb-1">RSS 链接</label>
-            <input v-model="formData.feed_url" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500" placeholder="https://...">
+            <textarea v-model="formData.feed_url" rows="3" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 resize-none" placeholder="https://..."></textarea>
           </div>
         </div>
         <div class="p-4 flex gap-3 border-t border-slate-100 dark:border-slate-700">
