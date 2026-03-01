@@ -1,4 +1,4 @@
-from sqlalchemy import String, ForeignKey, Numeric, DateTime
+from sqlalchemy import String, ForeignKey, Numeric, DateTime, Text, UniqueConstraint
 from sqlalchemy.orm import mapped_column, Mapped
 from datetime import datetime
 from api.core.database import Base
@@ -77,6 +77,7 @@ class Budget(Base):
         ForeignKey("accounting_categories.id", ondelete="CASCADE"), nullable=True
     )
 
+
 class ScheduledTask(Base):
     __tablename__ = "accounting_scheduled_tasks"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -87,7 +88,7 @@ class ScheduledTask(Base):
     # 频率: 每天 / 每周 / 每月 / 每年
     frequency: Mapped[str] = mapped_column(String(20), nullable=False)
     next_run: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    
+
     # Payload for the auto-generated record
     type: Mapped[str] = mapped_column(String(20), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
@@ -123,7 +124,54 @@ class DebtOrReimbursement(Base):
     # Optional due date
     due_date: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     remark: Mapped[str] = mapped_column(String(500), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
     is_settled: Mapped[bool] = mapped_column(default=False, nullable=False)
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
+
+class StatsPanel(Base):
+    __tablename__ = "accounting_stats_panels"
+    __table_args__ = (
+        UniqueConstraint(
+            "book_id",
+            "owner_id",
+            "panel_id",
+            name="uq_accounting_stats_panel_owner_book_panel",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    panel_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("accounting_books.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="generic")
+    enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
+    is_custom: Mapped[bool] = mapped_column(nullable=False, default=True)
+    metric: Mapped[str] = mapped_column(String(20), nullable=False, default="sum")
+    subject: Mapped[str] = mapped_column(String(20), nullable=False, default="dynamic")
+    filters_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    default_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="支出"
+    )
+    default_range: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="last_12_months"
+    )
+    default_category: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="全部分类"
+    )
+    sort_order: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )

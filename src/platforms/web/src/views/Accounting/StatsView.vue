@@ -406,8 +406,8 @@ const loadPanelPreviews = async () => {
     panelPreviewMap.value = finalMap
 }
 
-const reloadPanels = () => {
-    statsPanels.value = loadStatsPanels(store.currentBookId)
+const reloadPanels = async () => {
+    statsPanels.value = await loadStatsPanels(store.currentBookId)
 }
 
 const selectRange = (nextPreset: RangePreset) => {
@@ -465,19 +465,19 @@ watch(
 
 watch(
     () => store.currentBookId,
-    () => {
-        reloadPanels()
-        loadPanelPreviews()
+    async () => {
+        await reloadPanels()
+        await loadPanelPreviews()
     }
 )
 
-watch(enabledPanels, () => {
-    loadPanelPreviews()
+watch(enabledPanels, async () => {
+    await loadPanelPreviews()
 })
 
 onMounted(async () => {
     if (!store.currentBookId) await store.fetchBooks()
-    reloadPanels()
+    await reloadPanels()
     await loadData()
     await loadPanelPreviews()
 

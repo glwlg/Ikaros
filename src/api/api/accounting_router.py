@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, distinct, or_, and_, case, literal, update
+from sqlalchemy import select, func, distinct, or_, and_, case, literal, update, delete
 from pydantic import BaseModel
 from typing import Optional
 import csv
 import io
+import json
 from datetime import datetime
 
 from api.core.database import get_async_session
@@ -18,6 +19,7 @@ from api.models.accounting import (
     Budget,
     ScheduledTask,
     DebtOrReimbursement,
+    StatsPanel,
 )
 
 router = APIRouter()
@@ -118,6 +120,26 @@ class DebtRepay(BaseModel):
     # Usually repay logic involves recording an actual transaction plus reducing the debt balance
     # Can also capture the record `remark` or simply attach to debt
     remark: str = ""
+
+
+class StatsPanelPayload(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    kind: str = "generic"
+    enabled: bool = True
+    is_custom: bool = True
+    metric: str = "sum"
+    subject: str = "dynamic"
+    filters: list[str] = []
+    default_type: str = "支出"
+    default_range: str = "last_12_months"
+    default_category: str = "全部分类"
+    sort_order: int = 0
+
+
+class StatsPanelsUpdate(BaseModel):
+    panels: list[StatsPanelPayload]
 
 
 # ─── Helper: verify book ownership ───────────────────────────────────
@@ -222,6 +244,58 @@ async def _serialize_record(session: AsyncSession, record: Record) -> dict:
     }
 
 
+def _parse_panel_filters(raw: str) -> list[str]:
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(payload, list):
+        return []
+    return [str(item) for item in payload if isinstance(item, str)]
+
+
+def _serialize_stats_panel(panel: StatsPanel) -> dict:
+    return {
+        "id": panel.panel_id,
+        "name": panel.name,
+        "description": panel.description,
+        "kind": panel.kind,
+        "enabled": bool(panel.enabled),
+        "is_custom": bool(panel.is_custom),
+        "metric": panel.metric,
+        "subject": panel.subject,
+        "filters": _parse_panel_filters(panel.filters_json),
+        "default_type": panel.default_type,
+        "default_range": panel.default_range,
+        "default_category": panel.default_category,
+        "sort_order": int(panel.sort_order or 0),
+    }
+
+
+def _normalize_stats_panel_payload(payload: StatsPanelPayload, index: int) -> dict:
+    filters = [str(item) for item in payload.filters if isinstance(item, str)]
+    return {
+        "panel_id": payload.id.strip()[:64],
+        "name": payload.name.strip()[:100],
+        "description": payload.description.strip()[:500],
+        "kind": payload.kind.strip()[:20] or "generic",
+        "enabled": bool(payload.enabled),
+        "is_custom": bool(payload.is_custom),
+        "metric": payload.metric.strip()[:20] or "sum",
+        "subject": payload.subject.strip()[:20] or "dynamic",
+        "filters_json": json.dumps(filters, ensure_ascii=False),
+        "default_type": payload.default_type.strip()[:20] or "支出",
+        "default_range": payload.default_range.strip()[:40] or "last_12_months",
+        "default_category": payload.default_category.strip()[:100] or "全部分类",
+        "sort_order": int(
+            payload.sort_order if payload.sort_order is not None else index
+        ),
+    }
+
+
 # ─── Books CRUD ──────────────────────────────────────────────────────
 
 
@@ -278,6 +352,82 @@ async def delete_book(
     await session.delete(book)
     await session.commit()
     return {"message": "账本已删除"}
+
+
+@router.get("/stats-panels")
+async def list_stats_panels(
+    book_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    result = await session.execute(
+        select(StatsPanel)
+        .where(
+            StatsPanel.book_id == book_id,
+            StatsPanel.owner_id == user.id,
+        )
+        .order_by(StatsPanel.sort_order.asc(), StatsPanel.id.asc())
+    )
+    panels = result.scalars().all()
+    return [_serialize_stats_panel(panel) for panel in panels]
+
+
+@router.put("/stats-panels")
+async def replace_stats_panels(
+    book_id: int,
+    data: StatsPanelsUpdate,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    await session.execute(
+        delete(StatsPanel).where(
+            StatsPanel.book_id == book_id,
+            StatsPanel.owner_id == user.id,
+        )
+    )
+
+    for index, payload in enumerate(data.panels):
+        normalized = _normalize_stats_panel_payload(payload, index)
+        if not normalized["panel_id"]:
+            continue
+
+        panel = StatsPanel(
+            panel_id=normalized["panel_id"],
+            book_id=book_id,
+            owner_id=user.id,
+            name=normalized["name"],
+            description=normalized["description"],
+            kind=normalized["kind"],
+            enabled=normalized["enabled"],
+            is_custom=normalized["is_custom"],
+            metric=normalized["metric"],
+            subject=normalized["subject"],
+            filters_json=normalized["filters_json"],
+            default_type=normalized["default_type"],
+            default_range=normalized["default_range"],
+            default_category=normalized["default_category"],
+            sort_order=normalized["sort_order"],
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(panel)
+
+    await session.commit()
+
+    result = await session.execute(
+        select(StatsPanel)
+        .where(
+            StatsPanel.book_id == book_id,
+            StatsPanel.owner_id == user.id,
+        )
+        .order_by(StatsPanel.sort_order.asc(), StatsPanel.id.asc())
+    )
+    panels = result.scalars().all()
+    return [_serialize_stats_panel(panel) for panel in panels]
 
 
 # ─── Records CRUD ────────────────────────────────────────────────────

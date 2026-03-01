@@ -1,3 +1,5 @@
+import request from '@/api/request'
+
 export interface NamedItem {
     id: string
     name: string
@@ -406,48 +408,83 @@ export const listStatsPanelTemplates = () => {
     return DEFAULT_STATS_PANELS.map(cloneStatsPanel)
 }
 
-export const loadStatsPanels = (bookId: number | null) => {
-    const key = storageKey(bookId, 'stats-panels')
-    const stored = readJson<StatsPanelConfig[]>(key, [])
-    if (stored.length === 0) {
-        const defaults = DEFAULT_STATS_PANELS.map(cloneStatsPanel)
-        writeJson(key, defaults)
-        return defaults
+const normalizeAndSortPanels = (panels: StatsPanelConfig[]) => {
+    return panels
+        .map((panel, index) => normalizeStatsPanel(panel, index))
+        .sort((a, b) => a.sort_order - b.sort_order)
+}
+
+const panelsFingerprint = (panels: StatsPanelConfig[]) => {
+    return JSON.stringify(
+        normalizeAndSortPanels(panels).map(panel => ({
+            ...panel,
+            filters: [...panel.filters].sort(),
+        }))
+    )
+}
+
+const fetchRemoteStatsPanels = async (bookId: number) => {
+    const res = await request.get<StatsPanelConfig[]>('/accounting/stats-panels', {
+        params: { book_id: bookId },
+    })
+    return normalizeAndSortPanels(res.data || [])
+}
+
+const pushRemoteStatsPanels = async (bookId: number, panels: StatsPanelConfig[]) => {
+    const payload = normalizeAndSortPanels(panels)
+    const res = await request.put<StatsPanelConfig[]>('/accounting/stats-panels', {
+        panels: payload,
+    }, {
+        params: { book_id: bookId },
+    })
+    return normalizeAndSortPanels(res.data || payload)
+}
+
+export const loadStatsPanels = async (bookId: number | null) => {
+    if (!bookId) {
+        return DEFAULT_STATS_PANELS.map(cloneStatsPanel)
     }
 
-    const merged = mergeStatsPanels(stored)
-    writeJson(key, merged)
+    const remote = await fetchRemoteStatsPanels(bookId)
+    const merged = mergeStatsPanels(remote)
+
+    if (panelsFingerprint(remote) !== panelsFingerprint(merged)) {
+        return pushRemoteStatsPanels(bookId, merged)
+    }
+
     return merged
 }
 
-export const saveStatsPanels = (bookId: number | null, panels: StatsPanelConfig[]) => {
-    const key = storageKey(bookId, 'stats-panels')
-    const next = panels.map((panel, index) => normalizeStatsPanel(panel, index))
-    writeJson(key, next)
+export const saveStatsPanels = async (bookId: number | null, panels: StatsPanelConfig[]) => {
+    if (!bookId) {
+        return normalizeAndSortPanels(panels)
+    }
+
+    return pushRemoteStatsPanels(bookId, panels)
 }
 
-export const getStatsPanel = (bookId: number | null, id: string) => {
-    return loadStatsPanels(bookId).find(panel => panel.id === id)
+export const getStatsPanel = async (bookId: number | null, id: string) => {
+    const panels = await loadStatsPanels(bookId)
+    return panels.find(panel => panel.id === id)
 }
 
-export const setStatsPanelEnabled = (
+export const setStatsPanelEnabled = async (
     bookId: number | null,
     id: string,
     enabled: boolean,
 ) => {
-    const next = loadStatsPanels(bookId).map(panel => {
+    const next = (await loadStatsPanels(bookId)).map(panel => {
         if (panel.id !== id) return panel
         return { ...panel, enabled }
     })
-    saveStatsPanels(bookId, next)
-    return next
+    return saveStatsPanels(bookId, next)
 }
 
-export const upsertStatsPanel = (
+export const upsertStatsPanel = async (
     bookId: number | null,
     panel: StatsPanelConfig,
 ) => {
-    const current = loadStatsPanels(bookId)
+    const current = await loadStatsPanels(bookId)
     const idx = current.findIndex(item => item.id === panel.id)
     let next: StatsPanelConfig[]
 
@@ -460,18 +497,16 @@ export const upsertStatsPanel = (
         })
     }
 
-    saveStatsPanels(bookId, next)
-    return next
+    return saveStatsPanels(bookId, next)
 }
 
-export const removeStatsPanel = (bookId: number | null, id: string) => {
-    const current = loadStatsPanels(bookId)
+export const removeStatsPanel = async (bookId: number | null, id: string) => {
+    const current = await loadStatsPanels(bookId)
     const target = current.find(panel => panel.id === id)
     if (!target || !target.is_custom) return current
 
     const next = current.filter(panel => panel.id !== id)
-    saveStatsPanels(bookId, next)
-    return next
+    return saveStatsPanels(bookId, next)
 }
 
 export const createStatsPanelDraft = (): StatsPanelConfig => {
