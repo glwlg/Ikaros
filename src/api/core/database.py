@@ -57,6 +57,7 @@ async def init_db():
     engine = get_engine()
     from src.api.auth.models import User, OAuthAccount  # noqa: F401
     from src.api.models.binding import PlatformUserBinding  # noqa: F401
+    from src.api.models.accounting import Book, Account, Category, Record  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
