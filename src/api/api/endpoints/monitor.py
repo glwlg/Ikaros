@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from api.auth.router import get_current_user
+from api.auth.users import current_active_user
 from api.auth.models import User
 from core.heartbeat_store import HeartbeatStore
 
@@ -13,13 +13,13 @@ class MonitorCreate(BaseModel):
 
 
 @router.get("/")
-def get_monitors(current_user: User = Depends(get_current_user)):
+def get_monitors(current_user: User = Depends(current_active_user)):
     return hstore.list_checklist(str(current_user.id))
 
 
 @router.post("/")
 def create_monitor(
-    monitor: MonitorCreate, current_user: User = Depends(get_current_user)
+    monitor: MonitorCreate, current_user: User = Depends(current_active_user)
 ):
     try:
         hstore.add_checklist_item(str(current_user.id), monitor.item)
@@ -29,7 +29,7 @@ def create_monitor(
 
 
 @router.delete("/{index}")
-def delete_monitor(index: int, current_user: User = Depends(get_current_user)):
+def delete_monitor(index: int, current_user: User = Depends(current_active_user)):
     try:
         hstore.remove_checklist_item(str(current_user.id), index)
         return {"success": True}

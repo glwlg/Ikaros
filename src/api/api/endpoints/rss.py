@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from api.auth.router import get_current_user
+from api.auth.users import current_active_user
 from api.auth.models import User
 from core import state_store
 
@@ -13,12 +13,12 @@ class SubCreate(BaseModel):
 
 
 @router.get("/")
-def get_rss(current_user: User = Depends(get_current_user)):
+def get_rss(current_user: User = Depends(current_active_user)):
     return state_store.get_user_subscriptions(current_user.id)
 
 
 @router.post("/")
-def create_rss(sub: SubCreate, current_user: User = Depends(get_current_user)):
+def create_rss(sub: SubCreate, current_user: User = Depends(current_active_user)):
     # Since add_subscription runs synchronously and modifies DB via state_store
     try:
         state_store.add_subscription(current_user.id, sub.feed_url, sub.title)
@@ -28,7 +28,7 @@ def create_rss(sub: SubCreate, current_user: User = Depends(get_current_user)):
 
 
 @router.delete("/{sub_id}")
-def delete_rss(sub_id: int, current_user: User = Depends(get_current_user)):
+def delete_rss(sub_id: int, current_user: User = Depends(current_active_user)):
     try:
         state_store.delete_subscription_by_id(sub_id, current_user.id)
         return {"success": True}

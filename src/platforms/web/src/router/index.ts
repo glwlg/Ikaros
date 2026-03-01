@@ -67,6 +67,24 @@ const router = createRouter({
                     meta: { title: '统计' },
                 },
                 {
+                    path: 'stats/category',
+                    name: 'StatsCategoryDetail',
+                    component: () => import('@/views/Accounting/StatsCategoryDetailView.vue'),
+                    meta: { title: '分类统计详情' },
+                },
+                {
+                    path: 'stats/trend',
+                    name: 'StatsTrendDetail',
+                    component: () => import('@/views/Accounting/StatsTrendDetailView.vue'),
+                    meta: { title: '年度统计详情' },
+                },
+                {
+                    path: 'stats/team',
+                    name: 'StatsTeamDetail',
+                    component: () => import('@/views/Accounting/StatsTeamDetailView.vue'),
+                    meta: { title: '多人统计详情' },
+                },
+                {
                     path: 'more',
                     name: 'AccountingMore',
                     component: () => import('@/views/Accounting/MoreView.vue'),
