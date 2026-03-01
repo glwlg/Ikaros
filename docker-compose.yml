@@ -46,7 +46,7 @@ services:
       - .env
     restart: unless-stopped
     network_mode: "host"
-    command: [ "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000" ]
+    command: [ "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8764" ]
     volumes:
       - ./data:/app/data
       - ./config:/app/config

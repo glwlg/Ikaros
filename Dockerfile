@@ -80,7 +80,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY src/ .
 
 # Copy built frontend from builder stage
-COPY --from=frontend-builder /app/src/api/static/dist /app/src/api/static/dist
+# Note: COPY src/ . maps src/api/ → /app/api/, so static files must go to /app/api/static/dist
+COPY --from=frontend-builder /app/src/api/static/dist /app/api/static/dist
 
 # Command to run the application
 CMD ["python", "main.py"]

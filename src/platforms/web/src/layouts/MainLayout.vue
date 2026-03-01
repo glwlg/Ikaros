@@ -4,7 +4,7 @@ import { useRoute, useRouter, RouterLink, RouterView } from 'vue-router'
 import { Menu, X, LogOut, LayoutDashboard, User } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { storeToRefs } from 'pinia'
-import logoSvg from '@/assets/images/logo.svg'
+import logoPng from '@/assets/images/logo.png'
 import { ThemeToggle } from '@/components/ThemeToggle'
 
 const route = useRoute()
@@ -53,8 +53,8 @@ onMounted(async () => {
     >
       <!-- Logo -->
       <div class="h-16 flex items-center px-5 border-b border-theme-primary">
-        <img :src="logoSvg" alt="Template" class="w-9 h-9 shadow-sm" />
-        <span v-if="sidebarOpen" class="ml-3 text-lg font-bold text-theme-primary">Template App</span>
+        <img :src="logoPng" alt="X-Bot" class="w-9 h-9 shadow-sm object-contain" />
+        <span v-if="sidebarOpen" class="ml-3 text-lg font-bold text-theme-primary">X-Bot</span>
       </div>
 
       <!-- Toggle -->

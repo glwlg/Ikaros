@@ -1,134 +1,182 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useAuthStore } from '@/stores/auth'
-import { getRecords, importCsv, type Record } from '@/api/accounting'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+import { useAccountingStore } from '@/stores/accounting'
+import { getRecordsSummary, type MonthlySummary } from '@/api/accounting'
+import {
+  BookOpen, Rss, Clock, Activity,
+  TrendingUp, TrendingDown, ArrowRight
+} from 'lucide-vue-next'
 
-const authStore = useAuthStore()
 const router = useRouter()
+const authStore = useAuthStore()
+const accountingStore = useAccountingStore()
 
-const records = ref<Record[]>([])
-const loading = ref(false)
-const uploading = ref(false)
-const fileInput = ref<HTMLInputElement | null>(null)
+const monthlySummary = ref<MonthlySummary | null>(null)
+const now = new Date()
 
-const errorMessage = ref('')
-const selectedBookId = ref<number>(1) // Hardcoded to 1 for MVP
-
-const fetchRecords = async () => {
-    loading.value = true
-    errorMessage.value = ''
-    try {
-        const res = await getRecords(selectedBookId.value)
-        records.value = res.data
-    } catch (e: any) {
-        errorMessage.value = e.response?.data?.detail || 'Failed to load records'
-    } finally {
-        loading.value = false
-    }
-}
-
-const triggerUpload = () => {
-    fileInput.value?.click()
-}
-
-const handleFileUpload = async (event: Event) => {
-    const target = event.target as HTMLInputElement
-    if (target.files && target.files.length > 0) {
-        const file = target.files[0]
-        if (!file) return
-        uploading.value = true
-        errorMessage.value = ''
+onMounted(async () => {
+    await accountingStore.fetchBooks()
+    if (accountingStore.currentBookId) {
         try {
-            await importCsv(selectedBookId.value, file)
-            alert('Import successful!')
-            await fetchRecords()
-        } catch (e: any) {
-             errorMessage.value = e.response?.data?.detail || 'Import failed'
-        } finally {
-            uploading.value = false
-            target.value = '' // Reset input
+            const res = await getRecordsSummary(
+                accountingStore.currentBookId,
+                now.getFullYear(),
+                now.getMonth() + 1
+            )
+            monthlySummary.value = res.data
+        } catch {
+            // ignore
         }
     }
-}
-
-const handleLogout = async () => {
-    await authStore.logout()
-    router.push('/login')
-}
-
-onMounted(() => {
-    fetchRecords()
 })
+
+const goAccounting = () => router.push('/accounting')
+
+const formatMoney = (n: number) => {
+    return new Intl.NumberFormat('zh-CN', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2,
+    }).format(n)
+}
+
+const modules = [
+    {
+        id: 'accounting',
+        name: '智能记账',
+        desc: '通过截图、文字或语音快速记录每一笔收支',
+        icon: BookOpen,
+        color: 'teal',
+        enabled: true,
+        action: goAccounting,
+    },
+    {
+        id: 'rss',
+        name: 'RSS 订阅',
+        desc: '聚合新闻源，定时推送感兴趣的内容',
+        icon: Rss,
+        color: 'orange',
+        enabled: false,
+    },
+    {
+        id: 'scheduler',
+        name: '定时任务',
+        desc: '设置定时提醒、数据采集等自动化任务',
+        icon: Clock,
+        color: 'blue',
+        enabled: false,
+    },
+    {
+        id: 'monitor',
+        name: '心跳监控',
+        desc: '监控服务可用性，异常时自动告警',
+        icon: Activity,
+        color: 'purple',
+        enabled: false,
+    },
+]
+
+const colorMap: Record<string, { bg: string; icon: string; border: string; hover: string }> = {
+    teal: {
+        bg: 'bg-teal-50 dark:bg-teal-900/20',
+        icon: 'bg-teal-500',
+        border: 'border-teal-200 dark:border-teal-800',
+        hover: 'hover:shadow-teal-100 dark:hover:shadow-teal-900/30',
+    },
+    orange: {
+        bg: 'bg-orange-50 dark:bg-orange-900/20',
+        icon: 'bg-orange-500',
+        border: 'border-orange-200 dark:border-orange-800',
+        hover: 'hover:shadow-orange-100 dark:hover:shadow-orange-900/30',
+    },
+    blue: {
+        bg: 'bg-blue-50 dark:bg-blue-900/20',
+        icon: 'bg-blue-500',
+        border: 'border-blue-200 dark:border-blue-800',
+        hover: 'hover:shadow-blue-100 dark:hover:shadow-blue-900/30',
+    },
+    purple: {
+        bg: 'bg-purple-50 dark:bg-purple-900/20',
+        icon: 'bg-purple-500',
+        border: 'border-purple-200 dark:border-purple-800',
+        hover: 'hover:shadow-purple-100 dark:hover:shadow-purple-900/30',
+    },
+}
 </script>
 
 <template>
-  <div class="min-h-screen bg-gray-50 flex flex-col">
-    <!-- Fast App Header -->
-    <header class="bg-indigo-600 text-white p-4 shadow-md flex justify-between items-center sticky top-0 z-10">
-      <h1 class="text-xl font-bold tracking-tight">X-Bot Accounting</h1>
-      <button @click="handleLogout" class="text-sm px-3 py-1 bg-indigo-700 hover:bg-indigo-800 rounded">
-        Logout
-      </button>
-    </header>
+  <div class="p-6 max-w-5xl mx-auto">
+    <!-- Welcome Section -->
+    <div class="mb-8">
+      <h1 class="text-2xl font-bold text-theme-primary">
+        欢迎回来，{{ authStore.user?.display_name || authStore.user?.email || '用户' }} 👋
+      </h1>
+      <p class="text-theme-muted mt-1">这里是你的 X-Bot 控制面板，选择一个模块开始吧</p>
+    </div>
 
-    <main class="flex-1 p-4 max-w-2xl mx-auto w-full">
-      <!-- Error Banner -->
-      <div v-if="errorMessage" class="bg-red-100 text-red-800 p-3 rounded mb-4 text-sm border border-red-200">
-        {{ errorMessage }}
+    <!-- Quick Stats (if accounting has data) -->
+    <div v-if="monthlySummary && accountingStore.currentBookId" class="mb-8">
+      <div class="grid grid-cols-3 gap-4">
+        <div class="bg-theme-elevated rounded-2xl border border-theme-primary p-4 shadow-sm">
+          <div class="flex items-center gap-2 mb-2">
+            <TrendingDown class="w-4 h-4 text-rose-500" />
+            <span class="text-xs text-theme-muted font-medium">本月支出</span>
+          </div>
+          <p class="text-xl font-bold text-rose-500">¥{{ formatMoney(monthlySummary.expense) }}</p>
+        </div>
+        <div class="bg-theme-elevated rounded-2xl border border-theme-primary p-4 shadow-sm">
+          <div class="flex items-center gap-2 mb-2">
+            <TrendingUp class="w-4 h-4 text-teal-500" />
+            <span class="text-xs text-theme-muted font-medium">本月收入</span>
+          </div>
+          <p class="text-xl font-bold text-teal-500">¥{{ formatMoney(monthlySummary.income) }}</p>
+        </div>
+        <div class="bg-theme-elevated rounded-2xl border border-theme-primary p-4 shadow-sm">
+          <div class="flex items-center gap-2 mb-2">
+            <BookOpen class="w-4 h-4 text-indigo-500" />
+            <span class="text-xs text-theme-muted font-medium">结余</span>
+          </div>
+          <p class="text-xl font-bold text-theme-primary">¥{{ formatMoney(monthlySummary.balance) }}</p>
+        </div>
       </div>
-      
-      <!-- Actions -->
-      <div class="mb-6 flex gap-2">
-        <button 
-          @click="triggerUpload" 
-          :disabled="uploading"
-          class="flex-1 bg-white border-2 border-dashed border-indigo-300 text-indigo-700 py-3 rounded-xl font-medium hover:bg-indigo-50 transition drop-shadow-sm disabled:opacity-50 flex items-center justify-center gap-2">
-           <svg v-if="uploading" class="animate-spin h-5 w-5 text-indigo-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-           </svg>
-           <span v-else>Import CSV</span>
-        </button>
-        <input 
-          type="file" 
-          ref="fileInput" 
-          accept=".csv" 
-          class="hidden" 
-          @change="handleFileUpload"
-        />
-      </div>
+    </div>
 
-      <!-- Record List -->
-      <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-          <h2 class="font-semibold text-gray-800">Recent Records</h2>
-          <button @click="fetchRecords" class="text-xs text-indigo-600 font-medium">Refresh</button>
+    <!-- Module Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+      <div
+        v-for="mod in modules"
+        :key="mod.id"
+        @click="mod.enabled && mod.action?.()"
+        :class="[
+          'group rounded-2xl border p-5 transition-all duration-200 shadow-sm',
+          mod.enabled
+            ? `cursor-pointer ${colorMap[mod.color]?.border} ${colorMap[mod.color]?.hover} hover:shadow-md`
+            : 'opacity-50 cursor-not-allowed border-gray-200 dark:border-slate-700',
+          colorMap[mod.color]?.bg || 'bg-theme-elevated',
+        ]"
+      >
+        <div class="flex items-start justify-between mb-3">
+          <div :class="[
+            'w-12 h-12 rounded-xl flex items-center justify-center shadow-sm',
+            colorMap[mod.color]?.icon || 'bg-gray-500'
+          ]">
+            <component :is="mod.icon" class="w-6 h-6 text-white" />
+          </div>
+          <ArrowRight
+            v-if="mod.enabled"
+            class="w-5 h-5 text-gray-300 group-hover:text-gray-500 dark:text-slate-600 dark:group-hover:text-slate-400 transition-colors"
+          />
+          <span
+            v-else
+            class="text-[10px] font-medium text-gray-400 bg-gray-100 dark:bg-slate-800 dark:text-slate-500 px-2 py-0.5 rounded-full"
+          >
+            即将推出
+          </span>
         </div>
-        
-        <div v-if="loading" class="p-8 text-center text-gray-400">
-          Loading records...
-        </div>
-        
-        <div v-else-if="records.length === 0" class="p-8 text-center text-gray-400">
-          No records found.
-        </div>
-        
-        <ul v-else class="divide-y divide-gray-50">
-          <li v-for="record in records" :key="record.id" class="p-4 hover:bg-gray-50 transition cursor-pointer">
-            <div class="flex justify-between items-start mb-1">
-              <span class="font-medium text-gray-800">{{ record.remark || record.payee || 'Untagged' }}</span>
-              <span :class="record.type === '收入' ? 'text-green-600' : 'text-gray-900'" class="font-semibold tracking-tight">
-                {{ record.type === '收入' ? '+' : '-' }}{{ record.amount }}
-              </span>
-            </div>
-            <div class="flex justify-between items-center text-xs text-gray-500">
-              <span class="bg-gray-100 px-2 py-0.5 rounded text-gray-600">{{ record.type }}</span>
-              <span>{{ new Date(record.record_time).toLocaleString() }}</span>
-            </div>
-          </li>
-        </ul>
+        <h2 class="text-lg font-semibold text-theme-primary mb-1">{{ mod.name }}</h2>
+        <p class="text-sm text-theme-muted leading-relaxed">{{ mod.desc }}</p>
       </div>
-    </main>
+    </div>
   </div>
 </template>

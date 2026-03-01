@@ -49,3 +49,7 @@ config/models.json
 
 # Docker
 .docker/
+
+# Web
+src/platforms/web/node_modules
+src/api/static/dist

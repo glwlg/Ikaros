@@ -20,7 +20,7 @@ class SQLiteConfig(BaseModel):
 class AuthConfig(BaseModel):
     """认证配置"""
 
-    secret_key: str  # JWT 密钥
+    secret_key: str = "SUPER_SECRET_KEY_CHANGEME"  # JWT 密钥
     access_token_expire_minutes: int = 60 * 24  # Token 有效期，默认 24 小时
 
 
@@ -35,7 +35,11 @@ class AppConfig(BaseSettings):
     auth: AuthConfig = Field(default_factory=AuthConfig)
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", env_nested_delimiter="__", case_sensitive=False, extra="ignore"
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra="ignore",
     )
 
     @model_validator(mode="before")

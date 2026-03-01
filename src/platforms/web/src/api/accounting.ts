@@ -1,32 +1,125 @@
 import request from './request'
 
-export interface Record {
+export interface Book {
     id: number
-    book_id: number
+    name: string
+}
+
+export interface RecordItem {
+    id: number
     type: string
     amount: number
-    account_id: number | null
-    target_account_id: number | null
-    category_id: number | null
+    category: string
+    account: string
+    target_account: string
+    payee: string
+    remark: string
     record_time: string
-    payee: string | null
-    remark: string | null
-    creator_id: number
 }
 
-// Get records by book_id
-export const getRecords = (bookId: number) => {
-    return request.get<Record[]>('/accounting/records', { params: { book_id: bookId } })
+export interface AccountItem {
+    id: number
+    name: string
+    type: string
+    balance: number
 }
 
-// Upload CSV file for import
+export interface CategoryItem {
+    id: number
+    name: string
+    type: string
+    parent_id: number | null
+}
+
+export interface MonthlySummary {
+    income: number
+    expense: number
+    balance: number
+}
+
+export interface DailySummaryItem {
+    date: string
+    income: number
+    expense: number
+}
+
+export interface CategorySummaryItem {
+    category: string
+    amount: number
+}
+
+export interface YearlySummaryItem {
+    year: string
+    income: number
+    expense: number
+}
+
+export interface StatsOverview {
+    days: number
+    transactions: number
+    net_assets: number
+}
+
+// ─── Books ──────────────────────────────────────────────────────────
+export const getBooks = () =>
+    request.get<Book[]>('/accounting/books')
+
+export const createBook = (name: string) =>
+    request.post<Book>('/accounting/books', { name })
+
+// ─── Records ────────────────────────────────────────────────────────
+export const getRecords = (bookId: number, limit: number = 50) =>
+    request.get<RecordItem[]>('/accounting/records', { params: { book_id: bookId, limit } })
+
+export const createRecord = (bookId: number, data: {
+    type: string
+    amount: number
+    category_name?: string
+    account_name?: string
+    target_account_name?: string
+    payee?: string
+    remark?: string
+    record_time?: string
+}) =>
+    request.post('/accounting/records', data, { params: { book_id: bookId } })
+
+// ─── Statistics ─────────────────────────────────────────────────────
+export const getRecordsSummary = (bookId: number, year: number, month: number) =>
+    request.get<MonthlySummary>('/accounting/records/summary', { params: { book_id: bookId, year, month } })
+
+export const getDailySummary = (bookId: number, year: number, month: number) =>
+    request.get<DailySummaryItem[]>('/accounting/records/daily-summary', { params: { book_id: bookId, year, month } })
+
+export const getCategorySummary = (bookId: number, year: number, month: number, type: string = '支出') =>
+    request.get<CategorySummaryItem[]>('/accounting/records/category-summary', { params: { book_id: bookId, year, month, type } })
+
+export const getYearlySummary = (bookId: number) =>
+    request.get<YearlySummaryItem[]>('/accounting/records/yearly-summary', { params: { book_id: bookId } })
+
+// ─── Accounts ───────────────────────────────────────────────────────
+export const getAccounts = (bookId: number) =>
+    request.get<AccountItem[]>('/accounting/accounts', { params: { book_id: bookId } })
+
+export const createAccount = (bookId: number, data: { name: string; type: string; balance: number }) =>
+    request.post<AccountItem>('/accounting/accounts', data, { params: { book_id: bookId } })
+
+export const updateAccount = (accountId: number, data: { name?: string; type?: string; balance?: number }) =>
+    request.put<AccountItem>(`/accounting/accounts/${accountId}`, data)
+
+// ─── Categories ─────────────────────────────────────────────────────
+export const getCategories = (bookId: number) =>
+    request.get<CategoryItem[]>('/accounting/categories', { params: { book_id: bookId } })
+
+// ─── Stats Overview ─────────────────────────────────────────────────
+export const getStatsOverview = (bookId: number) =>
+    request.get<StatsOverview>('/accounting/stats/overview', { params: { book_id: bookId } })
+
+// ─── CSV Import ─────────────────────────────────────────────────────
 export const importCsv = (bookId: number, file: File) => {
     const formData = new FormData()
     formData.append('file', file)
-
-    return request.post<{ message: string }>(`/accounting/import/csv?book_id=${bookId}`, formData, {
-        headers: {
-            'Content-Type': 'multipart/form-data'
-        }
+    return request.post('/accounting/import/csv', formData, {
+        params: { book_id: bookId },
+        headers: { 'Content-Type': 'multipart/form-data' },
     })
 }

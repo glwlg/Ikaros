@@ -1,11 +1,11 @@
 from sqlalchemy import String, ForeignKey, Numeric, DateTime
-from sqlalchemy.orm import mapped_column, Mapped, relationship
+from sqlalchemy.orm import mapped_column, Mapped
 from datetime import datetime
 from api.core.database import Base
 
 
 class Book(Base):
-    __tablename__ = "books"
+    __tablename__ = "accounting_books"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     owner_id: Mapped[int] = mapped_column(
@@ -14,40 +14,48 @@ class Book(Base):
 
 
 class Account(Base):
-    __tablename__ = "accounts"
+    __tablename__ = "accounting_accounts"
     id: Mapped[int] = mapped_column(primary_key=True)
     book_id: Mapped[int] = mapped_column(
-        ForeignKey("books.id", ondelete="CASCADE"), nullable=False
-    )
-    name: Mapped[str] = mapped_column(String(100), nullable=False)  # e.g. 现金, 支付宝
-
-
-class Category(Base):
-    __tablename__ = "categories"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    book_id: Mapped[int] = mapped_column(
-        ForeignKey("books.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("accounting_books.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     type: Mapped[str] = mapped_column(
-        String(20), nullable=False
-    )  # income, expense, transfer
-    parent_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), nullable=True)
+        String(50), default="现金", nullable=False
+    )  # 现金/储蓄卡/信用卡
+    balance: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
+
+
+class Category(Base):
+    __tablename__ = "accounting_categories"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("accounting_books.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    type: Mapped[str] = mapped_column(String(20), nullable=False)  # 支出/收入/转账
+    parent_id: Mapped[int] = mapped_column(
+        ForeignKey("accounting_categories.id"), nullable=True
+    )
 
 
 class Record(Base):
-    __tablename__ = "records"
+    __tablename__ = "accounting_records"
     id: Mapped[int] = mapped_column(primary_key=True)
     book_id: Mapped[int] = mapped_column(
-        ForeignKey("books.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("accounting_books.id", ondelete="CASCADE"), nullable=False
     )
     type: Mapped[str] = mapped_column(String(20), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounting_accounts.id"), nullable=True
+    )
     target_account_id: Mapped[int] = mapped_column(
-        ForeignKey("accounts.id"), nullable=True
-    )  # For transfers
-    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), nullable=True)
+        ForeignKey("accounting_accounts.id"), nullable=True
+    )
+    category_id: Mapped[int] = mapped_column(
+        ForeignKey("accounting_categories.id"), nullable=True
+    )
     record_time: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

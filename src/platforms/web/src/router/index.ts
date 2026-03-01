@@ -15,31 +15,67 @@ const router = createRouter({
             meta: { title: '首页' },
         },
         {
+            path: '/accounting',
+            component: () => import('@/layouts/AccountingLayout.vue'),
+            children: [
+                {
+                    path: '',
+                    redirect: '/accounting/overview'
+                },
+                {
+                    path: 'overview',
+                    name: 'AccountingOverview',
+                    component: () => import('@/views/Accounting/OverviewView.vue'),
+                    meta: { title: '记账首页' },
+                },
+                {
+                    path: 'assets',
+                    name: 'AccountingAssets',
+                    component: () => import('@/views/Accounting/AssetsView.vue'),
+                    meta: { title: '资产' },
+                },
+                {
+                    path: 'stats',
+                    name: 'AccountingStats',
+                    component: () => import('@/views/Accounting/StatsView.vue'),
+                    meta: { title: '统计' },
+                },
+                {
+                    path: 'more',
+                    name: 'AccountingMore',
+                    component: () => import('@/views/Accounting/MoreView.vue'),
+                    meta: { title: '更多' },
+                },
+                {
+                    path: 'profile',
+                    name: 'AccountingProfile',
+                    component: () => import('@/views/Accounting/ProfileView.vue'),
+                    meta: { title: '我的' },
+                },
+            ],
+        },
+        {
             path: '/login',
             name: 'Login',
             component: () => import('@/views/Auth/LoginView.vue'),
             meta: { title: '登录', public: true },
-        }
+        },
     ]
 })
 
 router.beforeEach(async (to, _from, next) => {
-    // 设置标题
-    document.title = to.meta.title ? `${to.meta.title} - X-Bot` : 'X-Bot Accounting'
+    document.title = to.meta.title ? `${to.meta.title} - X-Bot` : 'X-Bot'
 
-    // 公开页面直接放行
     if (to.meta.public) {
         return next()
     }
 
     const authStore = useAuthStore()
 
-    // 检查是否有 token
     if (!authStore.token) {
         return next('/login')
     }
 
-    // 获取用户信息
     if (!authStore.user) {
         try {
             await authStore.fetchUser()
