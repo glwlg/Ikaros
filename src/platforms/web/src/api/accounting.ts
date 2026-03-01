@@ -23,6 +23,7 @@ export interface AccountItem {
     type: string
     initial_balance: number
     balance: number
+    include_in_assets: boolean
     book_id?: number
 }
 
@@ -107,10 +108,10 @@ export const getYearlySummary = (bookId: number) =>
 export const getAccounts = (bookId: number) =>
     request.get<AccountItem[]>('/accounting/accounts', { params: { book_id: bookId } })
 
-export const createAccount = (bookId: number, data: { name: string; type: string; balance: number }) =>
+export const createAccount = (bookId: number, data: { name: string; type: string; balance: number; include_in_assets?: boolean }) =>
     request.post<AccountItem>('/accounting/accounts', data, { params: { book_id: bookId } })
 
-export const updateAccount = (accountId: number, data: { name?: string; type?: string; balance?: number }) =>
+export const updateAccount = (accountId: number, data: { name?: string; type?: string; balance?: number; include_in_assets?: boolean }) =>
     request.put<AccountItem>(`/accounting/accounts/${accountId}`, data)
 
 export const deleteAccount = (accountId: number) =>

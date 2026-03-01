@@ -3,7 +3,10 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import { getAccounts, createAccount, type AccountItem } from '@/api/accounting'
-import { Plus, Eye, EyeOff, Loader2, Banknote, CreditCard, Landmark, X, ChevronRight } from 'lucide-vue-next'
+import {
+    Plus, Eye, EyeOff, Loader2, Banknote, CreditCard, Landmark, X, ChevronRight,
+    Wallet, TrendingUp, ArrowDownLeft, ArrowUpRight
+} from 'lucide-vue-next'
 
 const router = useRouter()
 
@@ -20,7 +23,7 @@ const newAccType = ref('储蓄卡')
 const newAccBalance = ref(0)
 const creatingAcc = ref(false)
 
-const accountTypes = ['现金', '储蓄卡', '信用卡', '支付宝', '微信', '投资', '其他']
+const accountTypes = ['网络支付', '信用卡', '储蓄卡', '投资账户', '现金', '充值卡', '应收账户', '应付账户']
 
 // Grouped accounts
 const grouped = computed(() => {
@@ -51,18 +54,27 @@ const typeIcon = (type: string) => {
     switch (type) {
         case '现金': return Banknote
         case '信用卡': return CreditCard
+        case '储蓄卡': return Landmark
+        case '网络支付': return Wallet
+        case '投资账户': return TrendingUp
+        case '充值卡': return CreditCard
+        case '应收账户': return ArrowDownLeft
+        case '应付账户': return ArrowUpRight
         default: return Landmark
     }
 }
 
 const typeColor = (type: string) => {
     switch (type) {
-        case '现金': return 'bg-amber-500'
-        case '储蓄卡': return 'bg-teal-500'
-        case '信用卡': return 'bg-rose-500'
-        case '支付宝': return 'bg-blue-500'
-        case '微信': return 'bg-green-500'
-        default: return 'bg-gray-500'
+        case '网络支付': return 'bg-teal-500'
+        case '信用卡': return 'bg-amber-500'
+        case '储蓄卡': return 'bg-emerald-500'
+        case '投资账户': return 'bg-rose-500'
+        case '现金': return 'bg-rose-400'
+        case '充值卡': return 'bg-amber-400'
+        case '应收账户': return 'bg-indigo-500'
+        case '应付账户': return 'bg-gray-500'
+        default: return 'bg-gray-400'
     }
 }
 

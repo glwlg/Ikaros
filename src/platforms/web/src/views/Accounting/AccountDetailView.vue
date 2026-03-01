@@ -38,12 +38,29 @@ const showDeleteConfirm = ref(false)
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
 
-const accountTypes = ['现金', '储蓄卡', '信用卡', '支付宝', '微信', '投资', '其他']
+const accountTypes = ['网络支付', '信用卡', '储蓄卡', '投资账户', '现金', '充值卡', '应收账户', '应付账户']
 const adjustMethods = [
     { value: '差额补记收支', desc: '添加收入或支出，使余额达到指定金额。' },
+    { value: '差额补记转账', desc: '添加无账户转账，不计入收支。' },
     { value: '更改当前余额', desc: '设置初始金额为指定金额，设置余额起始时间为当前时间，余额趋势统计将丢失。' },
     { value: '设置初始余额', desc: '设置初始金额为指定金额。' },
 ]
+
+const togglingAssets = ref(false)
+
+const handleToggleAssets = async () => {
+    if (!account.value || togglingAssets.value) return
+    togglingAssets.value = true
+    try {
+        const newVal = !account.value.include_in_assets
+        await updateAccount(accountId, { include_in_assets: newVal })
+        account.value.include_in_assets = newVal
+    } catch (e: any) {
+        alert(e.response?.data?.detail || '状态更新失败')
+    } finally {
+        togglingAssets.value = false
+    }
+}
 
 const formatMoney = (n: number) =>
     new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
@@ -257,9 +274,15 @@ onMounted(loadData)
       <!-- Account Settings -->
       <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 overflow-hidden">
         <div class="px-4 py-3 flex items-center justify-between border-b border-gray-50 dark:border-slate-700/50">
-          <span class="text-sm text-theme-primary">计入资产</span>
-          <div class="w-12 h-7 rounded-full bg-teal-500 relative cursor-pointer">
-            <div class="absolute right-0.5 top-0.5 w-6 h-6 rounded-full bg-white shadow" />
+          <span class="text-sm text-theme-primary flex items-center gap-2">
+            计入资产
+            <Loader2 v-if="togglingAssets" class="w-3 h-3 animate-spin text-theme-muted" />
+          </span>
+          <div
+            @click="handleToggleAssets"
+            :class="['w-12 h-7 rounded-full relative cursor-pointer transition-colors duration-200', account.include_in_assets ? 'bg-teal-500' : 'bg-gray-200 dark:bg-slate-600']"
+          >
+            <div :class="['absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-transform duration-200', account.include_in_assets ? 'translate-x-[22px]' : 'translate-x-0.5']" />
           </div>
         </div>
         <div @click="openEdit" class="px-4 py-3 flex items-center justify-between border-b border-gray-50 dark:border-slate-700/50 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition">

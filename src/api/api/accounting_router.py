@@ -31,8 +31,9 @@ class RecordCreate(BaseModel):
 
 class AccountCreate(BaseModel):
     name: str
-    type: str = "现金"  # 现金/储蓄卡/信用卡
+    type: str = "现金"
     balance: float = 0
+    include_in_assets: bool = True
 
 
 class AccountUpdate(BaseModel):
@@ -44,7 +45,9 @@ class AccountUpdate(BaseModel):
 
 class BalanceAdjust(BaseModel):
     target_balance: float
-    method: str = "差额补记收支"  # 差额补记收支 / 更改当前余额 / 设置初始余额
+    method: str = (
+        "差额补记收支"  # 差额补记收支 / 差额补记转账 / 更改当前余额 / 设置初始余额
+    )
 
 
 # ─── Helper: verify book ownership ───────────────────────────────────
@@ -486,6 +489,7 @@ async def list_accounts(
                 "type": a.type,
                 "initial_balance": float(a.balance),
                 "balance": current_balance,
+                "include_in_assets": a.include_in_assets,
             }
         )
     return enriched
@@ -510,6 +514,7 @@ async def get_account_detail(
         "type": acc.type,
         "initial_balance": float(acc.balance),
         "balance": current_balance,
+        "include_in_assets": acc.include_in_assets,
         "book_id": acc.book_id,
     }
 
@@ -702,6 +707,23 @@ async def adjust_balance(
         # 直接改初始余额使得当前余额 = target
         acc.balance = float(acc.balance) + diff
         await session.commit()
+    elif data.method == "差额补记转账":
+        if abs(diff) < 0.01:
+            return {"message": "余额无需调整"}
+        rec = Record(
+            book_id=acc.book_id,
+            type="转账",
+            amount=abs(diff),
+            account_id=acc.id if diff < 0 else None,
+            target_account_id=acc.id if diff > 0 else None,
+            category_id=None,
+            record_time=datetime.utcnow(),
+            payee="",
+            remark=f"余额校正(无账户转账): {current:.2f} → {data.target_balance:.2f}",
+            creator_id=user.id,
+        )
+        session.add(rec)
+        await session.commit()
     else:
         # 差额补记收支：创建一条调整记录
         if abs(diff) < 0.01:
@@ -737,6 +759,7 @@ async def create_account(
         name=data.name,
         type=data.type,
         balance=data.balance,
+        include_in_assets=data.include_in_assets,
     )
     session.add(acc)
     await session.commit()
@@ -747,6 +770,7 @@ async def create_account(
         "type": acc.type,
         "initial_balance": float(acc.balance),
         "balance": float(acc.balance),
+        "include_in_assets": acc.include_in_assets,
     }
 
 
@@ -768,6 +792,8 @@ async def update_account(
         acc.type = data.type
     if data.balance is not None:
         acc.balance = data.balance
+    if data.include_in_assets is not None:
+        acc.include_in_assets = data.include_in_assets
     await session.commit()
     current = await _calc_account_balance(session, acc.id, float(acc.balance))
     return {
@@ -776,6 +802,7 @@ async def update_account(
         "type": acc.type,
         "initial_balance": float(acc.balance),
         "balance": current,
+        "include_in_assets": acc.include_in_assets,
     }
 
 
@@ -842,9 +869,11 @@ async def stats_overview(
     )
     days = days_result.scalar() or 0
 
-    # 净资产 = 所有账户动态余额之和
+    # 净资产 = 所有(计入资产的)账户动态余额之和
     acc_result = await session.execute(
-        select(Account).where(Account.book_id == book_id)
+        select(Account).where(
+            Account.book_id == book_id, Account.include_in_assets.is_(True)
+        )
     )
     all_accounts = acc_result.scalars().all()
     net_assets = 0.0

@@ -20,10 +20,9 @@ class Account(Base):
         ForeignKey("accounting_books.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    type: Mapped[str] = mapped_column(
-        String(50), default="现金", nullable=False
-    )  # 现金/储蓄卡/信用卡
+    type: Mapped[str] = mapped_column(String(50), default="现金", nullable=False)
     balance: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
+    include_in_assets: Mapped[bool] = mapped_column(default=True, nullable=False)
 
 
 class Category(Base):
