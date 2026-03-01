@@ -7,7 +7,7 @@ import {
     Grid2x2, ListOrdered, Store, Tag,
     Download, Upload, Share2, BookOpen,
     Bot, Puzzle, ScrollText,
-    ChevronRight, User
+    ChevronRight, User, Settings
 } from 'lucide-vue-next'
 
 const authStore = useAuthStore()
@@ -34,9 +34,10 @@ const managementItems = [
 ]
 
 const settingsItems = [
-    { icon: Bot, label: '自动', desc: '自动记账', to: '' },
-    { icon: Puzzle, label: '组件', desc: '', to: '' },
-    { icon: ScrollText, label: '日志', desc: '撤回操作', to: '' },
+    { icon: Settings, label: '全局设置', desc: '显示/通用设置', to: '' },
+    { icon: Bot, label: '自动记账', desc: '自动化规则', to: '' },
+    { icon: Puzzle, label: '扩展组件', desc: '', to: '' },
+    { icon: ScrollText, label: '操作日志', desc: '查看与撤回操作', to: '' },
 ]
 
 const triggerImport = () => {

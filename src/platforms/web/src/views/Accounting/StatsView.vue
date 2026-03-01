@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, watch, nextTick, computed } from 'vue'
 import { useAccountingStore } from '@/stores/accounting'
 import { getCategorySummary, getYearlySummary, type CategorySummaryItem, type YearlySummaryItem } from '@/api/accounting'
 import { ChevronRight, Loader2 } from 'lucide-vue-next'
@@ -7,9 +7,26 @@ import * as echarts from 'echarts'
 
 const store = useAccountingStore()
 const now = new Date()
-const currentYear = ref(now.getFullYear())
-const currentMonth = ref(now.getMonth() + 1)
+const selectedYear = ref(now.getFullYear())
+const selectedMonth = ref(now.getMonth() + 1) // 0 means 'Whole Year'
 const statType = ref<'支出' | '收入'>('支出')
+
+// Provide list of years and ranges
+const availableYears = computed(() => {
+    const ys = []
+    const y = now.getFullYear()
+    for (let i = y - 3; i <= y + 1; i++) ys.push(i)
+    return ys
+})
+
+const timeLabel = computed(() => {
+    if (selectedMonth.value === 0) return `${selectedYear.value}全年`
+    return `${selectedYear.value}年${selectedMonth.value}月`
+})
+
+const switchTime = (m: number) => {
+    selectedMonth.value = m
+}
 
 const categoryData = ref<CategorySummaryItem[]>([])
 const yearlyData = ref<YearlySummaryItem[]>([])
@@ -30,7 +47,7 @@ const loadData = async () => {
     loading.value = true
     try {
         const [catRes, yearRes] = await Promise.all([
-            getCategorySummary(store.currentBookId, currentYear.value, currentMonth.value, statType.value),
+            getCategorySummary(store.currentBookId, selectedYear.value, selectedMonth.value, statType.value),
             getYearlySummary(store.currentBookId),
         ])
         categoryData.value = catRes.data
@@ -131,7 +148,7 @@ const renderBar = () => {
     })
 }
 
-watch([statType], () => loadData())
+watch([statType, selectedYear, selectedMonth], () => loadData())
 
 onMounted(async () => {
     if (!store.currentBookId) await store.fetchBooks()
@@ -146,14 +163,42 @@ onMounted(async () => {
     </div>
 
     <template v-else>
+      <!-- Time Selector -->
+      <div class="px-4 py-2">
+        <div class="flex items-center gap-2 overflow-x-auto no-scrollbar">
+          <button
+            @click="switchTime(now.getMonth() + 1)"
+            :class="['px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition', selectedMonth === now.getMonth() + 1 ? 'bg-theme-primary text-white' : 'bg-gray-100 dark:bg-slate-800 text-theme-secondary']"
+          >本月</button>
+          <button
+            @click="switchTime(0)"
+            :class="['px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition', selectedMonth === 0 ? 'bg-theme-primary text-white' : 'bg-gray-100 dark:bg-slate-800 text-theme-secondary']"
+          >本年</button>
+          <!-- Additional specific months could be listed here -->
+          <select
+            v-model="selectedMonth"
+            class="px-2 py-1.5 rounded-full text-sm font-medium bg-gray-100 dark:bg-slate-800 text-theme-secondary appearance-none outline-none"
+          >
+            <option :value="0">选择月份</option>
+            <option v-for="m in 12" :key="m" :value="m">{{ m }}月</option>
+          </select>
+          <select
+            v-model="selectedYear"
+            class="px-2 py-1.5 rounded-full text-sm font-medium bg-gray-100 dark:bg-slate-800 text-theme-secondary appearance-none outline-none"
+          >
+            <option v-for="y in availableYears" :key="y" :value="y">{{ y }}年</option>
+          </select>
+        </div>
+      </div>
+
       <!-- Category Stats Card -->
-      <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
+      <div class="mx-4 mt-2 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
         <div class="flex items-center justify-between mb-1">
           <h3 class="font-bold text-theme-primary">分类统计</h3>
           <ChevronRight class="w-4 h-4 text-teal-500" />
         </div>
         <p class="text-xs text-theme-muted mb-3">
-          ¥{{ formatMoney(totalCategory()) }} · {{ currentMonth }}月 · {{ statType }} · 一级分类
+          ¥{{ formatMoney(totalCategory()) }} · {{ timeLabel }} · {{ statType }}
         </p>
 
         <!-- Type toggle -->
@@ -196,7 +241,7 @@ onMounted(async () => {
           <h3 class="font-bold text-theme-primary">多人统计</h3>
           <ChevronRight class="w-4 h-4 text-teal-500" />
         </div>
-        <p class="text-xs text-theme-muted mb-3">¥0 · {{ currentMonth }}月 · 支出</p>
+        <p class="text-xs text-theme-muted mb-3">¥0 · {{ timeLabel }} · 支出</p>
         <div class="w-32 h-32 mx-auto rounded-full border-[8px] border-gray-100 dark:border-slate-700 flex items-center justify-center">
           <div class="text-center">
             <p class="text-xs text-theme-muted">全部</p>

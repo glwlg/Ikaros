@@ -6,7 +6,7 @@ import {
     type MonthlySummary, type DailySummaryItem, type RecordItem, type Book
 } from '@/api/accounting'
 import {
-    ChevronDown, Search, ChevronRight, Plus, Loader2
+    ChevronDown, ChevronRight, Plus, Loader2
 } from 'lucide-vue-next'
 import AddRecordDialog from '@/components/accounting/AddRecordDialog.vue'
 import * as echarts from 'echarts'

@@ -156,15 +156,35 @@ async def create_book(
 async def get_records(
     book_id: int,
     limit: int = Query(default=50, le=200),
+    keyword: str = None,
+    start_date: str = None,
+    end_date: str = None,
+    type: str = None,
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
     await _get_book(book_id, user, session)
+
+    query = select(Record).where(Record.book_id == book_id)
+
+    if start_date:
+        query = query.where(Record.record_time >= datetime.fromisoformat(start_date))
+    if end_date:
+        query = query.where(Record.record_time <= datetime.fromisoformat(end_date))
+    if type:
+        query = query.where(Record.type == type)
+    if keyword:
+        # Search in remark, payee or through category join
+        # For simplicity, search remark and payee here
+        query = query.where(
+            or_(
+                Record.remark.ilike(f"%{keyword}%"),
+                Record.payee.ilike(f"%{keyword}%"),
+            )
+        )
+
     result = await session.execute(
-        select(Record)
-        .where(Record.book_id == book_id)
-        .order_by(Record.record_time.desc())
-        .limit(limit)
+        query.order_by(Record.record_time.desc()).limit(limit)
     )
     records = result.scalars().all()
     # Enrich with category/account names
@@ -253,11 +273,15 @@ async def records_summary(
     """月度收支汇总"""
     await _get_book(book_id, user, session)
 
-    start = datetime(year, month, 1)
-    if month == 12:
+    if month == 0:
+        start = datetime(year, 1, 1)
         end = datetime(year + 1, 1, 1)
     else:
-        end = datetime(year, month + 1, 1)
+        start = datetime(year, month, 1)
+        if month == 12:
+            end = datetime(year + 1, 1, 1)
+        else:
+            end = datetime(year, month + 1, 1)
 
     result = await session.execute(
         select(
@@ -295,11 +319,15 @@ async def daily_summary(
     """按日收支汇总（趋势图用）"""
     await _get_book(book_id, user, session)
 
-    start = datetime(year, month, 1)
-    if month == 12:
+    if month == 0:
+        start = datetime(year, 1, 1)
         end = datetime(year + 1, 1, 1)
     else:
-        end = datetime(year, month + 1, 1)
+        start = datetime(year, month, 1)
+        if month == 12:
+            end = datetime(year + 1, 1, 1)
+        else:
+            end = datetime(year, month + 1, 1)
 
     result = await session.execute(
         select(
@@ -342,11 +370,15 @@ async def category_summary(
     """按分类汇总（统计饼图用）"""
     await _get_book(book_id, user, session)
 
-    start = datetime(year, month, 1)
-    if month == 12:
+    if month == 0:
+        start = datetime(year, 1, 1)
         end = datetime(year + 1, 1, 1)
     else:
-        end = datetime(year, month + 1, 1)
+        start = datetime(year, month, 1)
+        if month == 12:
+            end = datetime(year + 1, 1, 1)
+        else:
+            end = datetime(year, month + 1, 1)
 
     result = await session.execute(
         select(

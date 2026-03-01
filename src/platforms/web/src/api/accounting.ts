@@ -76,8 +76,17 @@ export const createBook = (name: string) =>
     request.post<Book>('/accounting/books', { name })
 
 // ─── Records ────────────────────────────────────────────────────────
-export const getRecords = (bookId: number, limit: number = 50) =>
-    request.get<RecordItem[]>('/accounting/records', { params: { book_id: bookId, limit } })
+export const getRecords = (
+    bookId: number,
+    limit: number = 50,
+    keyword?: string,
+    start_date?: string,
+    end_date?: string,
+    type?: string
+) =>
+    request.get<RecordItem[]>('/accounting/records', {
+        params: { book_id: bookId, limit, keyword, start_date, end_date, type }
+    })
 
 export const createRecord = (bookId: number, data: {
     type: string
