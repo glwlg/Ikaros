@@ -6,7 +6,7 @@ import axios, { type AxiosInstance, type AxiosResponse, type InternalAxiosReques
 
 // 创建 axios 实例
 const request: AxiosInstance = axios.create({
-    baseURL: '/ops/api/v1',
+    baseURL: '/api/v1',
     timeout: 300000,
     headers: {
         'Content-Type': 'application/json',

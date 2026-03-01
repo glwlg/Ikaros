@@ -25,7 +25,7 @@ const router = createRouter({
 
 router.beforeEach(async (to, _from, next) => {
     // 设置标题
-    document.title = to.meta.title ? `${to.meta.title} - Template` : 'Template Project'
+    document.title = to.meta.title ? `${to.meta.title} - X-Bot` : 'X-Bot Accounting'
 
     // 公开页面直接放行
     if (to.meta.public) {
