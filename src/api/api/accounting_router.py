@@ -6,7 +6,7 @@ from typing import Optional
 import csv
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from api.core.database import get_async_session
 from api.auth.users import current_active_user
@@ -20,6 +20,7 @@ from api.models.accounting import (
     ScheduledTask,
     DebtOrReimbursement,
     StatsPanel,
+    OperationLog,
 )
 
 router = APIRouter()
@@ -140,6 +141,20 @@ class StatsPanelPayload(BaseModel):
 
 class StatsPanelsUpdate(BaseModel):
     panels: list[StatsPanelPayload]
+
+
+class OperationLogPayload(BaseModel):
+    id: str
+    created_at: str = ""
+    action: str
+    detail: str = ""
+    rollback: Optional[dict] = None
+    rolled_back: bool = False
+    rolled_back_at: Optional[str] = None
+
+
+class OperationLogRollbackMark(BaseModel):
+    rolled_back_at: Optional[str] = None
 
 
 # ─── Helper: verify book ownership ───────────────────────────────────
@@ -296,6 +311,62 @@ def _normalize_stats_panel_payload(payload: StatsPanelPayload, index: int) -> di
     }
 
 
+def _parse_iso_datetime(value: Optional[str], fallback: datetime) -> datetime:
+    if not value:
+        return fallback
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return fallback
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _serialize_operation_log(log: OperationLog) -> dict:
+    rollback = None
+    if log.rollback_json:
+        try:
+            payload = json.loads(log.rollback_json)
+            if isinstance(payload, dict):
+                rollback = payload
+        except json.JSONDecodeError:
+            rollback = None
+
+    return {
+        "id": log.log_id,
+        "created_at": log.created_at.isoformat() if log.created_at else "",
+        "action": log.action,
+        "detail": log.detail,
+        "rollback": rollback,
+        "rolled_back": bool(log.rolled_back),
+        "rolled_back_at": (
+            log.rolled_back_at.isoformat() if log.rolled_back_at else None
+        ),
+    }
+
+
+def _normalize_operation_log_payload(payload: OperationLogPayload) -> dict:
+    rollback_json = ""
+    if isinstance(payload.rollback, dict):
+        rollback_json = json.dumps(payload.rollback, ensure_ascii=False)
+
+    now = datetime.utcnow()
+    return {
+        "log_id": payload.id.strip()[:64],
+        "created_at": _parse_iso_datetime(payload.created_at, now),
+        "action": payload.action.strip()[:100],
+        "detail": payload.detail.strip()[:500],
+        "rollback_json": rollback_json,
+        "rolled_back": bool(payload.rolled_back),
+        "rolled_back_at": _parse_iso_datetime(payload.rolled_back_at, now)
+        if payload.rolled_back
+        else None,
+        "updated_at": now,
+    }
+
+
 # ─── Books CRUD ──────────────────────────────────────────────────────
 
 
@@ -428,6 +499,126 @@ async def replace_stats_panels(
     )
     panels = result.scalars().all()
     return [_serialize_stats_panel(panel) for panel in panels]
+
+
+@router.get("/operation-logs")
+async def list_operation_logs(
+    book_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    result = await session.execute(
+        select(OperationLog)
+        .where(
+            OperationLog.book_id == book_id,
+            OperationLog.owner_id == user.id,
+        )
+        .order_by(OperationLog.created_at.desc(), OperationLog.id.desc())
+    )
+    logs = result.scalars().all()
+    return [_serialize_operation_log(log) for log in logs]
+
+
+@router.post("/operation-logs")
+async def create_operation_log(
+    book_id: int,
+    data: OperationLogPayload,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    normalized = _normalize_operation_log_payload(data)
+    if not normalized["log_id"]:
+        raise HTTPException(status_code=422, detail="日志ID不能为空")
+    if not normalized["action"]:
+        raise HTTPException(status_code=422, detail="日志动作不能为空")
+
+    result = await session.execute(
+        select(OperationLog).where(
+            OperationLog.book_id == book_id,
+            OperationLog.owner_id == user.id,
+            OperationLog.log_id == normalized["log_id"],
+        )
+    )
+    existing = result.scalars().first()
+
+    if existing:
+        existing.action = normalized["action"]
+        existing.detail = normalized["detail"]
+        existing.rollback_json = normalized["rollback_json"]
+        existing.rolled_back = normalized["rolled_back"]
+        existing.rolled_back_at = normalized["rolled_back_at"]
+        existing.updated_at = normalized["updated_at"]
+        log = existing
+    else:
+        log = OperationLog(
+            log_id=normalized["log_id"],
+            book_id=book_id,
+            owner_id=user.id,
+            action=normalized["action"],
+            detail=normalized["detail"],
+            rollback_json=normalized["rollback_json"],
+            rolled_back=normalized["rolled_back"],
+            rolled_back_at=normalized["rolled_back_at"],
+            created_at=normalized["created_at"],
+            updated_at=normalized["updated_at"],
+        )
+        session.add(log)
+
+    await session.commit()
+    await session.refresh(log)
+    return _serialize_operation_log(log)
+
+
+@router.post("/operation-logs/{log_id}/rollback")
+async def mark_operation_log_rollback(
+    log_id: str,
+    book_id: int,
+    data: OperationLogRollbackMark,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    result = await session.execute(
+        select(OperationLog).where(
+            OperationLog.book_id == book_id,
+            OperationLog.owner_id == user.id,
+            OperationLog.log_id == log_id,
+        )
+    )
+    log = result.scalars().first()
+    if not log:
+        raise HTTPException(status_code=404, detail="日志不存在")
+
+    log.rolled_back = True
+    log.rolled_back_at = _parse_iso_datetime(data.rolled_back_at, datetime.utcnow())
+    log.updated_at = datetime.utcnow()
+
+    await session.commit()
+    await session.refresh(log)
+    return _serialize_operation_log(log)
+
+
+@router.delete("/operation-logs")
+async def clear_operation_logs(
+    book_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    await session.execute(
+        delete(OperationLog).where(
+            OperationLog.book_id == book_id,
+            OperationLog.owner_id == user.id,
+        )
+    )
+    await session.commit()
+    return {"message": "操作日志已清空"}
 
 
 # ─── Records CRUD ────────────────────────────────────────────────────

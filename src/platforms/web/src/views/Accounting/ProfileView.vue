@@ -46,14 +46,14 @@ const formatMoney = (n: number) =>
     new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const managementItems: ManagementItem[] = [
-    { icon: Grid2x2, label: '分类', color: 'bg-teal-500', action: 'category' },
-    { icon: ListOrdered, label: '项目', color: 'bg-teal-500', action: 'project' },
-    { icon: Store, label: '商家', color: 'bg-teal-500', action: 'merchant' },
-    { icon: Tag, label: '标签', color: 'bg-teal-500', action: 'tag' },
-    { icon: Download, label: '导入', color: 'bg-teal-500', action: 'import' },
-    { icon: Upload, label: '导出', color: 'bg-teal-500', action: 'export' },
-    { icon: Share2, label: '共享', color: 'bg-teal-500', action: 'share' },
-    { icon: BookOpen, label: '账本', color: 'bg-teal-500', action: 'book' },
+    { icon: Grid2x2, label: '分类', color: 'bg-indigo-500', action: 'category' },
+    { icon: ListOrdered, label: '项目', color: 'bg-indigo-500', action: 'project' },
+    { icon: Store, label: '商家', color: 'bg-indigo-500', action: 'merchant' },
+    { icon: Tag, label: '标签', color: 'bg-indigo-500', action: 'tag' },
+    { icon: Download, label: '导入', color: 'bg-indigo-500', action: 'import' },
+    { icon: Upload, label: '导出', color: 'bg-indigo-500', action: 'export' },
+    { icon: Share2, label: '共享', color: 'bg-indigo-500', action: 'share' },
+    { icon: BookOpen, label: '账本', color: 'bg-indigo-500', action: 'book' },
 ]
 
 const settingsItems: SettingsItem[] = [
@@ -207,7 +207,7 @@ onMounted(async () => {
 <template>
   <div class="pb-4">
     <!-- User Card -->
-    <div class="mx-4 mt-4 rounded-2xl bg-gradient-to-r from-teal-500 to-teal-400 dark:from-teal-700 dark:to-teal-600 p-5 text-white shadow-lg">
+    <div class="mx-4 mt-4 rounded-2xl bg-gradient-to-r from-indigo-500 to-indigo-400 dark:from-indigo-700 dark:to-indigo-600 p-5 text-white shadow-lg">
       <div class="flex items-center gap-4 mb-4">
         <div class="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center">
           <User class="w-8 h-8 text-white" />
@@ -235,7 +235,7 @@ onMounted(async () => {
 
     <!-- Management Grid -->
     <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
-      <p v-if="actionMessage" class="text-xs text-teal-600 mb-2 text-center">{{ actionMessage }}</p>
+      <p v-if="actionMessage" class="text-xs text-indigo-600 mb-2 text-center">{{ actionMessage }}</p>
       <div class="grid grid-cols-4 gap-4">
         <button
           v-for="item in managementItems"

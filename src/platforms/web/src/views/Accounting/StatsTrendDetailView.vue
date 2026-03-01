@@ -393,7 +393,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="h-screen flex flex-col bg-slate-100 dark:bg-slate-900 absolute inset-0 z-50">
-    <header class="bg-teal-500 dark:bg-teal-700 text-white shadow-sm relative z-10 safe-top">
+    <header class="bg-indigo-500 dark:bg-indigo-700 text-white shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-white/90">
           <ChevronLeft class="w-6 h-6" />
@@ -456,7 +456,7 @@ onBeforeUnmount(() => {
 
       <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-4 shadow-sm">
         <div class="flex items-baseline gap-2 mb-3">
-          <p class="text-4xl font-semibold" :class="statType === '支出' ? 'text-rose-500' : 'text-teal-500'">
+          <p class="text-4xl font-semibold" :class="statType === '支出' ? 'text-rose-500' : 'text-indigo-500'">
             <template v-if="panelMetric === 'count'">
               {{ totalAmount }}
             </template>
@@ -464,13 +464,13 @@ onBeforeUnmount(() => {
               {{ statType === '支出' ? '-' : '+' }}¥{{ formatMoney(totalAmount) }}
             </template>
           </p>
-          <p class="text-sm text-teal-500">{{ metricLabel }} · 总笔数 {{ totalCount }}</p>
+          <p class="text-sm text-indigo-500">{{ metricLabel }} · 总笔数 {{ totalCount }}</p>
         </div>
 
         <div class="relative">
           <div ref="chartRef" class="w-full h-[250px]"></div>
           <div v-if="loading" class="absolute inset-0 bg-white/40 dark:bg-slate-800/40 flex items-center justify-center rounded-xl">
-            <Loader2 class="w-5 h-5 animate-spin text-teal-400" />
+            <Loader2 class="w-5 h-5 animate-spin text-indigo-400" />
           </div>
         </div>
       </div>
@@ -482,13 +482,13 @@ onBeforeUnmount(() => {
           class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-4 shadow-sm flex items-center justify-between"
         >
           <div class="flex items-center gap-3">
-            <div class="w-3 h-3 rounded-full" :class="statType === '支出' ? 'bg-rose-400' : 'bg-teal-500'"></div>
+            <div class="w-3 h-3 rounded-full" :class="statType === '支出' ? 'bg-rose-400' : 'bg-indigo-500'"></div>
             <div>
               <p class="text-xl text-theme-primary">{{ formatPeriodLabel(row.period) }}</p>
               <p class="text-sm text-theme-muted">{{ row.ratio.toFixed(1) }}% · {{ row.count }}笔</p>
             </div>
           </div>
-          <p class="text-4xl font-semibold" :class="statType === '支出' ? 'text-rose-500' : 'text-teal-500'">
+          <p class="text-4xl font-semibold" :class="statType === '支出' ? 'text-rose-500' : 'text-indigo-500'">
             <template v-if="panelMetric === 'count'">
               {{ row.amount }}
             </template>

@@ -37,11 +37,11 @@ const isSubPage = computed(() => [
 </script>
 
 <template>
-  <div class="flex flex-col h-full bg-gradient-to-b from-teal-50/50 to-white dark:from-slate-900 dark:to-slate-950">
+  <div class="flex flex-col h-full bg-gradient-to-b from-indigo-50/50 to-white dark:from-slate-900 dark:to-slate-950">
     <!-- Top bar with back button (hidden on sub-pages) -->
     <div
       v-if="!isSubPage"
-      class="sticky top-0 z-20 bg-gradient-to-r from-teal-500 to-teal-400 dark:from-teal-700 dark:to-teal-600 px-4 py-3 flex items-center gap-3 shadow-sm"
+      class="sticky top-0 z-20 bg-gradient-to-r from-indigo-500 to-indigo-400 dark:from-indigo-700 dark:to-indigo-600 px-4 py-3 flex items-center gap-3 shadow-sm"
     >
       <RouterLink
         v-if="!isPWA"
@@ -70,14 +70,14 @@ const isSubPage = computed(() => [
         :to="tab.path"
         class="flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors"
         :class="isActiveTab(tab.path)
-          ? 'text-teal-500 dark:text-teal-400'
+          ? 'text-indigo-500 dark:text-indigo-400'
           : 'text-gray-400 dark:text-slate-500 hover:text-gray-600 dark:hover:text-slate-400'"
       >
         <component :is="tab.icon" class="w-5 h-5" />
         <span class="text-[10px] font-medium">{{ tab.label }}</span>
         <div
           v-if="isActiveTab(tab.path)"
-          class="absolute bottom-0 w-8 h-0.5 rounded-full bg-teal-500 dark:bg-teal-400"
+          class="absolute bottom-0 w-8 h-0.5 rounded-full bg-indigo-500 dark:bg-indigo-400"
         />
       </RouterLink>
     </nav>

@@ -47,7 +47,7 @@ const formatMoney = (n: number) =>
 
 const totalAmount = computed(() => categoryData.value.reduce((sum, item) => sum + item.amount, 0))
 
-const tealColors = [
+const indigoColors = [
     '#14b8a6', '#06b6d4', '#0ea5e9', '#6366f1', '#8b5cf6',
     '#d946ef', '#f43f5e', '#f97316', '#eab308', '#22c55e',
 ]
@@ -59,7 +59,7 @@ const renderChart = () => {
     const data = categoryData.value.map((item, index) => ({
         name: item.category,
         value: item.amount,
-        itemStyle: { color: tealColors[index % tealColors.length] },
+        itemStyle: { color: indigoColors[index % indigoColors.length] },
     }))
 
     chart.setOption({
@@ -249,11 +249,11 @@ onBeforeUnmount(() => {
         <div class="flex gap-2">
           <button
             @click="statType = '支出'"
-            :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '支出' ? 'bg-teal-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
+            :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '支出' ? 'bg-indigo-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
           >支出</button>
           <button
             @click="statType = '收入'"
-            :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '收入' ? 'bg-teal-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
+            :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '收入' ? 'bg-indigo-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
           >收入</button>
         </div>
 
@@ -262,13 +262,13 @@ onBeforeUnmount(() => {
         <div class="relative">
           <div ref="chartRef" class="w-full h-[260px]"></div>
           <div v-if="loading" class="absolute inset-0 bg-white/40 dark:bg-slate-800/40 flex items-center justify-center rounded-xl">
-            <Loader2 class="w-5 h-5 animate-spin text-teal-400" />
+            <Loader2 class="w-5 h-5 animate-spin text-indigo-400" />
           </div>
         </div>
 
         <ul class="space-y-2">
           <li v-for="(cat, i) in categoryData" :key="cat.category" class="flex items-center gap-3">
-            <div :style="{ backgroundColor: tealColors[i % tealColors.length] }" class="w-3 h-3 rounded-full flex-shrink-0" />
+            <div :style="{ backgroundColor: indigoColors[i % indigoColors.length] }" class="w-3 h-3 rounded-full flex-shrink-0" />
             <span class="flex-1 text-sm text-theme-primary">{{ cat.category }}</span>
             <span class="text-sm font-medium text-theme-primary">¥{{ formatMoney(cat.amount) }}</span>
           </li>

@@ -35,10 +35,21 @@ const rangePreset = ref<RangePreset>('last_12_months')
 const customRange = ref(createDefaultCustomRangeState(now))
 const showRangeDialog = ref(false)
 const statsPanels = ref<StatsPanelConfig[]>([])
+const pageRef = ref<HTMLElement | null>(null)
+const refreshing = ref(false)
+const pullStartY = ref<number | null>(null)
+const pullDistance = ref(0)
+const isPulling = ref(false)
+const pullThreshold = 72
 
 const timeWindow = computed(() => getRangeWindow(rangePreset.value, customRange.value, now))
 const timeLabel = computed(() => timeWindow.value.label)
 const isCustomRange = computed(() => isCustomPreset(rangePreset.value))
+
+const pullHint = computed(() => {
+    if (refreshing.value) return '刷新中...'
+    return pullDistance.value >= pullThreshold ? '松开刷新' : '下拉刷新'
+})
 
 const enabledPanels = computed(() => {
     return statsPanels.value
@@ -153,7 +164,7 @@ const metricLabels: Record<string, string> = {
     count: '数量',
 }
 
-const tealColors = [
+const indigoColors = [
     '#14b8a6', '#06b6d4', '#0ea5e9', '#6366f1', '#8b5cf6',
     '#d946ef', '#f43f5e', '#f97316', '#eab308', '#22c55e',
 ]
@@ -172,7 +183,7 @@ const renderPie = () => {
     const data = categoryData.value.map((item, index) => ({
         name: item.category,
         value: item.amount,
-        itemStyle: { color: tealColors[index % tealColors.length] },
+        itemStyle: { color: indigoColors[index % indigoColors.length] },
     }))
 
     pieChart.setOption({
@@ -449,6 +460,73 @@ const goPanelManager = () => {
     router.push({ name: 'StatsPanelManage' })
 }
 
+const getScrollParent = () => {
+    let node: HTMLElement | null = pageRef.value?.parentElement || null
+    while (node) {
+        const style = window.getComputedStyle(node)
+        const scrollable = /(auto|scroll)/.test(style.overflowY)
+        if (scrollable && node.scrollHeight > node.clientHeight) {
+            return node
+        }
+        node = node.parentElement
+    }
+    return null
+}
+
+const resetPull = () => {
+    pullDistance.value = 0
+    pullStartY.value = null
+    isPulling.value = false
+}
+
+const triggerRefresh = async () => {
+    if (refreshing.value) return
+    refreshing.value = true
+    try {
+        if (!store.currentBookId) {
+            await store.fetchBooks()
+        }
+        await reloadPanels()
+        await loadData()
+        await loadPanelPreviews()
+    } finally {
+        refreshing.value = false
+        resetPull()
+    }
+}
+
+const handleTouchStart = (event: TouchEvent) => {
+    if (refreshing.value) return
+    const scrollParent = getScrollParent()
+    if (scrollParent && scrollParent.scrollTop > 0) return
+    pullStartY.value = event.touches[0]?.clientY ?? null
+    isPulling.value = true
+}
+
+const handleTouchMove = (event: TouchEvent) => {
+    if (!isPulling.value || pullStartY.value === null) return
+    const currentY = event.touches[0]?.clientY ?? pullStartY.value
+    const delta = currentY - pullStartY.value
+    if (delta <= 0) {
+        pullDistance.value = 0
+        return
+    }
+
+    pullDistance.value = Math.min(120, delta * 0.5)
+    if (pullDistance.value > 0) {
+        event.preventDefault()
+    }
+}
+
+const handleTouchEnd = () => {
+    if (!isPulling.value) return
+    if (pullDistance.value >= pullThreshold) {
+        void triggerRefresh()
+        return
+    }
+    resetPull()
+}
+
 watch([statType, rangePreset], () => {
     loadData()
 })
@@ -512,7 +590,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div
+    ref="pageRef"
+    class="pb-4"
+    @touchstart="handleTouchStart"
+    @touchmove="handleTouchMove"
+    @touchend="handleTouchEnd"
+    @touchcancel="handleTouchEnd"
+  >
+    <div class="overflow-hidden transition-[height] duration-150" :style="{ height: `${Math.round(pullDistance)}px` }">
+      <div class="h-full flex items-end justify-center pb-2 text-xs text-slate-500 gap-1">
+        <Loader2 v-if="refreshing" class="w-3 h-3 animate-spin" />
+        <span>{{ pullHint }}</span>
+      </div>
+    </div>
+
     <div class="px-4 py-2">
       <button
         @click="showRangeDialog = true"
@@ -578,7 +670,7 @@ onBeforeUnmount(() => {
         <div class="flex items-center justify-between mb-1">
           <h3 class="font-bold text-theme-primary">{{ panel.name }}</h3>
           <button type="button" @click="openPanelDetail(panel)" class="p-1 rounded hover:bg-gray-100 dark:hover:bg-slate-700">
-            <ChevronRight class="w-4 h-4 text-teal-500" />
+            <ChevronRight class="w-4 h-4 text-indigo-500" />
           </button>
         </div>
 
@@ -590,18 +682,18 @@ onBeforeUnmount(() => {
           <div class="flex gap-2 mb-3">
             <button
               @click="statType = '支出'"
-              :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '支出' ? 'bg-teal-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
+              :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '支出' ? 'bg-indigo-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
             >支出</button>
             <button
               @click="statType = '收入'"
-              :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '收入' ? 'bg-teal-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
+              :class="['px-3 py-1 rounded-full text-xs font-medium transition', statType === '收入' ? 'bg-indigo-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-theme-secondary']"
             >收入</button>
           </div>
 
           <div class="relative">
             <div ref="pieRef" class="w-full h-[220px] pointer-events-none"></div>
             <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-white/30 dark:bg-slate-800/30 rounded-xl">
-              <Loader2 class="w-5 h-5 animate-spin text-teal-400" />
+              <Loader2 class="w-5 h-5 animate-spin text-indigo-400" />
             </div>
           </div>
         </template>
@@ -612,7 +704,7 @@ onBeforeUnmount(() => {
           <div class="relative">
             <div ref="barRef" class="w-full h-[220px] pointer-events-none"></div>
             <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-white/30 dark:bg-slate-800/30 rounded-xl">
-              <Loader2 class="w-5 h-5 animate-spin text-teal-400" />
+              <Loader2 class="w-5 h-5 animate-spin text-indigo-400" />
             </div>
           </div>
         </template>
@@ -655,7 +747,7 @@ onBeforeUnmount(() => {
         <p class="text-sm font-semibold text-theme-primary">管理统计面板</p>
         <p class="text-xs text-theme-muted mt-1">预设模板与自定义统计</p>
       </div>
-      <ChevronRight class="w-4 h-4 text-teal-500" />
+      <ChevronRight class="w-4 h-4 text-indigo-500" />
     </button>
 
     <div
@@ -675,7 +767,7 @@ onBeforeUnmount(() => {
             class="w-full text-left px-5 py-4 border-b border-gray-100 dark:border-slate-700/60 last:border-b-0 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-slate-700/40"
           >
             <span class="text-xl text-theme-primary">{{ option.label }}</span>
-            <span v-if="rangePreset === option.key" class="text-xs font-medium text-teal-500">当前</span>
+            <span v-if="rangePreset === option.key" class="text-xs font-medium text-indigo-500">当前</span>
           </button>
         </div>
       </div>

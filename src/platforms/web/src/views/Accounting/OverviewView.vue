@@ -24,6 +24,12 @@ const currentBudget = ref<Budget | null>(null)
 const loading = ref(false)
 const showAddDialog = ref(false)
 const showBookDropdown = ref(false)
+const pageRef = ref<HTMLElement | null>(null)
+const refreshing = ref(false)
+const pullStartY = ref<number | null>(null)
+const pullDistance = ref(0)
+const isPulling = ref(false)
+const pullThreshold = 72
 
 // Create book
 const showCreateBook = ref(false)
@@ -34,6 +40,11 @@ const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
 
 const monthLabel = computed(() => `${currentMonth.value}月`)
+
+const pullHint = computed(() => {
+    if (refreshing.value) return '刷新中...'
+    return pullDistance.value >= pullThreshold ? '松开刷新' : '下拉刷新'
+})
 
 const formatMoney = (n: number) =>
     new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
@@ -145,6 +156,71 @@ const onRecordAdded = () => {
     loadData()
 }
 
+const getScrollParent = () => {
+    let node: HTMLElement | null = pageRef.value?.parentElement || null
+    while (node) {
+        const style = window.getComputedStyle(node)
+        const scrollable = /(auto|scroll)/.test(style.overflowY)
+        if (scrollable && node.scrollHeight > node.clientHeight) {
+            return node
+        }
+        node = node.parentElement
+    }
+    return null
+}
+
+const resetPull = () => {
+    pullDistance.value = 0
+    pullStartY.value = null
+    isPulling.value = false
+}
+
+const triggerRefresh = async () => {
+    if (refreshing.value) return
+    refreshing.value = true
+    try {
+        if (!store.currentBookId) {
+            await store.fetchBooks()
+        }
+        await loadData()
+    } finally {
+        refreshing.value = false
+        resetPull()
+    }
+}
+
+const handleTouchStart = (event: TouchEvent) => {
+    if (refreshing.value) return
+    const scrollParent = getScrollParent()
+    if (scrollParent && scrollParent.scrollTop > 0) return
+    pullStartY.value = event.touches[0]?.clientY ?? null
+    isPulling.value = true
+}
+
+const handleTouchMove = (event: TouchEvent) => {
+    if (!isPulling.value || pullStartY.value === null) return
+    const currentY = event.touches[0]?.clientY ?? pullStartY.value
+    const delta = currentY - pullStartY.value
+    if (delta <= 0) {
+        pullDistance.value = 0
+        return
+    }
+
+    pullDistance.value = Math.min(120, delta * 0.5)
+    if (pullDistance.value > 0) {
+        event.preventDefault()
+    }
+}
+
+const handleTouchEnd = () => {
+    if (!isPulling.value) return
+    if (pullDistance.value >= pullThreshold) {
+        void triggerRefresh()
+        return
+    }
+    resetPull()
+}
+
 watch(() => store.currentBookId, () => {
     if (store.currentBookId) loadData()
 })
@@ -158,7 +234,21 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="pb-20">
+  <div
+    ref="pageRef"
+    class="pb-20"
+    @touchstart="handleTouchStart"
+    @touchmove="handleTouchMove"
+    @touchend="handleTouchEnd"
+    @touchcancel="handleTouchEnd"
+  >
+    <div class="overflow-hidden transition-[height] duration-150" :style="{ height: `${Math.round(pullDistance)}px` }">
+      <div class="h-full flex items-end justify-center pb-2 text-xs text-slate-500 gap-1">
+        <Loader2 v-if="refreshing" class="w-3 h-3 animate-spin" />
+        <span>{{ pullHint }}</span>
+      </div>
+    </div>
+
     <!-- Book Selector -->
     <div class="px-4 pt-4 pb-2 flex items-center justify-between">
       <div class="relative">
@@ -182,7 +272,7 @@ onMounted(async () => {
             :class="[
               'w-full text-left px-4 py-2 text-sm transition',
               book.id === store.currentBookId
-                ? 'bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 font-medium'
+                ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 font-medium'
                 : 'text-theme-primary hover:bg-gray-50 dark:hover:bg-slate-700'
             ]"
           >
@@ -191,7 +281,7 @@ onMounted(async () => {
           <div class="border-t border-gray-100 dark:border-slate-700 mt-1 pt-1">
             <button
               @click="showCreateBook = true; showBookDropdown = false"
-              class="w-full text-left px-4 py-2 text-sm text-teal-500 hover:bg-teal-50 dark:hover:bg-teal-900/20 flex items-center gap-2"
+              class="w-full text-left px-4 py-2 text-sm text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 flex items-center gap-2"
             >
               <Plus class="w-3.5 h-3.5" /> 新建账本
             </button>
@@ -202,14 +292,14 @@ onMounted(async () => {
 
     <!-- Create Book Prompt (when no books) -->
     <div v-if="store.books.length === 0 && !store.loading" class="px-4 py-12 text-center">
-      <div class="w-20 h-20 mx-auto mb-4 rounded-full bg-teal-50 dark:bg-teal-900/30 flex items-center justify-center">
-        <Plus class="w-8 h-8 text-teal-500" />
+      <div class="w-20 h-20 mx-auto mb-4 rounded-full bg-indigo-50 dark:bg-indigo-900/30 flex items-center justify-center">
+        <Plus class="w-8 h-8 text-indigo-500" />
       </div>
       <h3 class="text-lg font-semibold text-theme-primary mb-2">还没有账本</h3>
       <p class="text-theme-muted text-sm mb-4">创建一个账本开始记账吧</p>
       <button
         @click="showCreateBook = true"
-        class="px-6 py-2.5 bg-teal-500 hover:bg-teal-600 text-white font-medium rounded-xl transition shadow-sm"
+        class="px-6 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition shadow-sm"
       >
         创建第一个账本
       </button>
@@ -228,7 +318,7 @@ onMounted(async () => {
             v-model="newBookName"
             type="text"
             placeholder="输入账本名称…"
-            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-teal-500 mb-4"
+            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
             autofocus
           />
           <div class="flex gap-3">
@@ -242,7 +332,7 @@ onMounted(async () => {
             <button
               type="submit"
               :disabled="creatingBook || !newBookName.trim()"
-              class="flex-1 py-2.5 bg-teal-500 hover:bg-teal-600 text-white font-medium rounded-xl transition disabled:opacity-50"
+              class="flex-1 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50"
             >
               <Loader2 v-if="creatingBook" class="w-4 h-4 animate-spin mx-auto" />
               <span v-else>创建</span>
@@ -259,7 +349,7 @@ onMounted(async () => {
         <div class="p-4">
           <RouterLink to="/accounting/stats" class="flex items-center justify-between mb-2 cursor-pointer hover:opacity-80 transition">
             <span class="text-sm text-theme-muted">{{ monthLabel }}支出</span>
-            <ChevronRight class="w-4 h-4 text-teal-500" />
+            <ChevronRight class="w-4 h-4 text-indigo-500" />
           </RouterLink>
           <div class="flex items-baseline justify-between">
             <div>
@@ -276,11 +366,11 @@ onMounted(async () => {
       <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700">
         <RouterLink to="/accounting/records" class="flex items-center justify-between p-4 pb-2 cursor-pointer hover:opacity-80 transition">
           <h3 class="font-semibold text-theme-primary">最近交易</h3>
-          <ChevronRight class="w-4 h-4 text-teal-500" />
+          <ChevronRight class="w-4 h-4 text-indigo-500" />
         </RouterLink>
 
         <div v-if="loading" class="p-8 text-center text-theme-muted">
-          <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-teal-400" />
+          <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
           加载中...
         </div>
 
@@ -293,7 +383,7 @@ onMounted(async () => {
             <RouterLink :to="`/accounting/records/${rec.id}`" class="flex items-start justify-between hover:opacity-80 transition">
               <!-- Left -->
               <div class="flex items-start gap-3">
-                <div class="w-2 h-2 mt-2 rounded-full bg-teal-400 flex-shrink-0" />
+                <div class="w-2 h-2 mt-2 rounded-full bg-indigo-400 flex-shrink-0" />
                 <div>
                   <p class="font-medium text-theme-primary text-sm">{{ rec.category || rec.payee || rec.remark || '未分类' }}</p>
                   <p class="text-xs text-theme-muted mt-0.5">
@@ -306,7 +396,7 @@ onMounted(async () => {
               <div class="text-right flex-shrink-0">
                 <p :class="[
                   'font-semibold text-sm',
-                  rec.type === '收入' ? 'text-teal-500' : 'text-theme-primary'
+                  rec.type === '收入' ? 'text-indigo-500' : 'text-theme-primary'
                 ]">
                   {{ rec.type === '收入' ? '+' : '' }}¥{{ formatMoney(rec.amount) }}
                 </p>
@@ -322,7 +412,7 @@ onMounted(async () => {
       <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
         <RouterLink to="/accounting/budgets" class="flex items-center justify-between mb-4 cursor-pointer hover:opacity-80 transition">
           <h3 class="font-semibold text-theme-primary">{{ monthLabel }}预算</h3>
-          <ChevronRight class="w-4 h-4 text-teal-500" />
+          <ChevronRight class="w-4 h-4 text-indigo-500" />
         </RouterLink>
         <div class="flex items-center justify-around">
           <div class="text-center">
@@ -331,7 +421,7 @@ onMounted(async () => {
           </div>
           <!-- Ring -->
           <RouterLink to="/accounting/budgets" class="w-24 h-24 rounded-full border-[8px] flex items-center justify-center relative cursor-pointer hover:opacity-80 transition"
-            :class="[(summary.expense / (currentBudget?.total_amount || 1)) > 0.9 ? 'border-rose-400' : (currentBudget ? 'border-teal-400' : 'border-gray-100 dark:border-slate-700')]">
+            :class="[(summary.expense / (currentBudget?.total_amount || 1)) > 0.9 ? 'border-rose-400' : (currentBudget ? 'border-indigo-400' : 'border-gray-100 dark:border-slate-700')]">
             <div class="text-center">
               <p class="text-[10px] text-theme-muted">剩余</p>
               <p :class="['text-sm font-bold', currentBudget ? ((currentBudget.total_amount - summary.expense) < 0 ? 'text-rose-500' : 'text-theme-primary') : 'text-theme-primary']">
@@ -354,7 +444,7 @@ onMounted(async () => {
     <button
       v-if="store.currentBookId"
       @click="showAddDialog = true"
-      class="fixed bottom-20 right-6 w-14 h-14 rounded-full bg-teal-500 hover:bg-teal-600 text-white shadow-lg hover:shadow-xl flex items-center justify-center transition-all z-30 active:scale-95"
+      class="fixed bottom-20 right-6 w-14 h-14 rounded-full bg-indigo-500 hover:bg-indigo-600 text-white shadow-lg hover:shadow-xl flex items-center justify-center transition-all z-30 active:scale-95"
     >
       <Plus class="w-7 h-7" />
     </button>

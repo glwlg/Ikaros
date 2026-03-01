@@ -169,7 +169,7 @@ onMounted(async () => {
     </div>
 
     <div v-if="loading" class="p-12 text-center text-theme-muted">
-      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-teal-400" />
+      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
       加载中...
     </div>
 
@@ -183,7 +183,7 @@ onMounted(async () => {
               <span class="text-xl">¥</span>{{ formatMoney(remainingBudget) }}
             </div>
           </div>
-          <button @click="showEditDialog = true; inputAmount = globalBudgetAmount || ''" class="flex flex-col items-center justify-center w-10 h-10 rounded-full bg-teal-50 dark:bg-teal-900/30 text-teal-500 hover:bg-teal-100 dark:hover:bg-teal-900/50 transition">
+          <button @click="showEditDialog = true; inputAmount = globalBudgetAmount || ''" class="flex flex-col items-center justify-center w-10 h-10 rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-500 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition">
             <Target class="w-5 h-5" />
           </button>
         </div>
@@ -193,7 +193,7 @@ onMounted(async () => {
           <div class="w-full h-3 bg-gray-100 dark:bg-slate-700 rounded-full overflow-hidden">
             <div 
               class="h-full rounded-full transition-all duration-500"
-              :class="budgetPercentage > 90 ? 'bg-rose-500' : 'bg-teal-500'"
+              :class="budgetPercentage > 90 ? 'bg-rose-500' : 'bg-indigo-500'"
               :style="{ width: `${budgetPercentage}%` }"
             ></div>
           </div>
@@ -205,7 +205,7 @@ onMounted(async () => {
         </div>
         
         <!-- Decoration -->
-        <div class="absolute -right-10 -bottom-10 w-32 h-32 bg-teal-500/5 rounded-full blur-2xl z-0"></div>
+        <div class="absolute -right-10 -bottom-10 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl z-0"></div>
       </div>
 
       <p v-if="globalBudgetAmount === 0" class="text-center text-theme-muted text-sm mt-10">
@@ -216,14 +216,14 @@ onMounted(async () => {
       <div class="mx-4 mt-8">
         <div class="flex justify-between items-center mb-4 px-2">
             <h3 class="font-bold text-theme-primary text-sm">分类预算</h3>
-            <button @click="openCategoryAdd" class="flex gap-1 items-center bg-teal-50 dark:bg-teal-900/40 text-teal-600 dark:text-teal-400 px-3 py-1.5 rounded-full text-xs font-semibold hover:bg-teal-100 dark:hover:bg-teal-900/60 transition"><Plus class="w-3.5 h-3.5" /> 添加</button>
+            <button @click="openCategoryAdd" class="flex gap-1 items-center bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 px-3 py-1.5 rounded-full text-xs font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition"><Plus class="w-3.5 h-3.5" /> 添加</button>
         </div>
         
         <div class="space-y-4">
             <div 
                 v-for="b in categoryBudgets" 
                 :key="b.id"
-                class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-slate-700 hover:border-teal-100 dark:hover:border-teal-900/50 transition cursor-pointer group"
+                class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-slate-700 hover:border-indigo-100 dark:hover:border-indigo-900/50 transition cursor-pointer group"
                 @click="openCategoryEdit(b)"
             >
                 <div class="flex items-center gap-3">
@@ -233,13 +233,13 @@ onMounted(async () => {
                     <div class="flex-1">
                         <div class="flex justify-between items-end mb-1">
                             <h4 class="font-bold text-theme-primary text-sm">{{ b.category_name }}</h4>
-                            <div class="text-xs font-medium" :class="getCategoryPercent(getCategorySpent(b.category_name), b.total_amount) > 90 ? 'text-rose-500' : 'text-teal-500'">
+                            <div class="text-xs font-medium" :class="getCategoryPercent(getCategorySpent(b.category_name), b.total_amount) > 90 ? 'text-rose-500' : 'text-indigo-500'">
                                 ¥{{ getCategorySpent(b.category_name) }} / ¥{{ b.total_amount }}
                             </div>
                         </div>
                         <div class="w-full h-1.5 bg-gray-100 dark:bg-slate-700 rounded-full overflow-hidden">
                             <div class="h-full rounded-full transition-all duration-500"
-                                 :class="getCategoryPercent(getCategorySpent(b.category_name), b.total_amount) > 90 ? 'bg-rose-500' : 'bg-teal-500'"
+                                 :class="getCategoryPercent(getCategorySpent(b.category_name), b.total_amount) > 90 ? 'bg-rose-500' : 'bg-indigo-500'"
                                  :style="{ width: `${getCategoryPercent(getCategorySpent(b.category_name), b.total_amount)}%` }">
                             </div>
                         </div>
@@ -258,7 +258,7 @@ onMounted(async () => {
       <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[320px] shadow-xl animate-in fade-in zoom-in-95 duration-200">
         <h3 class="text-lg font-semibold text-theme-primary mb-4">{{ inputCategoryId ? '修改' : '设置' }}分类预算</h3>
         <!-- Category Selector -->
-        <select v-model="inputCategoryId" class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-teal-500 mb-3 appearance-none">
+        <select v-model="inputCategoryId" class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-3 appearance-none">
             <option value="" disabled>选择支出分类</option>
             <option v-for="cat in allCategories" :key="cat.id" :value="cat.id">{{ cat.name }}</option>
         </select>
@@ -266,11 +266,11 @@ onMounted(async () => {
             v-model.number="inputCategoryAmount"
             type="number"
             placeholder="预算金额(¥)，设为0即删除"
-            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-teal-500 mb-4"
+            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
         />
         <div class="flex gap-3">
           <button @click="showCategoryDialog = false" type="button" class="flex-1 py-2.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-medium">取消</button>
-          <button @click="handleSaveCategoryBudget" :disabled="saving || !inputCategoryId || inputCategoryAmount === ''" type="button" class="flex-1 py-2.5 bg-teal-500 text-white font-medium rounded-xl shadow-lg shadow-teal-500/30 disabled:opacity-50">
+          <button @click="handleSaveCategoryBudget" :disabled="saving || !inputCategoryId || inputCategoryAmount === ''" type="button" class="flex-1 py-2.5 bg-indigo-500 text-white font-medium rounded-xl shadow-lg shadow-indigo-500/30 disabled:opacity-50">
             <Loader2 v-if="saving" class="w-4 h-4 animate-spin mx-auto" />
             <span v-else>保存</span>
           </button>
@@ -286,12 +286,12 @@ onMounted(async () => {
             v-model.number="inputAmount"
             type="number"
             placeholder="输入预算金额(¥)"
-            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-teal-500 mb-4"
+            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
             autofocus
         />
         <div class="flex gap-3">
           <button @click="showEditDialog = false" type="button" class="flex-1 py-2.5 border border-gray-200 dark:border-slate-600 rounded-xl text-theme-secondary font-medium hover:bg-gray-50 dark:hover:bg-slate-700 transition">取消</button>
-          <button @click="handleSaveBudget" :disabled="saving || !inputAmount" type="button" class="flex-1 py-2.5 bg-teal-500 hover:bg-teal-600 text-white font-medium rounded-xl transition disabled:opacity-50">
+          <button @click="handleSaveBudget" :disabled="saving || !inputAmount" type="button" class="flex-1 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50">
             <Loader2 v-if="saving" class="w-4 h-4 animate-spin mx-auto" />
             <span v-else>保存</span>
           </button>

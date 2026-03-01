@@ -229,7 +229,7 @@ onMounted(() => {
         <button
           @click="handleSave"
           :disabled="saving || deleting || loading || loadFailed"
-          class="px-3 py-1.5 rounded-lg bg-teal-500 text-white text-sm font-medium disabled:opacity-50"
+          class="px-3 py-1.5 rounded-lg bg-indigo-500 text-white text-sm font-medium disabled:opacity-50"
         >
           <Loader2 v-if="saving" class="w-4 h-4 animate-spin" />
           <span v-else>保存</span>
@@ -239,7 +239,7 @@ onMounted(() => {
 
     <main class="flex-1 overflow-y-auto p-4 safe-bottom">
       <div v-if="loading" class="flex justify-center py-10">
-        <Loader2 class="w-6 h-6 animate-spin text-teal-500" />
+        <Loader2 class="w-6 h-6 animate-spin text-indigo-500" />
       </div>
 
       <div v-else-if="loadFailed" class="bg-white dark:bg-slate-800 rounded-2xl p-6 text-center text-sm text-slate-500">
@@ -257,7 +257,7 @@ onMounted(() => {
               :class="[
                 'py-2 rounded-lg text-sm font-medium transition',
                 form.type === tab
-                  ? 'bg-teal-500 text-white'
+                  ? 'bg-indigo-500 text-white'
                   : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
               ]"
             >
@@ -274,7 +274,7 @@ onMounted(() => {
               type="number"
               step="0.01"
               min="0"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
+              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
             />
           </div>
 
@@ -316,7 +316,7 @@ onMounted(() => {
               v-model="form.payee"
               type="text"
               placeholder="例如：超市、公司、朋友"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
+              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
             />
           </div>
 
@@ -326,7 +326,7 @@ onMounted(() => {
               v-model="form.remark"
               rows="3"
               placeholder="可选备注"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
+              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
             />
           </div>
 
@@ -335,7 +335,7 @@ onMounted(() => {
             <input
               v-model="form.record_time"
               type="datetime-local"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
+              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
             />
           </div>
         </div>
@@ -343,7 +343,7 @@ onMounted(() => {
         <button
           @click="handleSave"
           :disabled="saving || deleting || loadFailed"
-          class="w-full py-3 bg-teal-500 hover:bg-teal-600 text-white rounded-xl font-medium shadow-lg shadow-teal-500/30 disabled:opacity-50"
+          class="w-full py-3 bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl font-medium shadow-lg shadow-indigo-500/30 disabled:opacity-50"
         >
           <Loader2 v-if="saving" class="w-4 h-4 animate-spin mx-auto" />
           <span v-else>保存修改</span>

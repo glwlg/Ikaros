@@ -237,7 +237,7 @@ onMounted(loadData)
 <template>
   <div class="pb-4">
     <!-- Custom Header (override AccountingLayout) -->
-    <div class="sticky top-0 z-20 bg-gradient-to-r from-teal-500 to-teal-400 px-4 py-3 flex items-center justify-between shadow-sm">
+    <div class="sticky top-0 z-20 bg-gradient-to-r from-indigo-500 to-indigo-400 px-4 py-3 flex items-center justify-between shadow-sm">
       <button @click="router.push('/accounting/assets')" class="flex items-center gap-1.5 text-white/90 hover:text-white transition">
         <ArrowLeft class="w-4 h-4" />
         <span class="font-semibold">{{ account?.name || '账户详情' }}</span>
@@ -249,7 +249,7 @@ onMounted(loadData)
 
     <!-- Loading -->
     <div v-if="loading && !account" class="p-12 text-center">
-      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-teal-400" />
+      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
     </div>
 
     <template v-if="account">
@@ -259,7 +259,7 @@ onMounted(loadData)
           <span class="text-sm text-theme-muted">当前余额</span>
         </div>
         <div class="flex items-center gap-3">
-          <span :class="['text-3xl font-bold', account.balance >= 0 ? 'text-teal-500' : 'text-rose-500']">
+          <span :class="['text-3xl font-bold', account.balance >= 0 ? 'text-indigo-500' : 'text-rose-500']">
             ¥{{ formatMoney(account.balance) }}
           </span>
           <button @click="openAdjust" class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700 transition">
@@ -274,7 +274,7 @@ onMounted(loadData)
         <div class="flex items-center justify-between mb-2">
           <h3 class="font-semibold text-theme-primary">余额趋势</h3>
           <div class="flex gap-1 text-xs">
-            <span class="px-2 py-0.5 rounded bg-teal-50 dark:bg-teal-900/30 text-teal-500 font-medium">日</span>
+            <span class="px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-900/30 text-indigo-500 font-medium">日</span>
             <span class="px-2 py-0.5 rounded text-theme-muted">月</span>
           </div>
         </div>
@@ -294,14 +294,14 @@ onMounted(loadData)
           <li v-for="rec in records" :key="rec.id" class="px-4 py-3">
             <RouterLink :to="`/accounting/records/${rec.id}`" class="flex items-center justify-between hover:opacity-80 transition">
               <div class="flex items-center gap-3">
-                <div class="w-2 h-2 rounded-full bg-teal-400 flex-shrink-0" />
+                <div class="w-2 h-2 rounded-full bg-indigo-400 flex-shrink-0" />
                 <div>
                   <p class="font-medium text-theme-primary text-sm">{{ rec.category || rec.remark || '余额变更' }}</p>
                   <p class="text-xs text-theme-muted">{{ formatDate(rec.record_time) }}</p>
                 </div>
               </div>
               <div class="text-right">
-                <span :class="['font-semibold text-sm', rec.type === '收入' ? 'text-teal-500' : 'text-rose-500']">
+                <span :class="['font-semibold text-sm', rec.type === '收入' ? 'text-indigo-500' : 'text-rose-500']">
                   {{ rec.type === '收入' ? '+' : '-' }}¥{{ formatMoney(rec.amount) }}
                 </span>
               </div>
@@ -309,7 +309,7 @@ onMounted(loadData)
           </li>
         </ul>
 
-        <button class="w-full p-3 text-sm text-teal-500 font-medium border-t border-gray-50 dark:border-slate-700/50">
+        <button class="w-full p-3 text-sm text-indigo-500 font-medium border-t border-gray-50 dark:border-slate-700/50">
           所有交易
         </button>
       </div>
@@ -323,7 +323,7 @@ onMounted(loadData)
           </span>
           <div
             @click="handleToggleAssets"
-            :class="['w-12 h-7 rounded-full relative cursor-pointer transition-colors duration-200', account.include_in_assets ? 'bg-teal-500' : 'bg-gray-200 dark:bg-slate-600']"
+            :class="['w-12 h-7 rounded-full relative cursor-pointer transition-colors duration-200', account.include_in_assets ? 'bg-indigo-500' : 'bg-gray-200 dark:bg-slate-600']"
           >
             <div :class="['absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-transform duration-200', account.include_in_assets ? 'translate-x-[22px]' : 'translate-x-0.5']" />
           </div>
@@ -359,15 +359,15 @@ onMounted(loadData)
         <form @submit.prevent="handleSaveEdit" class="space-y-3">
           <div>
             <label class="text-xs text-theme-muted font-medium">名称</label>
-            <input v-model="editName" type="text" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-teal-500" />
+            <input v-model="editName" type="text" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
           </div>
           <div>
             <label class="text-xs text-theme-muted font-medium">类型</label>
-            <select v-model="editType" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+            <select v-model="editType" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option v-for="t in accountTypes" :key="t" :value="t">{{ t }}</option>
             </select>
           </div>
-          <button type="submit" :disabled="saving" class="w-full py-2.5 bg-teal-500 hover:bg-teal-600 text-white font-medium rounded-xl transition disabled:opacity-50">
+          <button type="submit" :disabled="saving" class="w-full py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50">
             <Loader2 v-if="saving" class="w-4 h-4 animate-spin mx-auto" />
             <span v-else>保存</span>
           </button>
@@ -383,7 +383,7 @@ onMounted(loadData)
           v-model.number="adjustTarget"
           type="number"
           step="0.01"
-          class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-lg font-bold focus:outline-none focus:ring-2 focus:ring-teal-500 mb-4"
+          class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-lg font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
         />
         <div class="space-y-3 mb-5">
           <label
@@ -393,7 +393,7 @@ onMounted(loadData)
           >
             <div :class="['w-5 h-5 mt-0.5 rounded border-2 flex-shrink-0 flex items-center justify-center transition',
               adjustMethod === m.value
-                ? 'border-teal-500 bg-teal-500'
+                ? 'border-indigo-500 bg-indigo-500'
                 : 'border-gray-300 dark:border-slate-600'
             ]">
               <svg v-if="adjustMethod === m.value" class="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
@@ -412,7 +412,7 @@ onMounted(loadData)
           <button
             @click="handleAdjust"
             :disabled="adjusting"
-            class="flex-1 py-2.5 text-teal-500 font-bold rounded-xl transition hover:bg-teal-50 dark:hover:bg-teal-900/20 disabled:opacity-50"
+            class="flex-1 py-2.5 text-indigo-500 font-bold rounded-xl transition hover:bg-indigo-50 dark:hover:bg-indigo-900/20 disabled:opacity-50"
           >
             <Loader2 v-if="adjusting" class="w-4 h-4 animate-spin mx-auto" />
             <span v-else>完成</span>

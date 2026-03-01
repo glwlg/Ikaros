@@ -29,8 +29,8 @@ const rangeLabel = computed(() => queryValue('label') || '当前范围')
 
     <main class="flex-1 overflow-y-auto p-4 safe-bottom">
       <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 shadow-sm p-6 text-center">
-        <div class="mx-auto w-14 h-14 rounded-full bg-teal-100 dark:bg-teal-900/40 flex items-center justify-center">
-          <Users class="w-7 h-7 text-teal-600" />
+        <div class="mx-auto w-14 h-14 rounded-full bg-indigo-100 dark:bg-indigo-900/40 flex items-center justify-center">
+          <Users class="w-7 h-7 text-indigo-600" />
         </div>
         <h2 class="text-base font-semibold text-theme-primary mt-4">多人协作统计</h2>
         <p class="text-sm text-theme-muted mt-1">范围：{{ rangeLabel }}</p>

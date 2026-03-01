@@ -284,7 +284,7 @@ onMounted(async () => {
 
 <template>
   <div class="h-screen flex flex-col bg-slate-100 dark:bg-slate-900 absolute inset-0 z-50">
-    <header class="bg-teal-500 dark:bg-teal-700 text-white shadow-sm relative z-10 safe-top">
+    <header class="bg-indigo-500 dark:bg-indigo-700 text-white shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-white/90">
           <ChevronLeft class="w-6 h-6" />
@@ -326,7 +326,7 @@ onMounted(async () => {
           <input v-model="customRange.dayEnd" type="date" class="h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm" />
         </div>
 
-        <p class="text-5xl font-semibold mb-4" :class="panel.default_type === '支出' ? 'text-rose-500' : 'text-teal-500'">
+        <p class="text-5xl font-semibold mb-4" :class="panel.default_type === '支出' ? 'text-rose-500' : 'text-indigo-500'">
           {{ panel.default_type === '支出' ? '-' : '+' }}
           {{ panel.metric === 'count' ? previewValue : `¥${formatMoney(previewValue)}` }}
         </p>
@@ -337,7 +337,7 @@ onMounted(async () => {
             <div v-for="bar in previewBars" :key="bar.period" class="flex-1 flex flex-col items-center gap-1">
               <div
                 class="w-full rounded-t-md"
-                :class="panel.default_type === '支出' ? 'bg-rose-400' : 'bg-teal-500'"
+                :class="panel.default_type === '支出' ? 'bg-rose-400' : 'bg-indigo-500'"
                 :style="{ height: `${bar.height}px` }"
               ></div>
               <p class="text-xs text-theme-muted">{{ formatPeriod(bar.period) }}</p>
@@ -422,10 +422,10 @@ onMounted(async () => {
           class="w-full text-left px-5 py-4 border-b border-slate-100 dark:border-slate-700 last:border-b-0 flex items-center justify-between"
         >
           <span class="text-2xl text-theme-primary">{{ option.label }}</span>
-          <span class="text-xl text-teal-500">{{ panel.filters.includes(option.value) ? '已选' : '未选' }}</span>
+          <span class="text-xl text-indigo-500">{{ panel.filters.includes(option.value) ? '已选' : '未选' }}</span>
         </button>
         <div class="p-4">
-          <button @click="showFilterDialog = false" class="w-full h-11 rounded-xl bg-teal-500 text-white text-base">完成</button>
+          <button @click="showFilterDialog = false" class="w-full h-11 rounded-xl bg-indigo-500 text-white text-base">完成</button>
         </div>
       </div>
     </div>

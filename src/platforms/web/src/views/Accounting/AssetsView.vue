@@ -17,6 +17,12 @@ const accounts = ref<AccountItem[]>([])
 const loading = ref(false)
 const showAmount = ref(true)
 const showAddAccount = ref(false)
+const pageRef = ref<HTMLElement | null>(null)
+const refreshing = ref(false)
+const pullStartY = ref<number | null>(null)
+const pullDistance = ref(0)
+const isPulling = ref(false)
+const pullThreshold = 72
 
 // New account form
 const newAccName = ref('')
@@ -79,6 +85,11 @@ const typeColor = (type: string) => {
     }
 }
 
+const pullHint = computed(() => {
+    if (refreshing.value) return '刷新中...'
+    return pullDistance.value >= pullThreshold ? '松开刷新' : '下拉刷新'
+})
+
 
 
 const loadData = async () => {
@@ -115,6 +126,71 @@ const handleCreateAccount = async () => {
     }
 }
 
+const getScrollParent = () => {
+    let node: HTMLElement | null = pageRef.value?.parentElement || null
+    while (node) {
+        const style = window.getComputedStyle(node)
+        const scrollable = /(auto|scroll)/.test(style.overflowY)
+        if (scrollable && node.scrollHeight > node.clientHeight) {
+            return node
+        }
+        node = node.parentElement
+    }
+    return null
+}
+
+const resetPull = () => {
+    pullDistance.value = 0
+    pullStartY.value = null
+    isPulling.value = false
+}
+
+const triggerRefresh = async () => {
+    if (refreshing.value) return
+    refreshing.value = true
+    try {
+        if (!store.currentBookId) {
+            await store.fetchBooks()
+        }
+        await loadData()
+    } finally {
+        refreshing.value = false
+        resetPull()
+    }
+}
+
+const handleTouchStart = (event: TouchEvent) => {
+    if (refreshing.value) return
+    const scrollParent = getScrollParent()
+    if (scrollParent && scrollParent.scrollTop > 0) return
+    pullStartY.value = event.touches[0]?.clientY ?? null
+    isPulling.value = true
+}
+
+const handleTouchMove = (event: TouchEvent) => {
+    if (!isPulling.value || pullStartY.value === null) return
+    const currentY = event.touches[0]?.clientY ?? pullStartY.value
+    const delta = currentY - pullStartY.value
+    if (delta <= 0) {
+        pullDistance.value = 0
+        return
+    }
+
+    pullDistance.value = Math.min(120, delta * 0.5)
+    if (pullDistance.value > 0) {
+        event.preventDefault()
+    }
+}
+
+const handleTouchEnd = () => {
+    if (!isPulling.value) return
+    if (pullDistance.value >= pullThreshold) {
+        void triggerRefresh()
+        return
+    }
+    resetPull()
+}
+
 onMounted(async () => {
     if (!store.currentBookId) await store.fetchBooks()
     await loadData()
@@ -122,7 +198,21 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div
+    ref="pageRef"
+    class="pb-4"
+    @touchstart="handleTouchStart"
+    @touchmove="handleTouchMove"
+    @touchend="handleTouchEnd"
+    @touchcancel="handleTouchEnd"
+  >
+    <div class="overflow-hidden transition-[height] duration-150" :style="{ height: `${Math.round(pullDistance)}px` }">
+      <div class="h-full flex items-end justify-center pb-2 text-xs text-slate-500 gap-1">
+        <Loader2 v-if="refreshing" class="w-3 h-3 animate-spin" />
+        <span>{{ pullHint }}</span>
+      </div>
+    </div>
+
     <!-- Header -->
     <div class="flex items-center justify-between px-4 pt-4 pb-2">
       <h2 class="text-lg font-bold text-theme-primary">净资产</h2>
@@ -132,7 +222,7 @@ onMounted(async () => {
     </div>
 
     <!-- Net Worth Card -->
-    <div class="mx-4 rounded-2xl bg-gradient-to-br from-cyan-600 via-teal-500 to-blue-600 p-5 text-white shadow-lg relative overflow-hidden">
+    <div class="mx-4 rounded-2xl bg-gradient-to-br from-cyan-600 via-indigo-500 to-blue-600 p-5 text-white shadow-lg relative overflow-hidden">
       <div class="absolute top-0 right-0 w-40 h-40 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/2" />
       <div class="relative z-10">
         <div class="flex items-center gap-3 mb-1">
@@ -155,7 +245,7 @@ onMounted(async () => {
 
     <!-- Loading -->
     <div v-if="loading" class="p-8 text-center text-theme-muted">
-      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-teal-400" />
+      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
     </div>
 
     <!-- Account Groups -->
@@ -177,7 +267,7 @@ onMounted(async () => {
             <component :is="typeIcon(type as string)" class="w-4 h-4 text-white" />
           </div>
           <span class="flex-1 font-medium text-theme-primary text-sm">{{ acc.name }}</span>
-          <span class="text-teal-500 font-semibold text-sm">
+          <span class="text-indigo-500 font-semibold text-sm">
             {{ showAmount ? `¥${formatMoney(acc.balance)}` : '****' }}
           </span>
           <ChevronRight class="w-4 h-4 text-theme-muted" />
@@ -203,22 +293,22 @@ onMounted(async () => {
         <form @submit.prevent="handleCreateAccount" class="space-y-3">
           <div>
             <label class="text-xs text-theme-muted font-medium">账户名称</label>
-            <input v-model="newAccName" type="text" placeholder="如：招商银行-陈" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-teal-500" autofocus />
+            <input v-model="newAccName" type="text" placeholder="如：招商银行-陈" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" autofocus />
           </div>
           <div>
             <label class="text-xs text-theme-muted font-medium">类型</label>
-            <select v-model="newAccType" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+            <select v-model="newAccType" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option v-for="t in accountTypes" :key="t" :value="t">{{ t }}</option>
             </select>
           </div>
           <div>
             <label class="text-xs text-theme-muted font-medium">余额</label>
-            <input v-model.number="newAccBalance" type="number" step="0.01" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-teal-500" />
+            <input v-model.number="newAccBalance" type="number" step="0.01" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
           </div>
           <button
             type="submit"
             :disabled="creatingAcc || !newAccName.trim()"
-            class="w-full py-2.5 bg-teal-500 hover:bg-teal-600 text-white font-medium rounded-xl transition disabled:opacity-50"
+            class="w-full py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50"
           >
             <Loader2 v-if="creatingAcc" class="w-4 h-4 animate-spin mx-auto" />
             <span v-else>添加</span>

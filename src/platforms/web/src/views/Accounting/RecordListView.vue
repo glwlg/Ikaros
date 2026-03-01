@@ -86,14 +86,14 @@ onMounted(async () => {
           @keyup.enter="applySearch"
           type="text"
           placeholder="搜索备注或付款对象(回车)"
-          class="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm text-theme-primary focus:outline-none focus:ring-2 focus:ring-teal-500"
+          class="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-sm text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500"
         />
       </div>
       
       <div class="flex gap-2 items-center overflow-x-auto no-scrollbar">
         <select
           v-model="selectedType"
-          class="px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 dark:bg-slate-800 text-theme-secondary appearance-none outline-none border border-transparent focus:border-teal-500"
+          class="px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 dark:bg-slate-800 text-theme-secondary appearance-none outline-none border border-transparent focus:border-indigo-500"
         >
           <option value="">全部类型</option>
           <option value="支出">支出</option>
@@ -101,7 +101,7 @@ onMounted(async () => {
           <option value="转账">转账</option>
         </select>
         
-        <div class="flex items-center gap-1 bg-gray-100 dark:bg-slate-800 rounded-full px-3 py-1 border border-transparent focus-within:border-teal-500 text-xs text-theme-secondary">
+        <div class="flex items-center gap-1 bg-gray-100 dark:bg-slate-800 rounded-full px-3 py-1 border border-transparent focus-within:border-indigo-500 text-xs text-theme-secondary">
           <CalendarIcon class="w-3.5 h-3.5" />
           <input v-model="startDate" type="date" class="bg-transparent outline-none w-[90px]" />
           <span>-</span>
@@ -117,7 +117,7 @@ onMounted(async () => {
     <!-- Record List -->
     <div class="rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700">
       <div v-if="loading" class="p-8 text-center text-theme-muted">
-        <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-teal-400" />
+        <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
         加载中...
       </div>
 
@@ -137,7 +137,7 @@ onMounted(async () => {
             <div class="flex items-start gap-3">
               <div :class="[
                 'w-2 h-2 mt-2 rounded-full flex-shrink-0',
-                rec.type === '收入' ? 'bg-teal-400' : (rec.type === '转账' ? 'bg-amber-400' : 'bg-rose-400')
+                rec.type === '收入' ? 'bg-indigo-400' : (rec.type === '转账' ? 'bg-amber-400' : 'bg-rose-400')
               ]" />
               <div>
                 <p class="font-medium text-theme-primary text-sm">{{ rec.category || rec.payee || rec.remark || '未分类' }}</p>
@@ -153,7 +153,7 @@ onMounted(async () => {
               <div class="flex items-center justify-end gap-1">
                 <p :class="[
                   'font-semibold text-sm',
-                  rec.type === '收入' ? 'text-teal-500' : (rec.type === '转账' ? 'text-amber-500' : 'text-rose-500')
+                  rec.type === '收入' ? 'text-indigo-500' : (rec.type === '转账' ? 'text-amber-500' : 'text-rose-500')
                 ]">
                   {{ rec.type === '收入' ? '+' : '' }}¥{{ formatMoney(rec.amount) }}
                 </p>

@@ -191,46 +191,107 @@ export const appendOperationLog = (
     options: AppendOperationLogOptions = {},
 ) => {
     const key = storageKey(bookId, 'operation-logs')
-    const logs = readJson<OperationLogEntry[]>(key, []).map(normalizeOperationLog)
-    const next: OperationLogEntry[] = [
-        {
-            id: randomId(),
-            created_at: nowIso(),
-            action,
-            detail,
-            rollback: cloneRollback(options.rollback),
-            rolled_back: false,
-            rolled_back_at: null,
-        },
-        ...logs,
-    ].slice(0, 300)
+    const logs = normalizeAndSortOperationLogs(readJson<OperationLogEntry[]>(key, []))
+    const entry: OperationLogEntry = {
+        id: randomId(),
+        created_at: nowIso(),
+        action,
+        detail,
+        rollback: cloneRollback(options.rollback),
+        rolled_back: false,
+        rolled_back_at: null,
+    }
 
+    const next = normalizeAndSortOperationLogs([entry, ...logs]).slice(0, 300)
     writeJson(key, next)
+
+    if (bookId) {
+        void upsertRemoteOperationLog(bookId, entry).catch((error) => {
+            console.error('operation log sync failed', error)
+        })
+    }
 }
 
-export const loadOperationLogs = (bookId: number | null) => {
+export const loadOperationLogs = async (bookId: number | null) => {
     const key = storageKey(bookId, 'operation-logs')
-    return readJson<OperationLogEntry[]>(key, []).map(normalizeOperationLog)
+    const localLogs = normalizeAndSortOperationLogs(readJson<OperationLogEntry[]>(key, []))
+
+    if (!bookId) {
+        return localLogs
+    }
+
+    try {
+        const remoteLogs = await fetchRemoteOperationLogs(bookId)
+        const remoteIds = new Set(remoteLogs.map(log => log.id))
+        const pending = localLogs.filter(log => !remoteIds.has(log.id))
+
+        if (pending.length > 0) {
+            await Promise.all(pending.map(log => upsertRemoteOperationLog(bookId, log)))
+            const merged = normalizeAndSortOperationLogs([...remoteLogs, ...pending]).slice(0, 300)
+            writeJson(key, merged)
+            return merged
+        }
+
+        writeJson(key, remoteLogs)
+        return remoteLogs
+    } catch (error) {
+        console.error('load remote operation logs failed', error)
+        return localLogs
+    }
 }
 
-export const clearOperationLogs = (bookId: number | null) => {
+export const clearOperationLogs = async (bookId: number | null) => {
     const key = storageKey(bookId, 'operation-logs')
     writeJson(key, [])
+
+    if (!bookId) return
+    try {
+        await request.delete('/accounting/operation-logs', {
+            params: { book_id: bookId },
+        })
+    } catch (error) {
+        console.error('clear remote operation logs failed', error)
+    }
 }
 
-export const markOperationLogRolledBack = (bookId: number | null, logId: string) => {
+export const markOperationLogRolledBack = async (bookId: number | null, logId: string) => {
     const key = storageKey(bookId, 'operation-logs')
-    const logs = loadOperationLogs(bookId)
+    const logs = await loadOperationLogs(bookId)
+    const rolledBackAt = nowIso()
     const next = logs.map(log => {
         if (log.id !== logId) return log
         return {
             ...log,
             rolled_back: true,
-            rolled_back_at: nowIso(),
+            rolled_back_at: rolledBackAt,
         }
     })
+
     writeJson(key, next)
-    return next
+
+    if (!bookId) {
+        return next
+    }
+
+    const target = next.find(log => log.id === logId)
+    if (!target) {
+        return next
+    }
+
+    try {
+        await upsertRemoteOperationLog(bookId, target)
+        await request.post(
+            `/accounting/operation-logs/${encodeURIComponent(logId)}/rollback`,
+            { rolled_back_at: rolledBackAt },
+            { params: { book_id: bookId } },
+        )
+        const remoteLogs = await fetchRemoteOperationLogs(bookId)
+        writeJson(key, remoteLogs)
+        return remoteLogs
+    } catch (error) {
+        console.error('mark remote operation log rolled back failed', error)
+        return next
+    }
 }
 
 const cloneRollback = (rollback?: OperationLogRollback): OperationLogRollback | null => {
@@ -248,6 +309,42 @@ const normalizeOperationLog = (entry: OperationLogEntry): OperationLogEntry => {
         rolled_back: Boolean(entry.rolled_back),
         rolled_back_at: entry.rolled_back_at ?? null,
     }
+}
+
+const normalizeAndSortOperationLogs = (logs: OperationLogEntry[]) => {
+    return logs
+        .map(normalizeOperationLog)
+        .sort((a, b) => {
+            const bt = new Date(b.created_at).getTime() || 0
+            const at = new Date(a.created_at).getTime() || 0
+            if (bt !== at) return bt - at
+            return b.id.localeCompare(a.id)
+        })
+}
+
+const serializeOperationLogPayload = (log: OperationLogEntry) => {
+    return {
+        id: log.id,
+        created_at: log.created_at,
+        action: log.action,
+        detail: log.detail,
+        rollback: log.rollback ? cloneRollback(log.rollback) : null,
+        rolled_back: Boolean(log.rolled_back),
+        rolled_back_at: log.rolled_back_at,
+    }
+}
+
+const fetchRemoteOperationLogs = async (bookId: number) => {
+    const res = await request.get<OperationLogEntry[]>('/accounting/operation-logs', {
+        params: { book_id: bookId },
+    })
+    return normalizeAndSortOperationLogs(res.data || []).slice(0, 300)
+}
+
+const upsertRemoteOperationLog = async (bookId: number, log: OperationLogEntry) => {
+    await request.post('/accounting/operation-logs', serializeOperationLogPayload(log), {
+        params: { book_id: bookId },
+    })
 }
 
 export const loadGlobalSettings = (): GlobalSettingsState => {

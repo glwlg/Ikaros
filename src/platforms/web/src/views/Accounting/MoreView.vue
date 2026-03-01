@@ -9,20 +9,20 @@ const sections = [
         title: '往来管理',
         subtitle: '让每一次往来，都留下回忆',
         items: [
-            { icon: ArrowDownToLine, label: '借入', desc: '¥0 待还', color: 'bg-teal-500', route: '/accounting/debts?type=借入' },
-            { icon: ArrowUpFromLine, label: '借出', desc: '¥0 待收', color: 'bg-teal-500', route: '/accounting/debts?type=借出' },
-            { icon: Receipt, label: '报销', desc: '¥0 待报', color: 'bg-teal-500', route: '/accounting/debts?type=报销' },
-            { icon: Users, label: '往来', desc: '管理', color: 'bg-teal-500', route: '/accounting/debts' },
+            { icon: ArrowDownToLine, label: '借入', desc: '¥0 待还', color: 'bg-indigo-500', route: '/accounting/debts?type=借入' },
+            { icon: ArrowUpFromLine, label: '借出', desc: '¥0 待收', color: 'bg-indigo-500', route: '/accounting/debts?type=借出' },
+            { icon: Receipt, label: '报销', desc: '¥0 待报', color: 'bg-indigo-500', route: '/accounting/debts?type=报销' },
+            { icon: Users, label: '往来', desc: '管理', color: 'bg-indigo-500', route: '/accounting/debts' },
         ],
     },
     {
         title: '计划管理',
         subtitle: '让每一步计划，都通向未来',
         items: [
-            { icon: CalendarClock, label: '周期', desc: '计划', color: 'bg-teal-500', route: '/accounting/scheduled-tasks' },
-            { icon: CreditCard, label: '分期', desc: '项目管理', color: 'bg-teal-500', route: '/accounting/manage/project' },
-            { icon: Target, label: '预算', desc: '管理', color: 'bg-teal-500', route: '/accounting/budgets' },
-            { icon: PiggyBank, label: '存钱', desc: '预算计划', color: 'bg-teal-500', route: '/accounting/budgets' },
+            { icon: CalendarClock, label: '周期', desc: '计划', color: 'bg-indigo-500', route: '/accounting/scheduled-tasks' },
+            { icon: CreditCard, label: '分期', desc: '项目管理', color: 'bg-indigo-500', route: '/accounting/manage/project' },
+            { icon: Target, label: '预算', desc: '管理', color: 'bg-indigo-500', route: '/accounting/budgets' },
+            { icon: PiggyBank, label: '存钱', desc: '预算计划', color: 'bg-indigo-500', route: '/accounting/budgets' },
         ],
     },
 ]
@@ -35,7 +35,7 @@ const sections = [
     </div>
 
     <div v-for="section in sections" :key="section.title" class="px-4 mt-4">
-      <h3 class="text-base font-bold text-teal-600 dark:text-teal-400">{{ section.title }}</h3>
+      <h3 class="text-base font-bold text-indigo-600 dark:text-indigo-400">{{ section.title }}</h3>
       <p class="text-xs text-theme-muted mb-3">{{ section.subtitle }}</p>
 
       <div class="grid grid-cols-2 gap-3">

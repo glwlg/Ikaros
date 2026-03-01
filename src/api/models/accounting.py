@@ -175,3 +175,36 @@ class StatsPanel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
+
+
+class OperationLog(Base):
+    __tablename__ = "accounting_operation_logs"
+    __table_args__ = (
+        UniqueConstraint(
+            "book_id",
+            "owner_id",
+            "log_id",
+            name="uq_accounting_operation_log_owner_book_log",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    log_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("accounting_books.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    detail: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    rollback_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    rolled_back: Mapped[bool] = mapped_column(nullable=False, default=False)
+    rolled_back_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )

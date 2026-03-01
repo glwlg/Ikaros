@@ -61,7 +61,7 @@ onMounted(async () => {
 
 <template>
   <div class="h-screen flex flex-col bg-slate-100 dark:bg-slate-900 absolute inset-0 z-50">
-    <header class="bg-teal-500 dark:bg-teal-700 text-white shadow-sm relative z-10 safe-top">
+    <header class="bg-indigo-500 dark:bg-indigo-700 text-white shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-white/90">
           <ChevronLeft class="w-6 h-6" />
@@ -101,7 +101,7 @@ onMounted(async () => {
                   <button
                     @click="togglePanel(panel)"
                     class="w-12 h-7 rounded-full p-0.5 transition-colors"
-                    :class="panel.enabled ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-600'"
+                    :class="panel.enabled ? 'bg-indigo-500' : 'bg-slate-300 dark:bg-slate-600'"
                   >
                     <div
                       class="h-6 w-6 rounded-full bg-white transition-transform"
@@ -143,7 +143,7 @@ onMounted(async () => {
                   <button
                     @click="togglePanel(panel)"
                     class="w-12 h-7 rounded-full p-0.5 transition-colors"
-                    :class="panel.enabled ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-600'"
+                    :class="panel.enabled ? 'bg-indigo-500' : 'bg-slate-300 dark:bg-slate-600'"
                   >
                     <div
                       class="h-6 w-6 rounded-full bg-white transition-transform"

@@ -62,8 +62,8 @@ const pullHint = computed(() => {
     return pullDistance.value >= pullThreshold ? '松开刷新操作日志' : '下拉刷新操作日志'
 })
 
-const refreshLogs = () => {
-    operationLogs.value = loadOperationLogs(store.currentBookId)
+const refreshLogs = async () => {
+    operationLogs.value = await loadOperationLogs(store.currentBookId)
 }
 
 const triggerRefreshLogs = async () => {
@@ -71,7 +71,7 @@ const triggerRefreshLogs = async () => {
     refreshingLogs.value = true
     try {
         await new Promise(resolve => window.setTimeout(resolve, 220))
-        refreshLogs()
+        await refreshLogs()
     } finally {
         refreshingLogs.value = false
         pullDistance.value = 0
@@ -109,7 +109,7 @@ const handleRollback = async (log: OperationLogEntry) => {
             )
         }
 
-        operationLogs.value = markOperationLogRolledBack(store.currentBookId, log.id)
+        operationLogs.value = await markOperationLogRolledBack(store.currentBookId, log.id)
         showSavedHint('回滚成功')
     } catch (error) {
         console.error('rollback operation failed', error)
@@ -178,15 +178,15 @@ const handleSaveExtensions = () => {
     showSavedHint('扩展设置已保存')
 }
 
-const handleClearLogs = () => {
+const handleClearLogs = async () => {
     if (!confirm('确认清空操作日志吗？')) return
-    clearOperationLogs(store.currentBookId)
-    refreshLogs()
+    await clearOperationLogs(store.currentBookId)
+    await refreshLogs()
 }
 
 watch(kind, () => {
     if (kind.value === 'logs') {
-        refreshLogs()
+        void refreshLogs()
     }
 })
 
@@ -196,7 +196,7 @@ onMounted(async () => {
     }
 
     if (kind.value === 'logs') {
-        refreshLogs()
+        await refreshLogs()
     }
 })
 </script>
@@ -209,7 +209,7 @@ onMounted(async () => {
           <ChevronLeft class="w-6 h-6" />
         </button>
         <h1 class="text-lg font-bold text-slate-800 dark:text-white">{{ pageTitle }}</h1>
-        <span class="text-xs text-teal-600 w-20 text-right">{{ savedHint }}</span>
+        <span class="text-xs text-indigo-600 w-20 text-right">{{ savedHint }}</span>
       </div>
     </header>
 
@@ -265,7 +265,7 @@ onMounted(async () => {
 
         <button
           @click="handleSaveGlobal"
-          class="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-medium"
+          class="w-full py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-medium"
         >保存设置</button>
       </div>
 
@@ -294,7 +294,7 @@ onMounted(async () => {
 
         <button
           @click="handleSaveExtensions"
-          class="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-medium"
+          class="w-full py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-medium"
         >保存扩展设置</button>
       </div>
 
@@ -326,14 +326,14 @@ onMounted(async () => {
                 class="px-2.5 py-1 rounded-lg text-xs border transition disabled:opacity-60"
                 :class="log.rolled_back
                   ? 'border-slate-200 text-slate-400 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/50'
-                  : 'border-teal-200 text-teal-600 bg-teal-50 hover:bg-teal-100 dark:border-teal-700 dark:bg-teal-900/20'"
+                  : 'border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-900/20'"
               >
                 <Loader2 v-if="rollbackingLogId === log.id" class="w-3 h-3 animate-spin" />
                 <span v-else>{{ log.rolled_back ? '已回滚' : rollbackLabel(log) }}</span>
               </button>
             </div>
 
-            <p v-if="log.rolled_back && log.rolled_back_at" class="text-[11px] text-teal-600 mt-1">
+            <p v-if="log.rolled_back && log.rolled_back_at" class="text-[11px] text-indigo-600 mt-1">
               已回滚于 {{ new Date(log.rolled_back_at).toLocaleString('zh-CN') }}
             </p>
           </div>

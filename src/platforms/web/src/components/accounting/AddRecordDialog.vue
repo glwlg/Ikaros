@@ -130,9 +130,9 @@ const keyRows = [
 
 <template>
   <!-- Full screen overlay -->
-  <div class="fixed inset-0 z-50 flex flex-col bg-gradient-to-b from-teal-50 to-white dark:from-slate-900 dark:to-slate-950">
+  <div class="fixed inset-0 z-50 flex flex-col bg-gradient-to-b from-indigo-50 to-white dark:from-slate-900 dark:to-slate-950">
     <!-- Header -->
-    <div class="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-teal-500 to-teal-400 text-white">
+    <div class="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-indigo-500 to-indigo-400 text-white">
       <button @click="emit('close')" class="p-1">
         <X class="w-5 h-5" />
       </button>
@@ -151,7 +151,7 @@ const keyRows = [
           :class="[
             'px-6 py-2 rounded-full text-sm font-medium transition',
             activeTab === tab
-              ? 'bg-teal-500 text-white shadow-sm'
+              ? 'bg-indigo-500 text-white shadow-sm'
               : 'bg-gray-100 dark:bg-slate-800 text-theme-secondary'
           ]"
         >
@@ -163,7 +163,7 @@ const keyRows = [
       <div class="px-4 py-4">
         <p :class="[
           'text-4xl font-bold',
-          activeTab === '支出' ? 'text-rose-500' : 'text-teal-500'
+          activeTab === '支出' ? 'text-rose-500' : 'text-indigo-500'
         ]">
           {{ activeTab === '支出' ? '-' : activeTab === '收入' ? '+' : '' }}¥{{ amountStr }}
         </p>
@@ -192,10 +192,10 @@ const keyRows = [
 
       <!-- Account Selector -->
       <div class="px-4 py-2 border-t border-gray-100 dark:border-slate-800">
-        <label class="text-xs text-teal-500 font-medium">账户</label>
+        <label class="text-xs text-indigo-500 font-medium">账户</label>
         <select
           v-model="selectedAccount"
-          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
         >
           <option value="">未指定</option>
           <option v-for="acc in accounts" :key="acc.id" :value="acc.name">
@@ -206,10 +206,10 @@ const keyRows = [
 
       <!-- Target account (for transfer) -->
       <div v-if="activeTab === '转账'" class="px-4 py-2">
-        <label class="text-xs text-teal-500 font-medium">转入账户</label>
+        <label class="text-xs text-indigo-500 font-medium">转入账户</label>
         <select
           v-model="selectedTargetAccount"
-          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
         >
           <option value="">未指定</option>
           <option v-for="acc in accounts" :key="acc.id" :value="acc.name">
@@ -220,12 +220,12 @@ const keyRows = [
 
       <!-- Remark -->
       <div class="px-4 py-2 border-t border-gray-100 dark:border-slate-800">
-        <label class="text-xs text-teal-500 font-medium">备注</label>
+        <label class="text-xs text-indigo-500 font-medium">备注</label>
         <input
           v-model="remark"
           type="text"
           placeholder="点击添加备注"
-          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
         />
       </div>
     </div>
@@ -240,7 +240,7 @@ const keyRows = [
               v-if="key === 'OK_TOP'"
               @click="handleKeyPress('OK')"
               :disabled="saving"
-              class="row-span-2 bg-teal-500 hover:bg-teal-600 text-white text-lg font-bold py-4 transition active:bg-teal-700 disabled:opacity-50 col-start-4 row-start-4 row-end-6"
+              class="row-span-2 bg-indigo-500 hover:bg-indigo-600 text-white text-lg font-bold py-4 transition active:bg-indigo-700 disabled:opacity-50 col-start-4 row-start-4 row-end-6"
               style="grid-row: span 2"
             >
               <Loader2 v-if="saving" class="w-5 h-5 animate-spin mx-auto" />

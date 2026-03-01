@@ -66,6 +66,7 @@ async def init_db():
         ScheduledTask,
         DebtOrReimbursement,
         StatsPanel,
+        OperationLog,
     )
 
     async with engine.begin() as conn:

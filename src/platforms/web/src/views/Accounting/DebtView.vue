@@ -136,7 +136,7 @@ const isOverdue = (dateString: string | null) => {
           <ChevronLeft class="w-6 h-6" />
         </button>
         <h1 class="text-lg font-bold text-slate-800 dark:text-white">往来管理</h1>
-        <button @click="openCreate" class="p-2 -mr-2 text-teal-600 dark:text-teal-400">
+        <button @click="openCreate" class="p-2 -mr-2 text-indigo-600 dark:text-indigo-400">
           <Plus class="w-6 h-6" />
         </button>
       </div>
@@ -148,10 +148,10 @@ const isOverdue = (dateString: string | null) => {
           :key="tab"
           @click="handleTabChange(tab)"
           class="flex-1 py-3 text-sm font-medium transition-colors relative"
-          :class="activeTab === tab ? 'text-teal-600 dark:text-teal-400' : 'text-slate-500 hover:text-slate-700'"
+          :class="activeTab === tab ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:text-slate-700'"
         >
           {{ tab }}
-          <div v-if="activeTab === tab" class="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-1 bg-teal-500 rounded-t-full"></div>
+          <div v-if="activeTab === tab" class="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-1 bg-indigo-500 rounded-t-full"></div>
         </button>
       </div>
     </header>
@@ -159,7 +159,7 @@ const isOverdue = (dateString: string | null) => {
     <!-- Content -->
     <main class="flex-1 overflow-y-auto p-4 safe-bottom">
       <div v-if="loading" class="flex justify-center py-8">
-        <div class="w-8 h-8 rounded-full border-4 border-teal-500/30 border-t-teal-500 animate-spin"></div>
+        <div class="w-8 h-8 rounded-full border-4 border-indigo-500/30 border-t-indigo-500 animate-spin"></div>
       </div>
       
       <div v-else-if="filteredDebts.length === 0" class="flex flex-col items-center justify-center py-20 text-slate-400">
@@ -186,7 +186,7 @@ const isOverdue = (dateString: string | null) => {
                 </div>
                 <div class="text-right">
                     <div class="text-sm font-medium text-slate-500">总计: ¥{{ debt.total_amount }}</div>
-                    <div class="text-lg font-bold" :class="debt.type === '借入' ? 'text-rose-500' : 'text-teal-500'">
+                    <div class="text-lg font-bold" :class="debt.type === '借入' ? 'text-rose-500' : 'text-indigo-500'">
                         {{ debt.is_settled ? '已结清' : `待还: ¥${debt.remaining_amount}` }}
                     </div>
                 </div>
@@ -201,7 +201,7 @@ const isOverdue = (dateString: string | null) => {
             </div>
             
             <div v-if="!debt.is_settled" class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700 flex justify-end">
-                <button @click="openRepay(debt)" class="px-4 py-1.5 bg-teal-500 text-white rounded-lg text-sm font-medium hover:bg-teal-600 transition shadow-sm">
+                <button @click="openRepay(debt)" class="px-4 py-1.5 bg-indigo-500 text-white rounded-lg text-sm font-medium hover:bg-indigo-600 transition shadow-sm">
                     {{ debt.type === '借入' ? '还款' : '收款' }}
                 </button>
             </div>
@@ -218,24 +218,24 @@ const isOverdue = (dateString: string | null) => {
         <div class="p-4 space-y-4">
           <div>
             <label class="block text-sm text-slate-500 mb-1">往来人</label>
-            <input v-model="createForm.contact" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500" placeholder="姓名/机构">
+            <input v-model="createForm.contact" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="姓名/机构">
           </div>
           <div>
             <label class="block text-sm text-slate-500 mb-1">金额</label>
-            <input v-model="createForm.amount" type="number" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500" placeholder="0.00">
+            <input v-model="createForm.amount" type="number" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="0.00">
           </div>
           <div>
             <label class="block text-sm text-slate-500 mb-1">约定日期 (选填)</label>
-            <input v-model="createForm.due_date" type="date" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500">
+            <input v-model="createForm.due_date" type="date" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
           </div>
           <div>
             <label class="block text-sm text-slate-500 mb-1">备注 (选填)</label>
-            <input v-model="createForm.remark" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500" placeholder="添加备注...">
+            <input v-model="createForm.remark" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="添加备注...">
           </div>
         </div>
         <div class="p-4 flex gap-3 border-t border-slate-100 dark:border-slate-700">
           <button @click="showCreateDialog = false" class="flex-1 py-3 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-medium">取消</button>
-          <button @click="saveDebt" class="flex-1 py-3 bg-teal-500 text-white rounded-xl font-medium shadow-lg shadow-teal-500/30">保存</button>
+          <button @click="saveDebt" class="flex-1 py-3 bg-indigo-500 text-white rounded-xl font-medium shadow-lg shadow-indigo-500/30">保存</button>
         </div>
       </div>
     </div>
@@ -251,15 +251,15 @@ const isOverdue = (dateString: string | null) => {
           <div>
             <label class="block text-sm text-slate-500 mb-1">本次金额</label>
             <div class="relative">
-                <input v-model="repayForm.amount" type="number" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl pl-4 pr-20 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500" placeholder="0.00">
-                <button @click="repayForm.amount = String(repayMax)" class="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-teal-500 font-medium">全部</button>
+                <input v-model="repayForm.amount" type="number" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl pl-4 pr-20 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="0.00">
+                <button @click="repayForm.amount = String(repayMax)" class="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-indigo-500 font-medium">全部</button>
             </div>
             <p class="text-xs text-slate-500 mt-1">最多可输入: ¥{{ repayMax }}</p>
           </div>
         </div>
         <div class="p-4 flex gap-3 border-t border-slate-100 dark:border-slate-700">
           <button @click="showRepayDialog = false" class="flex-1 py-3 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-medium">取消</button>
-          <button @click="submitRepay" class="flex-1 py-3 bg-teal-500 text-white rounded-xl font-medium shadow-lg shadow-teal-500/30">确认</button>
+          <button @click="submitRepay" class="flex-1 py-3 bg-indigo-500 text-white rounded-xl font-medium shadow-lg shadow-indigo-500/30">确认</button>
         </div>
       </div>
     </div>
