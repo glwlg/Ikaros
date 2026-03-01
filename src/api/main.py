@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from src.api.api.router import api_router
 from src.api.auth.router import router as auth_router
 from src.api.api.binding_router import router as binding_router
+from src.api.api.accounting_router import router as accounting_router
 from src.api.core.database import init_db
 
 
@@ -42,6 +43,7 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1/auth")
 app.include_router(binding_router, prefix="/api/v1/binding", tags=["binding"])
+app.include_router(accounting_router, prefix="/api/v1/accounting", tags=["accounting"])
 
 
 # Create static wrapper for SPA fallback
