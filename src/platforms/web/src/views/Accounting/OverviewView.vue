@@ -192,7 +192,6 @@ onMounted(async () => {
           </div>
         </div>
       </div>
-      <Search class="w-5 h-5 text-theme-muted" />
     </div>
 
     <!-- Create Book Prompt (when no books) -->
@@ -252,10 +251,10 @@ onMounted(async () => {
       <!-- Monthly Summary Card -->
       <div class="mx-4 mt-2 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 overflow-hidden">
         <div class="p-4">
-          <div class="flex items-center justify-between mb-2">
+          <RouterLink to="/accounting/stats" class="flex items-center justify-between mb-2 cursor-pointer hover:opacity-80 transition">
             <span class="text-sm text-theme-muted">{{ monthLabel }}支出</span>
             <ChevronRight class="w-4 h-4 text-teal-500" />
-          </div>
+          </RouterLink>
           <div class="flex items-baseline justify-between">
             <div>
               <span class="text-3xl font-bold text-rose-500">¥{{ formatMoney(summary.expense) }}</span>
@@ -269,10 +268,10 @@ onMounted(async () => {
 
       <!-- Recent Transactions -->
       <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700">
-        <div class="flex items-center justify-between p-4 pb-2">
+        <RouterLink to="/accounting/records" class="flex items-center justify-between p-4 pb-2 cursor-pointer hover:opacity-80 transition">
           <h3 class="font-semibold text-theme-primary">最近交易</h3>
           <ChevronRight class="w-4 h-4 text-teal-500" />
-        </div>
+        </RouterLink>
 
         <div v-if="loading" class="p-8 text-center text-theme-muted">
           <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-teal-400" />
@@ -316,10 +315,10 @@ onMounted(async () => {
 
       <!-- Budget Card (placeholder) -->
       <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
-        <div class="flex items-center justify-between mb-4">
+        <RouterLink to="/accounting/budgets" class="flex items-center justify-between mb-4 cursor-pointer hover:opacity-80 transition">
           <h3 class="font-semibold text-theme-primary">{{ monthLabel }}预算</h3>
           <ChevronRight class="w-4 h-4 text-teal-500" />
-        </div>
+        </RouterLink>
         <div class="flex items-center justify-around">
           <div class="text-center">
             <p class="text-xs text-theme-muted">支出</p>

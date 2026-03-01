@@ -16,7 +16,7 @@ const tabs = [
 const isActiveTab = (path: string) => route.path === path
 
 // Hide layout chrome on sub-pages with own headers
-const isSubPage = computed(() => route.name === 'AccountDetail')
+const isSubPage = computed(() => ['AccountDetail', 'RecordList', 'BudgetList'].includes(route.name as string))
 </script>
 
 <template>

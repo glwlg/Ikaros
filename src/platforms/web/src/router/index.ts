@@ -60,6 +60,18 @@ const router = createRouter({
                     component: () => import('@/views/Accounting/ProfileView.vue'),
                     meta: { title: '我的' },
                 },
+                {
+                    path: 'records',
+                    name: 'RecordList',
+                    component: () => import('@/views/Accounting/RecordListView.vue'),
+                    meta: { title: '交易明细' },
+                },
+                {
+                    path: 'budgets',
+                    name: 'BudgetList',
+                    component: () => import('@/views/Accounting/BudgetView.vue'),
+                    meta: { title: '预算管理' },
+                },
             ],
         },
         {
