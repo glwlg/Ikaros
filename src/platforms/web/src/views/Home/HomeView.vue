@@ -4,9 +4,10 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAccountingStore } from '@/stores/accounting'
 import { getRecordsSummary, type MonthlySummary } from '@/api/accounting'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import {
   BookOpen, Rss, Clock, Activity,
-  TrendingUp, TrendingDown, ArrowRight
+  TrendingUp, TrendingDown, ArrowRight, LogOut
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -14,6 +15,7 @@ const authStore = useAuthStore()
 const accountingStore = useAccountingStore()
 
 const monthlySummary = ref<MonthlySummary | null>(null)
+const loggingOut = ref(false)
 const now = new Date()
 
 onMounted(async () => {
@@ -33,6 +35,16 @@ onMounted(async () => {
 })
 
 const goAccounting = () => router.push('/accounting')
+
+const handleLogout = async () => {
+    loggingOut.value = true
+    try {
+        await authStore.logout()
+        router.push('/login')
+    } finally {
+        loggingOut.value = false
+    }
+}
 
 const formatMoney = (n: number) => {
     return new Intl.NumberFormat('zh-CN', {
@@ -111,11 +123,29 @@ const colorMap: Record<string, { bg: string; icon: string; border: string; hover
 <template>
   <div class="p-6 max-w-5xl mx-auto">
     <!-- Welcome Section -->
-    <div class="mb-8">
-      <h1 class="text-2xl font-bold text-theme-primary">
-        欢迎回来，{{ authStore.user?.display_name || authStore.user?.email || '用户' }} 👋
-      </h1>
-      <p class="text-theme-muted mt-1">这里是你的 X-Bot 控制面板，选择一个模块开始吧</p>
+    <div class="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+      <div>
+        <h1 class="text-2xl font-bold text-theme-primary">
+          欢迎回来，{{ authStore.user?.display_name || authStore.user?.email || '用户' }} 👋
+        </h1>
+        <p class="text-theme-muted mt-1">这里是你的 X-Bot 控制面板，选择一个模块开始吧</p>
+      </div>
+
+      <div class="rounded-2xl border border-theme-primary bg-theme-elevated p-3 shadow-sm min-w-[220px]">
+        <p class="text-xs text-theme-muted mb-2">偏好与账号</p>
+        <div class="flex items-center justify-between gap-2">
+          <ThemeToggle variant="dropdown" show-label size="sm" class-name="justify-start" />
+          <button
+            type="button"
+            :disabled="loggingOut"
+            @click="handleLogout"
+            class="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
+          >
+            <LogOut class="w-3.5 h-3.5" />
+            退出登录
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Quick Stats (if accounting has data) -->
