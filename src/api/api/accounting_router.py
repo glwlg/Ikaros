@@ -1355,7 +1355,7 @@ async def delete_scheduled_task(
 @router.get("/debts")
 async def get_debts(
     book_id: int,
-    type: str = None, # optional filter
+    type: str = None,  # optional filter
     is_settled: bool = None,
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
@@ -1364,12 +1364,14 @@ async def get_debts(
     query = select(DebtOrReimbursement).where(DebtOrReimbursement.book_id == book_id)
     if type:
         query = query.where(DebtOrReimbursement.type == type)
-    if is_settled !== None:
+    if is_settled is not None:
         query = query.where(DebtOrReimbursement.is_settled == is_settled)
-        
-    result = await session.execute(query.order_by(DebtOrReimbursement.created_at.desc()))
+
+    result = await session.execute(
+        query.order_by(DebtOrReimbursement.created_at.desc())
+    )
     debts = result.scalars().all()
-    
+
     return [
         {
             "id": d.id,
@@ -1380,8 +1382,9 @@ async def get_debts(
             "due_date": d.due_date.isoformat() if d.due_date else None,
             "remark": d.remark,
             "is_settled": d.is_settled,
-            "created_at": d.created_at.isoformat()
-        } for d in debts
+            "created_at": d.created_at.isoformat(),
+        }
+        for d in debts
     ]
 
 
@@ -1393,7 +1396,7 @@ async def create_debt(
     session: AsyncSession = Depends(get_async_session),
 ):
     await _get_book(book_id, user, session)
-    
+
     due_d = None
     if data.due_date:
         try:
@@ -1409,7 +1412,7 @@ async def create_debt(
         remaining_amount=data.amount,
         due_date=due_d,
         remark=data.remark[:500],
-        creator_id=user.id
+        creator_id=user.id,
     )
     session.add(debt)
     await session.commit()
@@ -1430,20 +1433,23 @@ async def repay_debt(
         raise HTTPException(status_code=404, detail="记录不存在")
     if debt.is_settled:
         raise HTTPException(status_code=400, detail="已结清")
-        
+
     if data.amount <= 0:
         raise HTTPException(status_code=400, detail="金额必须大于0")
-        
+
     repay_amount = min(float(data.amount), float(debt.remaining_amount))
     debt.remaining_amount = float(debt.remaining_amount) - repay_amount
-    
+
     if debt.remaining_amount <= 0.01:
         debt.remaining_amount = 0
         debt.is_settled = True
-        
+
     # Ideally, we would also create a Record representing the monetary transaction here.
     # For simplicity, we just adjust the debt object state for now.
-    
-    await session.commit()
-    return {"message": "还款成功", "remaining_amount": debt.remaining_amount, "is_settled": debt.is_settled}
 
+    await session.commit()
+    return {
+        "message": "还款成功",
+        "remaining_amount": debt.remaining_amount,
+        "is_settled": debt.is_settled,
+    }

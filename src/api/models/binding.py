@@ -4,7 +4,7 @@ from api.core.database import Base
 
 
 class PlatformUserBinding(Base):
-    __tablename__ = "platform_user_bindings"
+    __tablename__ = "accounting_platform_user_bindings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(
