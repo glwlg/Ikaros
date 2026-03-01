@@ -62,6 +62,13 @@ const categoryData = ref<CategorySummaryItem[]>([])
 const trendData = ref<PeriodSummaryItem[]>([])
 const loading = ref(false)
 const currentGranularity = ref<Granularity>('day')
+const panelPreviewMap = ref<Record<string, {
+    value: number
+    count: number
+    label: string
+    granularity: Granularity
+    loading: boolean
+}>>({})
 
 const granularityLabel = computed(() => {
     if (currentGranularity.value === 'day') return '天'
@@ -79,6 +86,7 @@ let pieResizeObserver: ResizeObserver | null = null
 let barResizeObserver: ResizeObserver | null = null
 let delayedRenderTimer: ReturnType<typeof setTimeout> | null = null
 let loadVersion = 0
+let previewLoadVersion = 0
 
 const formatMoney = (n: number) =>
     new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
@@ -90,6 +98,38 @@ const formatPeriodLabel = (period: string) => {
     if (currentGranularity.value === 'week') return period.replace(/^\d{4}-/, '')
     if (currentGranularity.value === 'month') return period.replace('-', '/')
     return period
+}
+
+const resolveGranularityForSubject = (
+    subject: StatsPanelConfig['subject'],
+    fallback: Granularity,
+): Granularity => {
+    if (subject === 'year') return 'year'
+    if (subject === 'quarter') return 'quarter'
+    if (subject === 'month') return 'month'
+    if (subject === 'week') return 'week'
+    if (subject === 'day') return 'day'
+    return fallback
+}
+
+const panelWindowFor = (panel: StatsPanelConfig) => {
+    return getRangeWindow(panel.default_range, createDefaultCustomRangeState(now), now)
+}
+
+const panelPreviewValue = (panelId: string) => {
+    return panelPreviewMap.value[panelId]?.value ?? 0
+}
+
+const panelPreviewCount = (panelId: string) => {
+    return panelPreviewMap.value[panelId]?.count ?? 0
+}
+
+const panelPreviewLabel = (panelId: string) => {
+    return panelPreviewMap.value[panelId]?.label ?? ''
+}
+
+const panelPreviewLoading = (panelId: string) => {
+    return panelPreviewMap.value[panelId]?.loading ?? false
 }
 
 const subjectLabels: Record<string, string> = {
@@ -269,6 +309,103 @@ const loadData = async () => {
     await renderChartsSafely()
 }
 
+const loadPanelPreviews = async () => {
+    if (!store.currentBookId) return
+
+    const targets = enabledPanels.value.filter(panel =>
+        panel.id !== primaryCategoryPanelId.value &&
+        panel.id !== primaryTrendPanelId.value &&
+        panel.id !== primaryTeamPanelId.value
+    )
+
+    const current = ++previewLoadVersion
+    const nextMap: Record<string, {
+        value: number
+        count: number
+        label: string
+        granularity: Granularity
+        loading: boolean
+    }> = {}
+
+    for (const panel of targets) {
+        nextMap[panel.id] = {
+            value: 0,
+            count: 0,
+            label: panelWindowFor(panel).label,
+            granularity: panelWindowFor(panel).granularity,
+            loading: true,
+        }
+    }
+    panelPreviewMap.value = nextMap
+
+    const results = await Promise.all(
+        targets.map(async (panel) => {
+            try {
+                const panelWindow = panelWindowFor(panel)
+                const granularity = resolveGranularityForSubject(panel.subject, panelWindow.granularity)
+                const res = await getRangeSummary(
+                    store.currentBookId!,
+                    toIsoLocal(panelWindow.start),
+                    toIsoLocal(panelWindow.end),
+                    granularity,
+                    panel.default_category || '',
+                )
+
+                const amounts = res.data.map(item => panel.default_type === '支出' ? item.expense : item.income)
+                const counts = res.data.map(item => panel.default_type === '支出' ? (item.expense_count || 0) : (item.income_count || 0))
+
+                let value = 0
+                if (panel.metric === 'count') {
+                    value = counts.reduce((sum, n) => sum + n, 0)
+                } else if (amounts.length > 0) {
+                    if (panel.metric === 'sum') value = amounts.reduce((sum, n) => sum + n, 0)
+                    if (panel.metric === 'avg') value = amounts.reduce((sum, n) => sum + n, 0) / amounts.length
+                    if (panel.metric === 'max') value = Math.max(...amounts)
+                    if (panel.metric === 'min') value = Math.min(...amounts)
+                }
+
+                return {
+                    panelId: panel.id,
+                    value,
+                    count: counts.reduce((sum, n) => sum + n, 0),
+                    label: panelWindow.label,
+                    granularity,
+                }
+            } catch (error) {
+                console.error('panel preview load failed', panel.id, error)
+                const panelWindow = panelWindowFor(panel)
+                return {
+                    panelId: panel.id,
+                    value: 0,
+                    count: 0,
+                    label: panelWindow.label,
+                    granularity: resolveGranularityForSubject(panel.subject, panelWindow.granularity),
+                }
+            }
+        })
+    )
+
+    if (current !== previewLoadVersion) return
+
+    const finalMap: Record<string, {
+        value: number
+        count: number
+        label: string
+        granularity: Granularity
+        loading: boolean
+    }> = {}
+    for (const result of results) {
+        finalMap[result.panelId] = {
+            value: result.value,
+            count: result.count,
+            label: result.label,
+            granularity: result.granularity,
+            loading: false,
+        }
+    }
+    panelPreviewMap.value = finalMap
+}
+
 const reloadPanels = () => {
     statsPanels.value = loadStatsPanels(store.currentBookId)
 }
@@ -278,33 +415,17 @@ const selectRange = (nextPreset: RangePreset) => {
     showRangeDialog.value = false
 }
 
-const metricValueForPanel = (panel: StatsPanelConfig) => {
-    const amountSeries = trendData.value.map(item => panel.default_type === '收入' ? item.income : item.expense)
-    const countSeries = trendData.value.map(item => panel.default_type === '收入' ? (item.income_count || 0) : (item.expense_count || 0))
-
-    if (panel.metric === 'count') {
-        return countSeries.reduce((sum, n) => sum + n, 0)
-    }
-
-    if (amountSeries.length === 0) return 0
-    if (panel.metric === 'sum') return amountSeries.reduce((sum, n) => sum + n, 0)
-    if (panel.metric === 'avg') return amountSeries.reduce((sum, n) => sum + n, 0) / amountSeries.length
-    if (panel.metric === 'max') return Math.max(...amountSeries)
-    if (panel.metric === 'min') return Math.min(...amountSeries)
-    return 0
-}
-
 const makeDetailQueryForPanel = (panel: StatsPanelConfig) => {
-    const window = timeWindow.value
-    const type = panel.id === primaryCategoryPanelId.value || panel.id === primaryTrendPanelId.value
-        ? statType.value
-        : panel.default_type
+    const isPrimary = panel.id === primaryCategoryPanelId.value || panel.id === primaryTrendPanelId.value
+    const window = isPrimary ? timeWindow.value : panelWindowFor(panel)
+    const type = isPrimary ? statType.value : panel.default_type
+    const granularity = resolveGranularityForSubject(panel.subject, window.granularity)
 
     return {
         start: toIsoLocal(window.start),
         end: toIsoLocal(window.end),
         label: window.label,
-        granularity: window.granularity,
+        granularity,
         type,
         panel_id: panel.id,
         category: panel.default_category,
@@ -313,7 +434,7 @@ const makeDetailQueryForPanel = (panel: StatsPanelConfig) => {
 
 const openPanelDetail = (panel: StatsPanelConfig) => {
     const query = makeDetailQueryForPanel(panel)
-    if (panel.kind === 'category') {
+    if (panel.kind === 'category' || panel.subject === 'category') {
         router.push({ name: 'StatsCategoryDetail', query })
         return
     }
@@ -346,13 +467,19 @@ watch(
     () => store.currentBookId,
     () => {
         reloadPanels()
+        loadPanelPreviews()
     }
 )
+
+watch(enabledPanels, () => {
+    loadPanelPreviews()
+})
 
 onMounted(async () => {
     if (!store.currentBookId) await store.fetchBooks()
     reloadPanels()
     await loadData()
+    await loadPanelPreviews()
 
     if (typeof ResizeObserver !== 'undefined') {
         pieResizeObserver = new ResizeObserver(() => pieChart?.resize())
@@ -504,8 +631,17 @@ onBeforeUnmount(() => {
           <p class="text-xs text-theme-muted mb-3">{{ panel.description || '自定义统计面板' }}</p>
           <div class="rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-700 p-3">
             <p class="text-xs text-theme-muted">{{ metricLabels[panel.metric] || '统计值' }}</p>
-            <p class="text-xl font-semibold text-theme-primary mt-1">{{ panel.metric === 'count' ? metricValueForPanel(panel) : `¥${formatMoney(metricValueForPanel(panel))}` }}</p>
-            <p class="text-xs text-theme-muted mt-1">对象：{{ subjectLabels[panel.subject] || panel.subject }} · {{ panel.default_type }}</p>
+            <p class="text-xl font-semibold text-theme-primary mt-1">
+              <Loader2 v-if="panelPreviewLoading(panel.id)" class="w-4 h-4 animate-spin" />
+              <template v-else>
+                {{ panel.metric === 'count' ? panelPreviewValue(panel.id) : `¥${formatMoney(panelPreviewValue(panel.id))}` }}
+              </template>
+            </p>
+            <p class="text-xs text-theme-muted mt-1">
+              对象：{{ subjectLabels[panel.subject] || panel.subject }} · {{ panel.default_type }}
+              <template v-if="panel.metric === 'count'"> · {{ panelPreviewCount(panel.id) }}笔</template>
+              <template v-if="panelPreviewLabel(panel.id)"> · {{ panelPreviewLabel(panel.id) }}</template>
+            </p>
           </div>
         </template>
       </div>
