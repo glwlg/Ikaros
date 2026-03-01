@@ -6,8 +6,7 @@ import { useAccountingStore } from '@/stores/accounting'
 import { getRecordsSummary, type MonthlySummary } from '@/api/accounting'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import {
-  BookOpen, Rss, Clock, Activity,
-  TrendingUp, TrendingDown, ArrowRight, LogOut
+  BookOpen, Rss, Clock, Activity, ArrowRight, LogOut
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -46,12 +45,6 @@ const handleLogout = async () => {
     }
 }
 
-const formatMoney = (n: number) => {
-    return new Intl.NumberFormat('zh-CN', {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 2,
-    }).format(n)
-}
 
 const modules = [
     {
@@ -144,33 +137,6 @@ const colorMap: Record<string, { bg: string; icon: string; border: string; hover
             <LogOut class="w-3.5 h-3.5" />
             退出登录
           </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Quick Stats (if accounting has data) -->
-    <div v-if="monthlySummary && accountingStore.currentBookId" class="mb-8">
-      <div class="grid grid-cols-3 gap-4">
-        <div class="bg-theme-elevated rounded-2xl border border-theme-primary p-4 shadow-sm">
-          <div class="flex items-center gap-2 mb-2">
-            <TrendingDown class="w-4 h-4 text-rose-500" />
-            <span class="text-xs text-theme-muted font-medium">本月支出</span>
-          </div>
-          <p class="text-xl font-bold text-rose-500">¥{{ formatMoney(monthlySummary.expense) }}</p>
-        </div>
-        <div class="bg-theme-elevated rounded-2xl border border-theme-primary p-4 shadow-sm">
-          <div class="flex items-center gap-2 mb-2">
-            <TrendingUp class="w-4 h-4 text-teal-500" />
-            <span class="text-xs text-theme-muted font-medium">本月收入</span>
-          </div>
-          <p class="text-xl font-bold text-teal-500">¥{{ formatMoney(monthlySummary.income) }}</p>
-        </div>
-        <div class="bg-theme-elevated rounded-2xl border border-theme-primary p-4 shadow-sm">
-          <div class="flex items-center gap-2 mb-2">
-            <BookOpen class="w-4 h-4 text-indigo-500" />
-            <span class="text-xs text-theme-muted font-medium">结余</span>
-          </div>
-          <p class="text-xl font-bold text-theme-primary">¥{{ formatMoney(monthlySummary.balance) }}</p>
         </div>
       </div>
     </div>
