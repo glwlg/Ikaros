@@ -105,3 +105,25 @@ class ScheduledTask(Base):
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
+
+class DebtOrReimbursement(Base):
+    __tablename__ = "accounting_debts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("accounting_books.id", ondelete="CASCADE"), nullable=False
+    )
+    # 借入 / 借出 / 报销
+    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    # The actual person or entity involved
+    contact: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Initial amount
+    total_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    # Current remaining/unsettled amount
+    remaining_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    # Optional due date
+    due_date: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    remark: Mapped[str] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    is_settled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+

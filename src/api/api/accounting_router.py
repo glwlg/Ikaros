@@ -10,7 +10,15 @@ from datetime import datetime
 from api.core.database import get_async_session
 from api.auth.users import current_active_user
 from api.auth.models import User
-from api.models.accounting import Book, Account, Category, Record, Budget, ScheduledTask
+from api.models.accounting import (
+    Book,
+    Account,
+    Category,
+    Record,
+    Budget,
+    ScheduledTask,
+    DebtOrReimbursement,
+)
 
 router = APIRouter()
 
@@ -58,6 +66,31 @@ class BudgetUpdate(BaseModel):
 
 class ScheduledTaskCreate(BaseModel):
     name: str
+    frequency: str
+    next_run: str
+    type: str
+    amount: float
+    account_name: str = ""
+    target_account_name: str = ""
+    category_name: str = "未分类"
+    payee: str = ""
+    remark: str = ""
+
+
+class DebtCreate(BaseModel):
+    type: str  # 借入 / 借出 / 报销
+    contact: str
+    amount: float
+    due_date: Optional[str] = None
+    remark: str = ""
+
+
+class DebtRepay(BaseModel):
+    amount: float
+    account_name: str = ""
+    # Usually repay logic involves recording an actual transaction plus reducing the debt balance
+    # Can also capture the record `remark` or simply attach to debt
+    remark: str = ""
     frequency: str
     next_run: str
     type: str
@@ -1184,7 +1217,7 @@ async def get_scheduled_tasks(
         .order_by(ScheduledTask.next_run.asc())
     )
     tasks = result.scalars().all()
-    
+
     enriched = []
     for t in tasks:
         # Resolve names for display
@@ -1193,28 +1226,33 @@ async def get_scheduled_tasks(
         target_acc_name = ""
         if t.category_id:
             cat = await session.get(Category, t.category_id)
-            if cat: cat_name = cat.name
+            if cat:
+                cat_name = cat.name
         if t.account_id:
             acc = await session.get(Account, t.account_id)
-            if acc: acc_name = acc.name
+            if acc:
+                acc_name = acc.name
         if t.target_account_id:
             tacc = await session.get(Account, t.target_account_id)
-            if tacc: target_acc_name = tacc.name
-            
-        enriched.append({
-            "id": t.id,
-            "name": t.name,
-            "frequency": t.frequency,
-            "next_run": t.next_run.isoformat(),
-            "type": t.type,
-            "amount": float(t.amount),
-            "category_name": cat_name,
-            "account_name": acc_name,
-            "target_account_name": target_acc_name,
-            "payee": t.payee or "",
-            "remark": t.remark or "",
-            "is_active": t.is_active
-        })
+            if tacc:
+                target_acc_name = tacc.name
+
+        enriched.append(
+            {
+                "id": t.id,
+                "name": t.name,
+                "frequency": t.frequency,
+                "next_run": t.next_run.isoformat(),
+                "type": t.type,
+                "amount": float(t.amount),
+                "category_name": cat_name,
+                "account_name": acc_name,
+                "target_account_name": target_acc_name,
+                "payee": t.payee or "",
+                "remark": t.remark or "",
+                "is_active": t.is_active,
+            }
+        )
     return enriched
 
 
@@ -1288,7 +1326,7 @@ async def create_scheduled_task(
         category_id=cat.id,
         payee=data.payee,
         remark=data.remark,
-        creator_id=user.id
+        creator_id=user.id,
     )
     session.add(task)
     await session.commit()
@@ -1309,3 +1347,103 @@ async def delete_scheduled_task(
     await session.delete(task)
     await session.commit()
     return {"message": "删除成功"}
+
+
+# ─── Debts & Reimbursements CRUD ────────────────────────────────────
+
+
+@router.get("/debts")
+async def get_debts(
+    book_id: int,
+    type: str = None, # optional filter
+    is_settled: bool = None,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+    query = select(DebtOrReimbursement).where(DebtOrReimbursement.book_id == book_id)
+    if type:
+        query = query.where(DebtOrReimbursement.type == type)
+    if is_settled !== None:
+        query = query.where(DebtOrReimbursement.is_settled == is_settled)
+        
+    result = await session.execute(query.order_by(DebtOrReimbursement.created_at.desc()))
+    debts = result.scalars().all()
+    
+    return [
+        {
+            "id": d.id,
+            "type": d.type,
+            "contact": d.contact,
+            "total_amount": float(d.total_amount),
+            "remaining_amount": float(d.remaining_amount),
+            "due_date": d.due_date.isoformat() if d.due_date else None,
+            "remark": d.remark,
+            "is_settled": d.is_settled,
+            "created_at": d.created_at.isoformat()
+        } for d in debts
+    ]
+
+
+@router.post("/debts")
+async def create_debt(
+    book_id: int,
+    data: DebtCreate,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+    
+    due_d = None
+    if data.due_date:
+        try:
+            due_d = datetime.fromisoformat(data.due_date)
+        except:
+            pass
+
+    debt = DebtOrReimbursement(
+        book_id=book_id,
+        type=data.type,
+        contact=data.contact[:100],
+        total_amount=data.amount,
+        remaining_amount=data.amount,
+        due_date=due_d,
+        remark=data.remark[:500],
+        creator_id=user.id
+    )
+    session.add(debt)
+    await session.commit()
+    return {"id": debt.id, "message": f"{data.type}记录创建成功"}
+
+
+@router.post("/debts/{debt_id}/repay")
+async def repay_debt(
+    book_id: int,
+    debt_id: int,
+    data: DebtRepay,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+    debt = await session.get(DebtOrReimbursement, debt_id)
+    if not debt or debt.book_id != book_id:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    if debt.is_settled:
+        raise HTTPException(status_code=400, detail="已结清")
+        
+    if data.amount <= 0:
+        raise HTTPException(status_code=400, detail="金额必须大于0")
+        
+    repay_amount = min(float(data.amount), float(debt.remaining_amount))
+    debt.remaining_amount = float(debt.remaining_amount) - repay_amount
+    
+    if debt.remaining_amount <= 0.01:
+        debt.remaining_amount = 0
+        debt.is_settled = True
+        
+    # Ideally, we would also create a Record representing the monetary transaction here.
+    # For simplicity, we just adjust the debt object state for now.
+    
+    await session.commit()
+    return {"message": "还款成功", "remaining_amount": debt.remaining_amount, "is_settled": debt.is_settled}
+
