@@ -150,7 +150,7 @@ onMounted(() => {
         <div class="p-4 space-y-4">
           <div>
             <label class="block text-sm text-slate-500 mb-1">指令内容</label>
-            <input v-model="formData.instruction" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" placeholder="例如: 播报今天的天气">
+            <textarea v-model="formData.instruction" rows="4" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none" placeholder="例如: 播报今天的天气"></textarea>
           </div>
           <div>
             <label class="block text-sm text-slate-500 mb-1">Crontab 表达式</label>
