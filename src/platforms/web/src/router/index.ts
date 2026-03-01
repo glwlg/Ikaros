@@ -15,6 +15,24 @@ const router = createRouter({
             meta: { title: '首页' },
         },
         {
+            path: '/modules/rss',
+            name: 'ModuleRss',
+            component: () => import('@/views/Modules/RssView.vue'),
+            meta: { title: 'RSS 订阅', fullscreen: true },
+        },
+        {
+            path: '/modules/scheduler',
+            name: 'ModuleScheduler',
+            component: () => import('@/views/Modules/SchedulerView.vue'),
+            meta: { title: '定时任务', fullscreen: true },
+        },
+        {
+            path: '/modules/monitor',
+            name: 'ModuleMonitor',
+            component: () => import('@/views/Modules/MonitorView.vue'),
+            meta: { title: '心跳监控', fullscreen: true },
+        },
+        {
             path: '/accounting',
             component: () => import('@/layouts/AccountingLayout.vue'),
             meta: { fullscreen: true },
