@@ -3,7 +3,7 @@ FROM node:22-alpine AS frontend-builder
 WORKDIR /app
 COPY src/platforms/web ./src/platforms/web
 WORKDIR /app/src/platforms/web
-RUN sed -i '/"overrides"/,+3d' package.json
+RUN node -e "let pkg=require('./package.json'); delete pkg.overrides; require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2))"
 RUN npm install
 RUN npm run build
 
