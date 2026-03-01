@@ -249,7 +249,7 @@ onMounted(loadData)
 
         <ul v-else class="divide-y divide-gray-50 dark:divide-slate-700/50">
           <li v-for="rec in records" :key="rec.id" class="px-4 py-3">
-            <div class="flex items-center justify-between">
+            <RouterLink :to="`/accounting/records/${rec.id}`" class="flex items-center justify-between hover:opacity-80 transition">
               <div class="flex items-center gap-3">
                 <div class="w-2 h-2 rounded-full bg-teal-400 flex-shrink-0" />
                 <div>
@@ -262,7 +262,7 @@ onMounted(loadData)
                   {{ rec.type === '收入' ? '+' : '-' }}¥{{ formatMoney(rec.amount) }}
                 </span>
               </div>
-            </div>
+            </RouterLink>
           </li>
         </ul>
 

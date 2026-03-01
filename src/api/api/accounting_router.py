@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, distinct, or_, and_, case, literal
+from sqlalchemy import select, func, distinct, or_, and_, case, literal, update
 from pydantic import BaseModel
 from typing import Optional
 import csv
@@ -37,6 +37,17 @@ class RecordCreate(BaseModel):
     record_time: Optional[str] = None
 
 
+class RecordUpdate(BaseModel):
+    type: Optional[str] = None
+    amount: Optional[float] = None
+    category_name: Optional[str] = None
+    account_name: Optional[str] = None
+    target_account_name: Optional[str] = None
+    payee: Optional[str] = None
+    remark: Optional[str] = None
+    record_time: Optional[str] = None
+
+
 class AccountCreate(BaseModel):
     name: str
     type: str = "现金"
@@ -62,6 +73,22 @@ class BudgetUpdate(BaseModel):
     month: str
     total_amount: float
     category_id: Optional[int] = None
+
+
+class BookUpdate(BaseModel):
+    name: str
+
+
+class CategoryCreate(BaseModel):
+    name: str
+    type: str
+    parent_id: Optional[int] = None
+
+
+class CategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    parent_id: Optional[int] = None
 
 
 class ScheduledTaskCreate(BaseModel):
@@ -90,15 +117,6 @@ class DebtRepay(BaseModel):
     account_name: str = ""
     # Usually repay logic involves recording an actual transaction plus reducing the debt balance
     # Can also capture the record `remark` or simply attach to debt
-    remark: str = ""
-    frequency: str
-    next_run: str
-    type: str
-    amount: float
-    account_name: str = ""
-    target_account_name: str = ""
-    category_name: str = "未分类"
-    payee: str = ""
     remark: str = ""
 
 
@@ -172,6 +190,38 @@ async def _get_or_create_category(
     return cat
 
 
+async def _serialize_record(session: AsyncSession, record: Record) -> dict:
+    category_name = ""
+    if record.category_id:
+        category = await session.get(Category, record.category_id)
+        if category:
+            category_name = category.name
+
+    account_name = ""
+    if record.account_id:
+        account = await session.get(Account, record.account_id)
+        if account:
+            account_name = account.name
+
+    target_account_name = ""
+    if record.target_account_id:
+        target_account = await session.get(Account, record.target_account_id)
+        if target_account:
+            target_account_name = target_account.name
+
+    return {
+        "id": record.id,
+        "type": record.type,
+        "amount": float(record.amount),
+        "category": category_name,
+        "account": account_name,
+        "target_account": target_account_name,
+        "payee": record.payee or "",
+        "remark": record.remark or "",
+        "record_time": record.record_time.isoformat() if record.record_time else "",
+    }
+
+
 # ─── Books CRUD ──────────────────────────────────────────────────────
 
 
@@ -199,6 +249,35 @@ async def create_book(
     await session.commit()
     await session.refresh(book)
     return {"id": book.id, "name": book.name}
+
+
+@router.put("/books/{book_id}")
+async def update_book(
+    book_id: int,
+    data: BookUpdate,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    book = await _get_book(book_id, user, session)
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="账本名称不能为空")
+
+    book.name = name[:100]
+    await session.commit()
+    return {"id": book.id, "name": book.name}
+
+
+@router.delete("/books/{book_id}")
+async def delete_book(
+    book_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    book = await _get_book(book_id, user, session)
+    await session.delete(book)
+    await session.commit()
+    return {"message": "账本已删除"}
 
 
 # ─── Records CRUD ────────────────────────────────────────────────────
@@ -239,38 +318,7 @@ async def get_records(
         query.order_by(Record.record_time.desc()).limit(limit)
     )
     records = result.scalars().all()
-    # Enrich with category/account names
-    enriched = []
-    for r in records:
-        cat_name = ""
-        if r.category_id:
-            cat = await session.get(Category, r.category_id)
-            if cat:
-                cat_name = cat.name
-        acc_name = ""
-        if r.account_id:
-            acc = await session.get(Account, r.account_id)
-            if acc:
-                acc_name = acc.name
-        target_acc_name = ""
-        if r.target_account_id:
-            tacc = await session.get(Account, r.target_account_id)
-            if tacc:
-                target_acc_name = tacc.name
-        enriched.append(
-            {
-                "id": r.id,
-                "type": r.type,
-                "amount": float(r.amount),
-                "category": cat_name,
-                "account": acc_name,
-                "target_account": target_acc_name,
-                "payee": r.payee or "",
-                "remark": r.remark or "",
-                "record_time": r.record_time.isoformat() if r.record_time else "",
-            }
-        )
-    return enriched
+    return [await _serialize_record(session, r) for r in records]
 
 
 @router.post("/records")
@@ -312,6 +360,37 @@ async def create_record(
 
 
 # ─── Statistics ──────────────────────────────────────────────────────
+
+
+def _parse_time_window(start_date: str, end_date: str) -> tuple[datetime, datetime]:
+    try:
+        start = datetime.fromisoformat(start_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date 格式错误")
+
+    try:
+        end = datetime.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="end_date 格式错误")
+
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end_date 必须晚于 start_date")
+
+    return start, end
+
+
+def _period_key_for_datetime(dt: datetime, granularity: str) -> str:
+    if granularity == "day":
+        return dt.strftime("%Y-%m-%d")
+    if granularity == "week":
+        iso_year, iso_week, _ = dt.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    if granularity == "month":
+        return dt.strftime("%Y-%m")
+    if granularity == "quarter":
+        quarter = ((dt.month - 1) // 3) + 1
+        return f"{dt.year}-Q{quarter}"
+    return dt.strftime("%Y")
 
 
 @router.get("/records/summary")
@@ -454,6 +533,100 @@ async def category_summary(
     ]
 
 
+@router.get("/records/category-summary-range")
+async def category_summary_range(
+    book_id: int,
+    start_date: str,
+    end_date: str,
+    type: str = "支出",
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """按任意日期范围做分类汇总"""
+    await _get_book(book_id, user, session)
+    start, end = _parse_time_window(start_date, end_date)
+
+    result = await session.execute(
+        select(
+            Category.name.label("category"),
+            func.sum(Record.amount).label("total"),
+        )
+        .join(Category, Record.category_id == Category.id, isouter=True)
+        .where(
+            Record.book_id == book_id,
+            Record.type == type,
+            Record.record_time >= start,
+            Record.record_time < end,
+        )
+        .group_by(Category.name)
+        .order_by(func.sum(Record.amount).desc())
+    )
+    rows = result.all()
+    return [
+        {"category": r.category or "未分类", "amount": float(r.total or 0)}
+        for r in rows
+    ]
+
+
+@router.get("/records/range-summary")
+async def range_summary(
+    book_id: int,
+    start_date: str,
+    end_date: str,
+    granularity: str = "month",
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """按任意日期范围和粒度做收支趋势汇总"""
+    await _get_book(book_id, user, session)
+    start, end = _parse_time_window(start_date, end_date)
+
+    allowed = {"day", "week", "month", "quarter", "year"}
+    if granularity not in allowed:
+        raise HTTPException(status_code=400, detail="granularity 不合法")
+
+    result = await session.execute(
+        select(
+            func.strftime("%Y-%m-%d", Record.record_time).label("day"),
+            Record.type,
+            func.sum(Record.amount).label("total"),
+        )
+        .where(
+            Record.book_id == book_id,
+            Record.record_time >= start,
+            Record.record_time < end,
+        )
+        .group_by("day", Record.type)
+        .order_by("day")
+    )
+    rows = result.all()
+
+    grouped: dict[str, dict[str, float | str]] = {}
+    for row in rows:
+        day = row.day
+        if not day:
+            continue
+        try:
+            dt = datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        key = _period_key_for_datetime(dt, granularity)
+        if key not in grouped:
+            grouped[key] = {"period": key, "income": 0.0, "expense": 0.0}
+
+        if row.type == "收入":
+            grouped[key]["income"] = float(grouped[key]["income"]) + float(
+                row.total or 0
+            )
+        elif row.type == "支出":
+            grouped[key]["expense"] = float(grouped[key]["expense"]) + float(
+                row.total or 0
+            )
+
+    return [grouped[k] for k in sorted(grouped.keys())]
+
+
 @router.get("/records/yearly-summary")
 async def yearly_summary(
     book_id: int,
@@ -486,6 +659,140 @@ async def yearly_summary(
             yearly[y]["expense"] = float(row.total or 0)
 
     return list(yearly.values())
+
+
+@router.get("/records/{record_id}")
+async def get_record_detail(
+    record_id: int,
+    book_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    record = await session.get(Record, record_id)
+    if not record or record.book_id != book_id:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    return await _serialize_record(session, record)
+
+
+@router.put("/records/{record_id}")
+async def update_record(
+    record_id: int,
+    book_id: int,
+    data: RecordUpdate,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    record = await session.get(Record, record_id)
+    if not record or record.book_id != book_id:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    if data.amount is not None:
+        if data.amount <= 0:
+            raise HTTPException(status_code=400, detail="金额必须大于0")
+        record.amount = data.amount
+
+    if data.type is not None:
+        new_type = data.type.strip()
+        if not new_type:
+            raise HTTPException(status_code=400, detail="类型不能为空")
+        if new_type not in {"支出", "收入", "转账"}:
+            raise HTTPException(status_code=400, detail="类型不合法")
+        record.type = new_type
+
+    current_category_name = ""
+    if record.category_id:
+        current_category = await session.get(Category, record.category_id)
+        if current_category:
+            current_category_name = current_category.name
+
+    should_update_category = False
+    category_name_to_use: Optional[str] = None
+    if data.category_name is not None:
+        category_name_to_use = data.category_name.strip()
+        should_update_category = True
+    elif data.type is not None:
+        category_name_to_use = current_category_name
+        should_update_category = True
+
+    if should_update_category:
+        if category_name_to_use:
+            category = await _get_or_create_category(
+                session,
+                book_id,
+                category_name_to_use,
+                record.type,
+            )
+            record.category_id = category.id if category else None
+        else:
+            record.category_id = None
+
+    if data.account_name is not None:
+        account_name = data.account_name.strip()
+        if account_name:
+            account = await _get_or_create_account(session, book_id, account_name)
+            record.account_id = account.id if account else None
+        else:
+            record.account_id = None
+
+    if data.target_account_name is not None:
+        target_account_name = data.target_account_name.strip()
+        if target_account_name:
+            target_account = await _get_or_create_account(
+                session,
+                book_id,
+                target_account_name,
+            )
+            record.target_account_id = target_account.id if target_account else None
+        else:
+            record.target_account_id = None
+    elif data.type is not None and record.type != "转账":
+        record.target_account_id = None
+
+    if data.record_time is not None:
+        raw_record_time = data.record_time.strip()
+        if not raw_record_time:
+            raise HTTPException(status_code=400, detail="记录时间不能为空")
+        try:
+            record.record_time = datetime.fromisoformat(raw_record_time)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="记录时间格式错误")
+
+    if data.payee is not None:
+        record.payee = data.payee[:100]
+
+    if data.remark is not None:
+        record.remark = data.remark[:500]
+
+    await session.commit()
+    await session.refresh(record)
+
+    return {
+        "message": "记录已更新",
+        "record": await _serialize_record(session, record),
+    }
+
+
+@router.delete("/records/{record_id}")
+async def delete_record(
+    record_id: int,
+    book_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    record = await session.get(Record, record_id)
+    if not record or record.book_id != book_id:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    await session.delete(record)
+    await session.commit()
+    return {"message": "记录已删除"}
 
 
 # ─── Helper: calculate dynamic account balance ──────────────────────
@@ -629,32 +936,7 @@ async def get_account_records(
     )
     records = result.scalars().all()
 
-    # 计算每条记录后的余额（从最早到最新累加）
-    enriched = []
-    for r in records:
-        cat_name = ""
-        if r.category_id:
-            cat = await session.get(Category, r.category_id)
-            if cat:
-                cat_name = cat.name
-        acc_name = ""
-        if r.account_id:
-            a = await session.get(Account, r.account_id)
-            if a:
-                acc_name = a.name
-        enriched.append(
-            {
-                "id": r.id,
-                "type": r.type,
-                "amount": float(r.amount),
-                "category": cat_name,
-                "account": acc_name,
-                "payee": r.payee or "",
-                "remark": r.remark or "",
-                "record_time": r.record_time.isoformat() if r.record_time else "",
-            }
-        )
-    return enriched
+    return [await _serialize_record(session, r) for r in records]
 
 
 @router.get("/accounts/{account_id}/balance-trend")
@@ -927,6 +1209,125 @@ async def list_categories(
     ]
 
 
+@router.post("/categories")
+async def create_category(
+    book_id: int,
+    data: CategoryCreate,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="分类名称不能为空")
+
+    category_type = data.type.strip()
+    if category_type not in {"支出", "收入", "转账"}:
+        raise HTTPException(status_code=400, detail="分类类型不合法")
+
+    exists_result = await session.execute(
+        select(Category).where(
+            Category.book_id == book_id,
+            Category.name == name,
+            Category.type == category_type,
+        )
+    )
+    exists = exists_result.scalars().first()
+    if exists:
+        return {
+            "id": exists.id,
+            "name": exists.name,
+            "type": exists.type,
+            "parent_id": exists.parent_id,
+        }
+
+    category = Category(
+        book_id=book_id,
+        name=name[:100],
+        type=category_type,
+        parent_id=data.parent_id,
+    )
+    session.add(category)
+    await session.commit()
+    await session.refresh(category)
+
+    return {
+        "id": category.id,
+        "name": category.name,
+        "type": category.type,
+        "parent_id": category.parent_id,
+    }
+
+
+@router.put("/categories/{category_id}")
+async def update_category(
+    category_id: int,
+    book_id: int,
+    data: CategoryUpdate,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    category = await session.get(Category, category_id)
+    if not category or category.book_id != book_id:
+        raise HTTPException(status_code=404, detail="分类不存在")
+
+    if data.name is not None:
+        next_name = data.name.strip()
+        if not next_name:
+            raise HTTPException(status_code=400, detail="分类名称不能为空")
+        category.name = next_name[:100]
+
+    if data.type is not None:
+        next_type = data.type.strip()
+        if next_type not in {"支出", "收入", "转账"}:
+            raise HTTPException(status_code=400, detail="分类类型不合法")
+        category.type = next_type
+
+    if data.parent_id is not None:
+        category.parent_id = data.parent_id
+
+    await session.commit()
+    await session.refresh(category)
+    return {
+        "id": category.id,
+        "name": category.name,
+        "type": category.type,
+        "parent_id": category.parent_id,
+    }
+
+
+@router.delete("/categories/{category_id}")
+async def delete_category(
+    category_id: int,
+    book_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    category = await session.get(Category, category_id)
+    if not category or category.book_id != book_id:
+        raise HTTPException(status_code=404, detail="分类不存在")
+
+    await session.execute(
+        update(Record).where(Record.category_id == category_id).values(category_id=None)
+    )
+    await session.execute(
+        update(Budget).where(Budget.category_id == category_id).values(category_id=None)
+    )
+    await session.execute(
+        update(ScheduledTask)
+        .where(ScheduledTask.category_id == category_id)
+        .values(category_id=None)
+    )
+    await session.delete(category)
+    await session.commit()
+    return {"message": "分类已删除"}
+
+
 # ─── Stats Overview ──────────────────────────────────────────────────
 
 
@@ -967,7 +1368,64 @@ async def stats_overview(
     return {"days": days, "transactions": transactions, "net_assets": net_assets}
 
 
-# ─── CSV Import ──────────────────────────────────────────────────────
+# ─── CSV Import / Export ─────────────────────────────────────────────
+
+
+@router.get("/export/csv")
+async def export_csv(
+    book_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    result = await session.execute(
+        select(Record)
+        .where(Record.book_id == book_id)
+        .order_by(Record.record_time.desc(), Record.id.desc())
+    )
+    records = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "ID",
+            "类型",
+            "金额",
+            "分类",
+            "账户",
+            "转入账户",
+            "交易对象",
+            "备注",
+            "记录时间",
+        ]
+    )
+
+    for record in records:
+        payload = await _serialize_record(session, record)
+        writer.writerow(
+            [
+                payload["id"],
+                payload["type"],
+                payload["amount"],
+                payload["category"],
+                payload["account"],
+                payload["target_account"],
+                payload["payee"],
+                payload["remark"],
+                payload["record_time"],
+            ]
+        )
+
+    filename = f"accounting_{book_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    content = "\ufeff" + output.getvalue()
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    }
+    return Response(
+        content=content, media_type="text/csv; charset=utf-8", headers=headers
+    )
 
 
 @router.post("/import/csv")
@@ -990,7 +1448,7 @@ async def import_csv(
         try:
             decoded = contents.decode(encoding)
             break
-        except UnicodeDecodeError, LookupError:
+        except (UnicodeDecodeError, LookupError):
             continue
     if decoded is None:
         raise HTTPException(
@@ -1311,7 +1769,7 @@ async def create_scheduled_task(
 
     try:
         next_r = datetime.fromisoformat(data.next_run)
-    except:
+    except Exception:
         next_r = datetime.utcnow()
 
     task = ScheduledTask(
@@ -1401,7 +1859,7 @@ async def create_debt(
     if data.due_date:
         try:
             due_d = datetime.fromisoformat(data.due_date)
-        except:
+        except Exception:
             pass
 
     debt = DebtOrReimbursement(

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import { getRecords, type RecordItem } from '@/api/accounting'
-import { Loader2, Search, Calendar as CalendarIcon, X } from 'lucide-vue-next'
+import { Loader2, Search, Calendar as CalendarIcon, X, ChevronRight } from 'lucide-vue-next'
 
+const router = useRouter()
 const store = useAccountingStore()
 const loading = ref(false)
 const records = ref<RecordItem[]>([])
@@ -55,6 +57,10 @@ const clearFilters = () => {
     keyword.value = ''
     searchInput.value = ''
     loadData()
+}
+
+const openRecordDetail = (id: number) => {
+    router.push({ name: 'RecordDetail', params: { id } })
 }
 
 watch([startDate, endDate, selectedType], () => loadData())
@@ -120,7 +126,12 @@ onMounted(async () => {
       </div>
 
       <ul v-else class="divide-y divide-gray-50 dark:divide-slate-700/50">
-        <li v-for="rec in records" :key="rec.id" class="px-4 py-3">
+        <li
+          v-for="rec in records"
+          :key="rec.id"
+          class="px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700/30 transition"
+          @click="openRecordDetail(rec.id)"
+        >
           <div class="flex items-start justify-between">
             <!-- Left -->
             <div class="flex items-start gap-3">
@@ -139,12 +150,15 @@ onMounted(async () => {
             </div>
             <!-- Right -->
             <div class="text-right flex-shrink-0">
-              <p :class="[
-                'font-semibold text-sm',
-                rec.type === '收入' ? 'text-teal-500' : (rec.type === '转账' ? 'text-amber-500' : 'text-rose-500')
-              ]">
-                {{ rec.type === '收入' ? '+' : '' }}¥{{ formatMoney(rec.amount) }}
-              </p>
+              <div class="flex items-center justify-end gap-1">
+                <p :class="[
+                  'font-semibold text-sm',
+                  rec.type === '收入' ? 'text-teal-500' : (rec.type === '转账' ? 'text-amber-500' : 'text-rose-500')
+                ]">
+                  {{ rec.type === '收入' ? '+' : '' }}¥{{ formatMoney(rec.amount) }}
+                </p>
+                <ChevronRight class="w-3.5 h-3.5 text-theme-muted" />
+              </div>
               <p v-if="rec.account" class="text-[10px] text-theme-muted mt-0.5 px-1.5 py-0.5 rounded bg-gray-50 dark:bg-slate-700 inline-block">
                 <template v-if="rec.type === '转账'">{{ rec.account }} -> {{ rec.target_account }}</template>
                 <template v-else>{{ rec.account }}</template>

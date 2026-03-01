@@ -1,8 +1,8 @@
-import { createRouter, createWebHashHistory } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
-    history: createWebHashHistory(import.meta.env.BASE_URL),
+    history: createWebHistory(import.meta.env.BASE_URL),
     routes: [
         {
             path: '/',
@@ -61,16 +61,49 @@ const router = createRouter({
                     meta: { title: '我的' },
                 },
                 {
+                    path: 'manage/:kind',
+                    name: 'ProfileManage',
+                    component: () => import('@/views/Accounting/ManageCenterView.vue'),
+                    meta: { title: '管理中心' },
+                    props: true,
+                },
+                {
+                    path: 'settings/:kind',
+                    name: 'ProfileSettings',
+                    component: () => import('@/views/Accounting/ProfileSettingsView.vue'),
+                    meta: { title: '设置' },
+                    props: true,
+                },
+                {
                     path: 'records',
                     name: 'RecordList',
                     component: () => import('@/views/Accounting/RecordListView.vue'),
                     meta: { title: '交易明细' },
                 },
                 {
+                    path: 'records/:id',
+                    name: 'RecordDetail',
+                    component: () => import('@/views/Accounting/RecordDetailView.vue'),
+                    meta: { title: '交易详情' },
+                    props: true,
+                },
+                {
                     path: 'budgets',
                     name: 'BudgetList',
                     component: () => import('@/views/Accounting/BudgetView.vue'),
                     meta: { title: '预算管理' },
+                },
+                {
+                    path: 'debts',
+                    name: 'DebtList',
+                    component: () => import('@/views/Accounting/DebtView.vue'),
+                    meta: { title: '往来管理' },
+                },
+                {
+                    path: 'scheduled-tasks',
+                    name: 'ScheduledTaskList',
+                    component: () => import('@/views/Accounting/ScheduledTaskView.vue'),
+                    meta: { title: '计划管理' },
                 },
             ],
         },

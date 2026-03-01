@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from api.api.router import api_router
 from api.auth.router import router as auth_router
@@ -61,8 +61,32 @@ async def serve_spa(full_path: str):
     file_path = os.path.join(static_dir, full_path)
     if os.path.isfile(file_path):
         return FileResponse(file_path)
+
     # SPA Fallback
-    return FileResponse(os.path.join(static_dir, "index.html"))
+    index_path = os.path.join(static_dir, "index.html")
+
+    # Generate Accounting-specific PWA headers on the fly
+    if full_path.startswith("accounting"):
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                html = f.read()
+            # Swap to accounting manifest
+            html = html.replace(
+                "/manifest.webmanifest", "/accounting-manifest.webmanifest"
+            )
+            # Add Apple-specific PWA meta tags
+            apple_tags = """
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="智能记账" />
+  <link rel="apple-touch-icon" href="/logo.png" />
+</head>"""
+            html = html.replace("</head>", apple_tags)
+            return HTMLResponse(content=html)
+        except Exception:
+            pass
+
+    return FileResponse(index_path)
 
 
 if __name__ == "__main__":

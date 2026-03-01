@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, nextTick, computed } from 'vue'
 import { useAccountingStore } from '@/stores/accounting'
 import { getCategorySummary, getYearlySummary, type CategorySummaryItem, type YearlySummaryItem } from '@/api/accounting'
 import { ChevronRight, Loader2 } from 'lucide-vue-next'
@@ -52,12 +52,15 @@ const loadData = async () => {
         ])
         categoryData.value = catRes.data
         yearlyData.value = yearRes.data
-        await nextTick()
-        renderPie()
-        renderBar()
     } finally {
         loading.value = false
     }
+
+    await nextTick()
+    renderPie()
+    renderBar()
+    pieChart?.resize()
+    barChart?.resize()
 }
 
 const tealColors = [
@@ -150,9 +153,23 @@ const renderBar = () => {
 
 watch([statType, selectedYear, selectedMonth], () => loadData())
 
+const handleResize = () => {
+    pieChart?.resize()
+    barChart?.resize()
+}
+
 onMounted(async () => {
     if (!store.currentBookId) await store.fetchBooks()
     await loadData()
+    window.addEventListener('resize', handleResize)
+})
+
+onBeforeUnmount(() => {
+    window.removeEventListener('resize', handleResize)
+    pieChart?.dispose()
+    barChart?.dispose()
+    pieChart = null
+    barChart = null
 })
 </script>
 

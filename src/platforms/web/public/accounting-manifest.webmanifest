@@ -1,8 +1,8 @@
 {
-    "name": "X-Bot",
-    "short_name": "X-Bot",
-    "description": "A PWA application for X-Bot",
-    "start_url": "/",
+    "name": "X-Bot Accounting",
+    "short_name": "Accounting",
+    "description": "A PWA accounting application for X-Bot",
+    "start_url": "/accounting",
     "display": "standalone",
     "background_color": "#ffffff",
     "theme_color": "#18181b",

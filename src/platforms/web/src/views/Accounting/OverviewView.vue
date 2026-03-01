@@ -290,7 +290,7 @@ onMounted(async () => {
 
         <ul v-else class="divide-y divide-gray-50 dark:divide-slate-700/50">
           <li v-for="rec in recentRecords" :key="rec.id" class="px-4 py-3">
-            <div class="flex items-start justify-between">
+            <RouterLink :to="`/accounting/records/${rec.id}`" class="flex items-start justify-between hover:opacity-80 transition">
               <!-- Left -->
               <div class="flex items-start gap-3">
                 <div class="w-2 h-2 mt-2 rounded-full bg-teal-400 flex-shrink-0" />
@@ -314,7 +314,7 @@ onMounted(async () => {
                   {{ rec.account }}
                 </p>
               </div>
-            </div>
+            </RouterLink>
           </li>
         </ul>
       </div>

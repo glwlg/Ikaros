@@ -15,8 +15,20 @@ const tabs = [
 
 const isActiveTab = (path: string) => route.path === path
 
+const isPWA = typeof window !== 'undefined' && 
+    (window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && (navigator as any).standalone))
+
 // Hide layout chrome on sub-pages with own headers
-const isSubPage = computed(() => ['AccountDetail', 'RecordList', 'BudgetList'].includes(route.name as string))
+const isSubPage = computed(() => [
+    'AccountDetail',
+    'RecordList',
+    'RecordDetail',
+    'BudgetList',
+    'DebtList',
+    'ScheduledTaskList',
+    'ProfileManage',
+    'ProfileSettings',
+].includes(route.name as string))
 </script>
 
 <template>
@@ -27,6 +39,7 @@ const isSubPage = computed(() => ['AccountDetail', 'RecordList', 'BudgetList'].i
       class="sticky top-0 z-20 bg-gradient-to-r from-teal-500 to-teal-400 dark:from-teal-700 dark:to-teal-600 px-4 py-3 flex items-center gap-3 shadow-sm"
     >
       <RouterLink
+        v-if="!isPWA"
         to="/home"
         class="flex items-center gap-1.5 text-white/90 hover:text-white transition text-sm font-medium"
       >
@@ -65,4 +78,3 @@ const isSubPage = computed(() => ['AccountDetail', 'RecordList', 'BudgetList'].i
     </nav>
   </div>
 </template>
-
