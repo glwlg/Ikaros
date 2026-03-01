@@ -21,7 +21,7 @@ class AuthConfig(BaseModel):
     """认证配置"""
 
     secret_key: str = "SUPER_SECRET_KEY_CHANGEME"  # JWT 密钥
-    access_token_expire_minutes: int = 60 * 24  # Token 有效期，默认 24 小时
+    access_token_expire_minutes: int = 60 * 24 * 3650  # Token 有效期，默认 10 年
 
 
 _toml_config_data: Dict[str, Any] = {}

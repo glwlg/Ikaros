@@ -57,7 +57,8 @@ const modules = [
         desc: '聚合新闻源，定时推送感兴趣的内容',
         icon: Rss,
         color: 'orange',
-        enabled: false,
+        enabled: true,
+        action: () => router.push('/modules/rss'),
     },
     {
         id: 'scheduler',
@@ -65,7 +66,8 @@ const modules = [
         desc: '设置定时提醒、数据采集等自动化任务',
         icon: Clock,
         color: 'blue',
-        enabled: false,
+        enabled: true,
+        action: () => router.push('/modules/scheduler'),
     },
     {
         id: 'monitor',
@@ -73,7 +75,8 @@ const modules = [
         desc: '监控服务可用性，异常时自动告警',
         icon: Activity,
         color: 'purple',
-        enabled: false,
+        enabled: true,
+        action: () => router.push('/modules/monitor'),
     },
 ]
 
