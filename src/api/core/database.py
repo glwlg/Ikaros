@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
 )
 from sqlalchemy.orm import declarative_base
-from src.api.core.config import settings
 
 Base = declarative_base()
 
@@ -21,7 +20,7 @@ _async_session_maker: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        db_url = f"sqlite+aiosqlite:///data/bot_data.db"
+        db_url = "sqlite+aiosqlite:///data/bot_data.db"
         _engine = create_async_engine(
             db_url,
             echo=False,
@@ -56,7 +55,8 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db():
     engine = get_engine()
-    from src.api.auth.models import User, OAuthAccount
+    from src.api.auth.models import User, OAuthAccount  # noqa: F401
+    from src.api.models.binding import PlatformUserBinding  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
