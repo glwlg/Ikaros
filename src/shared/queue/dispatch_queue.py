@@ -123,6 +123,29 @@ class DispatchQueue:
                 return task
         return None
 
+    async def update_progress(self, task_id: str, progress: Dict[str, Any]) -> bool:
+        safe_task_id = str(task_id or "").strip()
+        if not safe_task_id:
+            return False
+        async with self.tasks._inproc_lock:
+            from shared.queue.jsonl_queue import FileLock
+
+            async with FileLock(self.tasks.lock_path):
+                rows = self.tasks._read_all_unlocked()
+                updated = False
+                for row in rows:
+                    if str(row.get("task_id") or "") != safe_task_id:
+                        continue
+                    meta = dict(row.get("metadata") or {})
+                    meta["progress"] = progress
+                    row["metadata"] = meta
+                    row["updated_at"] = now_iso()
+                    updated = True
+                    break
+                if updated:
+                    self.tasks._write_all_unlocked(rows)
+                return updated
+
     async def list_tasks(
         self,
         *,
