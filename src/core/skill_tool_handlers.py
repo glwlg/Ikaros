@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Awaitable, Callable, Dict
 
 from core.task_inbox import task_inbox
 from core.tools.dev_tools import dev_tools
 from core.tools.dispatch_tools import dispatch_tools
+from manager.integrations.github_client import parse_repo_slug
 
 
 SkillToolHandler = Callable[[Any, Dict[str, Any]], Awaitable[Dict[str, Any]]]
+
+
+_GITHUB_URL_PATTERN = re.compile(r"https?://github\.com/[^\s)\"'>]+", re.IGNORECASE)
 
 
 class SkillToolHandlerRegistry:
@@ -68,6 +73,90 @@ def _dispatch_metadata_from_runtime(
     return metadata_obj
 
 
+def _extract_first_github_url(text: str) -> str:
+    match = _GITHUB_URL_PATTERN.search(str(text or "").strip())
+    if not match:
+        return ""
+    return str(match.group(0) or "").strip().rstrip(".,)")
+
+
+def _derive_skill_name(*, tool_args: Dict[str, Any], user_request: str) -> str:
+    explicit = str(tool_args.get("skill_name") or "").strip()
+    if explicit:
+        return explicit
+
+    repo_url = str(tool_args.get("repo_url") or "").strip() or _extract_first_github_url(
+        user_request
+    )
+    owner = str(tool_args.get("owner") or "").strip()
+    repo = str(tool_args.get("repo") or "").strip()
+    if owner and repo:
+        return repo
+    if repo_url:
+        _owner, resolved_repo = parse_repo_slug(repo_url)
+        if resolved_repo:
+            return resolved_repo
+    return ""
+
+
+def _looks_like_external_skill_integration(
+    *,
+    requested_action: str,
+    tool_args: Dict[str, Any],
+    user_request: str,
+) -> bool:
+    action = str(requested_action or "").strip().lower()
+    if action not in {"", "run", "plan", "skill_create", "skill_template"}:
+        return False
+    if str(tool_args.get("source") or "").strip() == "manual_install_after_coding":
+        return False
+
+    repo_url = str(tool_args.get("repo_url") or "").strip() or _extract_first_github_url(
+        user_request
+    )
+    owner = str(tool_args.get("owner") or "").strip()
+    repo = str(tool_args.get("repo") or "").strip()
+    raw = " ".join(
+        [
+            str(user_request or ""),
+            str(tool_args.get("requirement") or ""),
+            str(tool_args.get("instruction") or ""),
+        ]
+    ).lower()
+    skill_tokens = ("skill", "技能", "阿黑", "worker")
+    integration_tokens = ("集成", "安装", "接入", "给阿黑用", "让阿黑用", "adopt", "install", "integrate")
+
+    has_repo_ref = bool(repo_url) or bool(owner and repo)
+    return has_repo_ref and any(token in raw for token in skill_tokens) and any(
+        token in raw for token in integration_tokens
+    )
+
+
+def _software_delivery_notify_target(dispatcher: Any) -> Dict[str, str]:
+    ctx_user_data = getattr(dispatcher.ctx, "user_data", None)
+    user_data = ctx_user_data if isinstance(ctx_user_data, dict) else {}
+    msg = getattr(dispatcher.ctx, "message", None)
+    msg_user = getattr(msg, "user", None)
+    msg_chat = getattr(msg, "chat", None)
+
+    platform = str(getattr(msg, "platform", "") or "").strip()
+    chat_id = str(getattr(msg_chat, "id", "") or "").strip()
+    user_id = str(getattr(msg_user, "id", "") or "").strip()
+
+    forced_platform = str(user_data.get("worker_delivery_platform") or "").strip()
+    forced_chat_id = str(user_data.get("worker_delivery_chat_id") or "").strip()
+    if forced_platform:
+        platform = forced_platform
+    if forced_chat_id:
+        chat_id = forced_chat_id
+
+    return {
+        "notify_platform": platform,
+        "notify_chat_id": chat_id,
+        "notify_user_id": user_id,
+    }
+
+
 async def _list_workers_handler(
     dispatcher: Any,
     tool_args: Dict[str, Any],
@@ -123,13 +212,26 @@ async def _software_delivery_handler(
     tool_args: Dict[str, Any],
 ) -> Dict[str, Any]:
     user_request = dispatcher._extract_user_request()
+    repo_url = str(tool_args.get("repo_url") or "").strip() or _extract_first_github_url(
+        user_request
+    )
     requested_action = dispatcher._infer_software_delivery_action(
         requested_action=str(tool_args.get("action") or "run"),
         user_request=user_request,
-        args=dict(tool_args),
+        args={**dict(tool_args), "repo_url": repo_url},
     )
     requested_requirement = str(tool_args.get("requirement") or "")
     requested_instruction = str(tool_args.get("instruction") or "")
+    resolved_skill_name = _derive_skill_name(tool_args=tool_args, user_request=user_request)
+    notify_target = _software_delivery_notify_target(dispatcher)
+
+    if _looks_like_external_skill_integration(
+        requested_action=requested_action,
+        tool_args=tool_args,
+        user_request=user_request,
+    ):
+        requested_action = "skill_create"
+
     return await dev_tools.software_delivery(
         action=requested_action,
         task_id=str(tool_args.get("task_id") or ""),
@@ -137,9 +239,9 @@ async def _software_delivery_handler(
         instruction=requested_instruction or requested_requirement or user_request,
         issue=str(tool_args.get("issue") or ""),
         repo_path=str(tool_args.get("repo_path") or ""),
-        repo_url=str(tool_args.get("repo_url") or ""),
+        repo_url=repo_url,
         cwd=str(tool_args.get("cwd") or ""),
-        skill_name=str(tool_args.get("skill_name") or ""),
+        skill_name=resolved_skill_name,
         source=str(tool_args.get("source") or ""),
         template_kind=str(tool_args.get("template_kind") or ""),
         owner=str(tool_args.get("owner") or ""),
@@ -158,6 +260,9 @@ async def _software_delivery_handler(
         target_service=str(tool_args.get("target_service") or ""),
         rollout=str(tool_args.get("rollout") or ""),
         validate_only=tool_args.get("validate_only", False),
+        notify_platform=notify_target["notify_platform"],
+        notify_chat_id=notify_target["notify_chat_id"],
+        notify_user_id=notify_target["notify_user_id"],
     )
 
 

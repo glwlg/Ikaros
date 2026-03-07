@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -171,6 +172,22 @@ def _normalize_policy_groups(value: Any) -> List[str]:
     return rows
 
 
+def _normalize_skill_alias(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    safe_chars: list[str] = []
+    for ch in raw:
+        if ch.isalnum() or ch in {"-", "_"}:
+            safe_chars.append(ch)
+        else:
+            safe_chars.append("_")
+    token = "".join(safe_chars).replace("-", "_")
+    while "__" in token:
+        token = token.replace("__", "_")
+    return token.strip("_")
+
+
 def _normalize_tool_exports(
     *,
     frontmatter: Dict[str, Any],
@@ -290,9 +307,33 @@ class SkillLoader:
 
         self._loaded_modules: Dict[str, Any] = {}
         self._skill_index: Dict[str, Dict[str, Any]] = {}
+        self._skill_aliases: Dict[str, str] = {}
+        self._tree_fingerprint: tuple[tuple[str, int], ...] = ()
+
+    def _compute_tree_fingerprint(self) -> tuple[tuple[str, int], ...]:
+        root = Path(self.skills_dir)
+        if not root.exists():
+            return ()
+
+        rows: list[tuple[str, int]] = []
+        for path in root.glob("**/SKILL.md"):
+            try:
+                rel = str(path.relative_to(root)).replace("\\", "/")
+                rows.append((rel, int(path.stat().st_mtime_ns)))
+            except Exception:
+                continue
+        rows.sort()
+        return tuple(rows)
+
+    def refresh_if_changed(self) -> Dict[str, Dict[str, Any]]:
+        fingerprint = self._compute_tree_fingerprint()
+        if not self._skill_index or fingerprint != self._tree_fingerprint:
+            self.scan_skills()
+        return self._skill_index
 
     def scan_skills(self) -> Dict[str, Dict[str, Any]]:
         self._skill_index.clear()
+        self._skill_aliases.clear()
 
         for subdir in ["builtin", "learned"]:
             dir_path = os.path.join(self.skills_dir, subdir)
@@ -313,6 +354,17 @@ class SkillLoader:
                     continue
 
                 self._skill_index[parsed["name"]] = parsed
+                for alias in {
+                    str(parsed["name"] or "").strip(),
+                    str(os.path.basename(skill_dir) or "").strip(),
+                    _normalize_skill_alias(parsed.get("name")),
+                    _normalize_skill_alias(os.path.basename(skill_dir)),
+                }:
+                    safe_alias = str(alias or "").strip()
+                    if safe_alias:
+                        self._skill_aliases[safe_alias] = parsed["name"]
+
+        self._tree_fingerprint = self._compute_tree_fingerprint()
 
         logger.info(
             "Total skills indexed: %s. Keys: %s",
@@ -437,8 +489,7 @@ class SkillLoader:
     # 移除旧的 schema 提取相关方法 (525行)
 
     def get_skill_index(self) -> Dict[str, Dict[str, Any]]:
-        if not self._skill_index:
-            self.scan_skills()
+        self.refresh_if_changed()
         return self._skill_index
 
     def get_skills_summary(self) -> List[Dict[str, Any]]:
@@ -480,9 +531,14 @@ class SkillLoader:
             name = skill.get("name", "").lower()
             desc = skill.get("description", "").lower()
             trigger_text = " ".join(map(str, skill.get("triggers") or [])).lower()
+            alias_name = _normalize_skill_alias(name)
+            alias_query = _normalize_skill_alias(query_lower)
 
             score = max(
                 difflib.SequenceMatcher(None, query_lower, name).ratio(),
+                difflib.SequenceMatcher(None, alias_query, alias_name).ratio()
+                if alias_query and alias_name
+                else 0.0,
                 difflib.SequenceMatcher(None, query_lower, desc[:300]).ratio()
                 if desc
                 else 0.0,
@@ -491,7 +547,7 @@ class SkillLoader:
                 else 0.0,
             )
 
-            if query_lower in name:
+            if query_lower in name or (alias_query and alias_query in alias_name):
                 score = max(score, 1.0)
 
             if score >= threshold:
@@ -503,7 +559,18 @@ class SkillLoader:
         return matched
 
     def get_skill(self, skill_name: str) -> Optional[Dict[str, Any]]:
-        return self.get_skill_index().get(skill_name)
+        safe_name = str(skill_name or "").strip()
+        if not safe_name:
+            return None
+        index = self.get_skill_index()
+        direct = index.get(safe_name)
+        if direct is not None:
+            return direct
+        alias_key = _normalize_skill_alias(safe_name)
+        mapped = self._skill_aliases.get(alias_key) or self._skill_aliases.get(safe_name)
+        if not mapped:
+            return None
+        return index.get(mapped)
 
     def get_tool_exports(self) -> List[Dict[str, Any]]:
         exports: List[Dict[str, Any]] = []

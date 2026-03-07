@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import core.platform.registry as registry_module
 import manager.dev.service as service_module
 from manager.dev.service import ManagerDevService
 
@@ -119,6 +120,29 @@ class _FakeGitHub:
             "id": 1,
             "html_url": "https://github.com/acme/project/issues/12#issuecomment-1",
         }
+
+
+class _FakeAdapter:
+    def __init__(self):
+        self.drafts = []
+        self.messages = []
+
+    async def send_message_draft(self, **kwargs):
+        self.drafts.append(dict(kwargs))
+        return True
+
+    async def send_message(self, **kwargs):
+        self.messages.append(dict(kwargs))
+        return True
+
+
+class _FakeAdapterManager:
+    def __init__(self, adapter):
+        self.adapter = adapter
+
+    def get_adapter(self, platform):
+        _ = platform
+        return self.adapter
 
 
 async def _wait_background(service: ManagerDevService) -> None:
@@ -567,4 +591,234 @@ async def test_software_delivery_skill_template_runs_contract_preflight(monkeypa
 
     assert result["ok"] is True
     await _wait_background(service)
-    assert calls == [("python scripts/execute.py --help", "/tmp/repo/skills/learned/demo_skill", 600)]
+    assert calls == [
+        ("python scripts/execute.py --help", "/tmp/repo/skills/learned/demo_skill", 600)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_software_delivery_skill_template_uses_external_source_workspace(
+    monkeypatch, tmp_path
+):
+    source_root = tmp_path / "source-skill"
+    (source_root / "scripts").mkdir(parents=True, exist_ok=True)
+    (source_root / "SKILL.md").write_text(
+        "---\nname: union-search-skill\ndescription: external skill\n---\n",
+        encoding="utf-8",
+    )
+    (source_root / "scripts" / "union_search.py").write_text(
+        "print('ok')\n",
+        encoding="utf-8",
+    )
+
+    async def fake_run_coding_backend(**kwargs):
+        raise AssertionError(f"run_coding_backend should not be called: {kwargs}")
+
+    class _SourceWorkspace(_FakeWorkspace):
+        async def prepare_workspace(self, **kwargs):
+            if str(kwargs.get("repo_url") or "").strip():
+                return {
+                    "ok": True,
+                    "path": str(source_root),
+                    "origin_url": str(kwargs.get("repo_url") or ""),
+                    "owner": "runningZ1",
+                    "repo": "union-search-skill",
+                    "default_branch": "main",
+                }
+            return await super().prepare_workspace(**kwargs)
+
+    monkeypatch.setattr(service_module, "run_coding_backend", fake_run_coding_backend)
+
+    service = ManagerDevService()
+    service.workspace = _SourceWorkspace()
+    target_dir = tmp_path / "imported-skill"
+
+    result = await service.software_delivery(
+        action="skill_create",
+        skill_name="union-search-skill",
+        instruction="把这个技能集成给阿黑用",
+        cwd=str(target_dir),
+        repo_url="https://github.com/runningZ1/union-search-skill",
+        backend="codex",
+    )
+
+    assert result["ok"] is True
+    await _wait_background(service)
+    status = await service.software_delivery(action="status", task_id=result["task_id"])
+    task = dict(status["data"]["task"] or {})
+    implementation = dict(task.get("implementation") or {})
+    implementation_result = dict(implementation.get("result") or {})
+
+    assert status["status"] == "done"
+    assert implementation.get("backend") == "import"
+    assert implementation_result.get("source_root") == str(source_root)
+    target_dir = Path(str(task.get("template", {}).get("cwd") or ""))
+    assert (target_dir / "SKILL.md").exists()
+    assert (target_dir / "scripts" / "union_search.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_software_delivery_skill_template_emits_progress_heartbeat_and_compact_completion(
+    monkeypatch, tmp_path
+):
+    adapter = _FakeAdapter()
+    monkeypatch.setattr(
+        registry_module,
+        "adapter_manager",
+        _FakeAdapterManager(adapter),
+    )
+    monkeypatch.setenv("SOFTWARE_DELIVERY_PROGRESS_INTERVAL_SEC", "0.05")
+
+    async def fake_run_coding_backend(**kwargs):
+        log_path = str(kwargs.get("log_path") or "").strip()
+        if log_path:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.sleep(0.12)
+        return {
+            "ok": True,
+            "backend": "codex",
+            "stdout": (
+                "能，已经集成到当前目标目录，并做了适配。\n\n"
+                "file update:\n"
+                "diff --git a/foo b/foo\n"
+                "+bar\n"
+            ),
+            "summary": "diff --git a/foo b/foo",
+        }
+
+    monkeypatch.setattr(service_module, "run_coding_backend", fake_run_coding_backend)
+
+    service = ManagerDevService()
+    service.tasks = _FakeTaskStore()
+    service._task_log_path = lambda task_id: str(tmp_path / f"{task_id}.log")
+
+    result = await service.software_delivery(
+        action="skill_create",
+        skill_name="demo_skill",
+        instruction="create skill files",
+        cwd=str(tmp_path / "demo_skill"),
+        notify_platform="telegram",
+        notify_chat_id="123",
+        notify_user_id="123",
+    )
+
+    assert result["ok"] is True
+    await _wait_background(service)
+
+    record = await service.tasks.load(result["task_id"])
+    assert isinstance(record, dict)
+    assert str(record.get("status") or "") == "done"
+    assert dict(record.get("progress") or {}).get("stage") == "skill_template"
+
+    log_path = Path(str(dict(record.get("logs") or {}).get("path") or ""))
+    assert log_path.exists()
+    assert "heartbeat stage=skill_template" in log_path.read_text(encoding="utf-8")
+
+    assert adapter.drafts
+    assert "software_delivery 正在处理" in str(adapter.drafts[-1].get("text") or "")
+    assert adapter.messages
+    final_text = str(adapter.messages[-1].get("text") or "")
+    assert "已经集成到当前目标目录" in final_text
+    assert "diff --git" not in final_text
+
+
+def test_build_completion_message_prefers_concise_backend_summary():
+    service = ManagerDevService()
+    text = service._build_completion_message(
+        {
+            "task_id": "dev-compact",
+            "status": "done",
+            "goal": "skill template execution",
+            "implementation": {
+                "result": {
+                    "stdout": (
+                        "能，已经集成到当前目标目录，并做了适配。\n\n"
+                        "file update:\n"
+                        "diff --git a/foo b/foo\n"
+                        "+bar\n"
+                    ),
+                    "summary": "diff --git a/foo b/foo",
+                }
+            },
+            "events": [
+                {
+                    "name": "skill_template_done",
+                    "detail": "diff --git a/foo b/foo",
+                }
+            ],
+        }
+    )
+
+    assert "已经集成到当前目标目录" in text
+    assert "diff --git" not in text
+
+
+@pytest.mark.asyncio
+async def test_software_delivery_background_sends_completion_notification(monkeypatch):
+    async def fake_run_coding_backend(**kwargs):
+        _ = kwargs
+        return {
+            "ok": True,
+            "backend": "codex",
+            "summary": "coding backend completed",
+        }
+
+    class _FakeAdapter:
+        def __init__(self):
+            self.calls = []
+
+        async def send_message(self, *, chat_id, text, **kwargs):
+            self.calls.append(
+                {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "kwargs": dict(kwargs),
+                }
+            )
+            return {"ok": True}
+
+    class _FakeAdapterManager:
+        def __init__(self, adapter):
+            self.adapter = adapter
+
+        def get_adapter(self, platform_name):
+            assert platform_name == "telegram"
+            return self.adapter
+
+    monkeypatch.setattr(service_module, "run_coding_backend", fake_run_coding_backend)
+
+    fake_adapter = _FakeAdapter()
+    monkeypatch.setattr(
+        "core.platform.registry.adapter_manager",
+        _FakeAdapterManager(fake_adapter),
+    )
+
+    publisher = _FakePublisher()
+    service = ManagerDevService()
+    service.tasks = _FakeTaskStore()
+    service.workspace = _FakeWorkspace()
+    service.planner = _FakePlanner()
+    service.validator = _FakeValidator()
+    service.publisher = publisher
+    service.github = _FakeGitHub()
+
+    result = await service.software_delivery(
+        action="run",
+        requirement="fix worker bug",
+        repo_path="/tmp/repo",
+        backend="codex",
+        validate_only=True,
+        notify_platform="telegram",
+        notify_chat_id="chat-1",
+        notify_user_id="u-1",
+    )
+
+    assert result["ok"] is True
+    await _wait_background(service)
+    assert fake_adapter.calls
+    assert fake_adapter.calls[-1]["chat_id"] == "chat-1"
+    assert result["task_id"] in fake_adapter.calls[-1]["text"]
+
+    status = await service.software_delivery(action="status", task_id=result["task_id"])
+    notify = dict(status["data"]["task"].get("notify") or {})
+    assert str(notify.get("completion_sent_at") or "").strip()

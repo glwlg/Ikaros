@@ -91,6 +91,7 @@ async def init_services() -> None:
         from core.scheduler import (
             scheduler,
             load_jobs_from_db,
+            start_rss_scheduler,
             start_stock_scheduler,
             start_dynamic_skill_scheduler,
         )
@@ -101,9 +102,8 @@ async def init_services() -> None:
 
         # Initialize Jobs
         await load_jobs_from_db()
-        logger.info(
-            "Starting built-in stock scheduler (10m in trading hours); RSS built-in scheduler remains disabled."
-        )
+        logger.info("Starting built-in stock and RSS schedulers.")
+        start_rss_scheduler()
         start_stock_scheduler()
         # 启动动态 Skill 定时任务
         start_dynamic_skill_scheduler()

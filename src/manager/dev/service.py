@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
+import shutil
+import zlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+from core.heartbeat_store import heartbeat_store
 from manager.dev.delivery_policy import (
     normalize_rollout_mode,
     normalize_target_service,
@@ -70,6 +74,20 @@ def _short(text: str, limit: int = 240) -> str:
     if len(payload) <= limit:
         return payload
     return payload[:limit].rstrip() + "..."
+
+
+def _format_elapsed(seconds: Any) -> str:
+    try:
+        safe_seconds = max(0, int(float(seconds or 0)))
+    except Exception:
+        safe_seconds = 0
+    minutes, secs = divmod(safe_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes > 0:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 def _sanitize_skill_name(value: Any) -> str:
@@ -197,6 +215,359 @@ class ManagerDevService:
             return content
         return content[-limit_chars:]
 
+    @staticmethod
+    def _append_progress_log(path: str, line: str) -> None:
+        safe_path = str(path or "").strip()
+        payload = str(line or "").strip()
+        if not safe_path or not payload:
+            return
+        try:
+            target = Path(safe_path).resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(payload.rstrip() + "\n")
+        except Exception:
+            return
+
+    @staticmethod
+    def _task_draft_id(task_id: str) -> int:
+        return max(
+            1,
+            int(zlib.crc32(str(task_id or "").encode("utf-8")) & 0x7FFFFFFF),
+        )
+
+    @staticmethod
+    def _progress_interval_sec() -> float:
+        try:
+            return max(
+                0.05,
+                float(
+                    str(
+                        os.getenv("SOFTWARE_DELIVERY_PROGRESS_INTERVAL_SEC", "15")
+                        or "15"
+                    ).strip()
+                ),
+            )
+        except Exception:
+            return 15.0
+
+    @staticmethod
+    def _completion_summary_text(record: Dict[str, Any]) -> str:
+        implementation = dict(record.get("implementation") or {})
+        result = dict(implementation.get("result") or {})
+        candidates = [
+            str(result.get("stdout") or ""),
+            str(result.get("summary") or ""),
+            str(result.get("stderr") or ""),
+        ]
+        for raw in candidates:
+            lines: List[str] = []
+            for row in str(raw or "").splitlines():
+                line = str(row or "").strip()
+                if not line:
+                    continue
+                lowered = line.lower()
+                if lowered.startswith("diff --git"):
+                    break
+                if lowered.startswith("file update:"):
+                    break
+                if lowered.startswith("@@"):
+                    continue
+                if lowered.startswith("--- ") or lowered.startswith("+++ "):
+                    continue
+                if lowered.startswith("index "):
+                    continue
+                if lowered == "codex":
+                    continue
+                lines.append(line)
+                if len(lines) >= 4:
+                    break
+            if lines:
+                return _short("\n".join(lines), 500)
+
+        events = list(record.get("events") or [])
+        if events:
+            return _short(str(dict(events[-1]).get("detail") or "").strip(), 500)
+        return ""
+
+    @staticmethod
+    def _latest_skill_file_hint(cwd: str) -> Dict[str, Any]:
+        safe_cwd = str(cwd or "").strip()
+        if not safe_cwd:
+            return {}
+        normalized = safe_cwd.replace("\\", "/")
+        if "/skills/" not in normalized:
+            return {}
+        root = Path(safe_cwd)
+        if not root.exists():
+            return {}
+        latest_path: Path | None = None
+        latest_mtime = 0.0
+        file_count = 0
+        try:
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                file_count += 1
+                try:
+                    mtime = path.stat().st_mtime
+                except Exception:
+                    continue
+                if mtime >= latest_mtime:
+                    latest_mtime = mtime
+                    latest_path = path
+        except Exception:
+            return {}
+        if latest_path is None:
+            return {"file_count": file_count}
+        try:
+            relative = latest_path.relative_to(root).as_posix()
+        except Exception:
+            relative = latest_path.as_posix()
+        return {
+            "latest_file": relative,
+            "latest_mtime": datetime.fromtimestamp(latest_mtime)
+            .astimezone()
+            .isoformat(timespec="seconds"),
+            "file_count": file_count,
+        }
+
+    @staticmethod
+    def _build_progress_message(record: Dict[str, Any]) -> str:
+        task_id = str(record.get("task_id") or "").strip()
+        status = str(record.get("status") or "").strip().lower() or "queued"
+        goal = str(record.get("goal") or record.get("requirement") or "").strip()
+        progress = dict(record.get("progress") or {})
+        lines = ["🛠 software_delivery 正在处理", f"任务编号: `{task_id}`"]
+        if goal:
+            lines.append(f"目标: {goal[:120]}")
+        lines.append(f"状态: `{status}`")
+
+        stage = str(progress.get("stage") or "").strip()
+        if stage:
+            lines.append(f"阶段: `{stage}`")
+
+        elapsed = progress.get("elapsed_sec")
+        if elapsed is not None:
+            lines.append(f"已耗时: {_format_elapsed(elapsed)}")
+
+        latest_file = str(progress.get("latest_file") or "").strip()
+        if latest_file:
+            lines.append(f"最新文件: `{latest_file}`")
+
+        file_count = int(progress.get("file_count") or 0)
+        if file_count > 0:
+            lines.append(f"已发现文件: `{file_count}`")
+
+        note = str(progress.get("note") or "").strip()
+        if note:
+            lines.append(f"进展: {note[:200]}")
+
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _copy_ignore_names(_root: str, names: List[str]) -> List[str]:
+        ignored = {
+            ".git",
+            ".github",
+            "__pycache__",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".mypy_cache",
+            ".idea",
+            ".vscode",
+            "node_modules",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+        }
+        return [
+            name
+            for name in names
+            if name in ignored or name.endswith(".pyc") or name.endswith(".pyo")
+        ]
+
+    @staticmethod
+    def _detect_source_skill_root(source_repo_path: str, skill_name: str) -> Path:
+        root = Path(str(source_repo_path or "").strip()).resolve()
+        if (root / "SKILL.md").exists():
+            return root
+
+        safe_skill_name = sanitize_skill_name(skill_name)
+        direct_candidates = [
+            root / "skills" / "learned" / safe_skill_name,
+            root / "skills" / "builtin" / safe_skill_name,
+            root / safe_skill_name,
+        ]
+        for candidate in direct_candidates:
+            if (candidate / "SKILL.md").exists():
+                return candidate
+
+        nested = [
+            path
+            for path in root.rglob("SKILL.md")
+            if ".git/" not in path.as_posix()
+        ]
+        if len(nested) == 1:
+            return nested[0].parent
+
+        for path in nested:
+            parent_name = sanitize_skill_name(path.parent.name)
+            if parent_name == safe_skill_name:
+                return path.parent
+
+        return root
+
+    @staticmethod
+    def _overlay_local_import_overrides(
+        *,
+        staging_path: Path,
+        existing_target: Path,
+    ) -> None:
+        if not existing_target.exists() or not existing_target.is_dir():
+            return
+        relative_paths = (
+            "SKILL.md",
+            "scripts/execute.py",
+            "agents/openai.yaml",
+        )
+        for relative in relative_paths:
+            source = existing_target / relative
+            if not source.exists() or not source.is_file():
+                continue
+            target = staging_path / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+    @staticmethod
+    def _ensure_imported_skill_markdown(
+        *,
+        skill_dir: str,
+        skill_name: str,
+        repo_url: str,
+    ) -> None:
+        skill_root = Path(str(skill_dir or "").strip()).resolve()
+        skill_md = skill_root / "SKILL.md"
+        if skill_md.exists():
+            return
+
+        readme = skill_root / "README.md"
+        summary = ""
+        if readme.exists():
+            try:
+                for row in readme.read_text(encoding="utf-8").splitlines():
+                    line = str(row or "").strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    summary = line
+                    break
+            except Exception:
+                summary = ""
+
+        description = summary or f"Imported external skill from {repo_url or 'GitHub repository'}."
+        content = "\n".join(
+            [
+                "---",
+                f"name: {sanitize_skill_name(skill_name)}",
+                f"description: {description}",
+                "---",
+                "",
+                f"# {sanitize_skill_name(skill_name)}",
+                "",
+                "这是一个从外部仓库导入的技能。",
+                "",
+                "## 使用方式",
+                "",
+                "- 先阅读当前目录下的 `README.md` 与 `scripts/` 说明。",
+                "- 优先直接使用仓库自带 CLI / shell 命令，不必强制补 `scripts/execute.py`。",
+                "- 如需环境变量，参考 `.env.example`。",
+                "",
+            ]
+        ).strip() + "\n"
+        skill_md.write_text(content, encoding="utf-8")
+
+    def _import_external_skill_from_workspace(
+        self,
+        *,
+        source_repo_path: str,
+        target_dir: str,
+        skill_name: str,
+        repo_url: str,
+    ) -> Dict[str, Any]:
+        source_root = self._detect_source_skill_root(source_repo_path, skill_name)
+        if not source_root.exists() or not source_root.is_dir():
+            return {
+                "ok": False,
+                "error_code": "source_skill_not_found",
+                "message": f"source skill root not found: {source_root}",
+            }
+
+        target_path = Path(str(target_dir or "").strip()).resolve()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        staging_path = target_path.parent / f".{target_path.name}.import-{stamp}"
+        backup_path = target_path.parent / f".{target_path.name}.backup-{stamp}"
+
+        try:
+            if staging_path.exists():
+                shutil.rmtree(staging_path)
+            if backup_path.exists():
+                shutil.rmtree(backup_path)
+
+            shutil.copytree(
+                source_root,
+                staging_path,
+                ignore=self._copy_ignore_names,
+            )
+            self._ensure_imported_skill_markdown(
+                skill_dir=str(staging_path),
+                skill_name=skill_name,
+                repo_url=repo_url,
+            )
+            self._overlay_local_import_overrides(
+                staging_path=staging_path,
+                existing_target=target_path,
+            )
+
+            if target_path.exists():
+                os.replace(target_path, backup_path)
+            os.replace(staging_path, target_path)
+            if backup_path.exists():
+                shutil.rmtree(backup_path)
+        except Exception as exc:
+            try:
+                if target_path.exists():
+                    shutil.rmtree(target_path)
+                if backup_path.exists():
+                    os.replace(backup_path, target_path)
+            except Exception:
+                pass
+            try:
+                if staging_path.exists():
+                    shutil.rmtree(staging_path)
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "error_code": "skill_import_failed",
+                "message": str(exc),
+            }
+
+        file_count = 0
+        for path in target_path.rglob("*"):
+            if path.is_file():
+                file_count += 1
+
+        return {
+            "ok": True,
+            "backend": "import",
+            "summary": f"imported external skill files into {target_path.name}",
+            "source_root": str(source_root),
+            "target_dir": str(target_path),
+            "file_count": file_count,
+        }
+
     async def _mark_failed(
         self, *, task_id: str, summary: str, error_code: str
     ) -> None:
@@ -212,6 +583,302 @@ class ManagerDevService:
             data={"error_code": str(error_code or "background_failed")},
         )
         await self.tasks.save(record)
+
+    @staticmethod
+    def _clean_notify_payload(
+        *,
+        platform: str = "",
+        chat_id: str = "",
+        user_id: str = "",
+    ) -> Dict[str, str]:
+        return {
+            "platform": str(platform or "").strip(),
+            "chat_id": str(chat_id or "").strip(),
+            "user_id": str(user_id or "").strip(),
+            "completion_sent_at": "",
+        }
+
+    @staticmethod
+    def _apply_notify_payload(
+        record: Dict[str, Any],
+        *,
+        platform: str = "",
+        chat_id: str = "",
+        user_id: str = "",
+    ) -> None:
+        current = dict(record.get("notify") or {})
+        merged = {
+            "platform": str(platform or current.get("platform") or "").strip(),
+            "chat_id": str(chat_id or current.get("chat_id") or "").strip(),
+            "user_id": str(user_id or current.get("user_id") or "").strip(),
+            "completion_sent_at": str(current.get("completion_sent_at") or "").strip(),
+        }
+        record["notify"] = merged
+
+    async def _resolve_notify_payload(
+        self,
+        record: Dict[str, Any],
+    ) -> Dict[str, str]:
+        payload = self._clean_notify_payload(
+            platform=str(dict(record.get("notify") or {}).get("platform") or ""),
+            chat_id=str(dict(record.get("notify") or {}).get("chat_id") or ""),
+            user_id=str(dict(record.get("notify") or {}).get("user_id") or ""),
+        )
+        if payload["platform"] and payload["chat_id"]:
+            return payload
+        if not payload["user_id"]:
+            return payload
+        target = await heartbeat_store.get_delivery_target(payload["user_id"])
+        target_platform = str((target or {}).get("platform") or "").strip()
+        target_chat_id = str((target or {}).get("chat_id") or "").strip()
+        if target_platform and target_chat_id:
+            payload["platform"] = target_platform
+            payload["chat_id"] = target_chat_id
+        return payload
+
+    @staticmethod
+    def _build_completion_message(record: Dict[str, Any]) -> str:
+        task_id = str(record.get("task_id") or "").strip()
+        status = str(record.get("status") or "").strip().lower() or "unknown"
+        goal = str(record.get("goal") or record.get("requirement") or "").strip()
+        error = str(record.get("error") or "").strip()
+        detail = ManagerDevService._completion_summary_text(record)
+
+        if status in {"done", "validated"}:
+            summary = detail or "任务已完成"
+            header = "✅ software_delivery 任务已完成"
+        else:
+            summary = error or detail or "任务执行失败"
+            header = "❌ software_delivery 任务失败"
+
+        lines = [header, f"任务编号: `{task_id}`"]
+        if goal:
+            lines.append(f"目标: {goal[:160]}")
+        lines.append(f"状态: `{status}`")
+        if summary:
+            lines.append(f"摘要: {summary[:500]}")
+        return "\n".join(lines)
+
+    async def _notify_task_completion(self, record: Dict[str, Any]) -> None:
+        if not isinstance(record, dict):
+            return
+        status = str(record.get("status") or "").strip().lower()
+        if status not in {"done", "failed", "validated"}:
+            return
+
+        notify_payload = await self._resolve_notify_payload(record)
+        completion_sent_at = str(
+            dict(record.get("notify") or {}).get("completion_sent_at") or ""
+        ).strip()
+        if completion_sent_at:
+            return
+
+        platform = notify_payload.get("platform", "")
+        chat_id = notify_payload.get("chat_id", "")
+        if not platform or not chat_id:
+            return
+
+        try:
+            from core.platform.registry import adapter_manager
+
+            adapter = adapter_manager.get_adapter(platform)
+            send_message = getattr(adapter, "send_message", None)
+            if not callable(send_message):
+                return
+            await send_message(chat_id=chat_id, text=self._build_completion_message(record))
+        except Exception:
+            logger.debug(
+                "software_delivery completion notify failed task_id=%s",
+                str(record.get("task_id") or "").strip(),
+                exc_info=True,
+            )
+            return
+
+        self._apply_notify_payload(
+            record,
+            platform=notify_payload.get("platform", ""),
+            chat_id=notify_payload.get("chat_id", ""),
+            user_id=notify_payload.get("user_id", ""),
+        )
+        saved_notify = dict(record.get("notify") or {})
+        saved_notify["completion_sent_at"] = _now_iso()
+        record["notify"] = saved_notify
+        await self.tasks.save(record)
+
+    async def _notify_task_progress(
+        self,
+        record: Dict[str, Any],
+        *,
+        force: bool = False,
+    ) -> None:
+        if not isinstance(record, dict):
+            return
+        status = str(record.get("status") or "").strip().lower()
+        if status in {"done", "failed", "validated"}:
+            return
+
+        notify_payload = await self._resolve_notify_payload(record)
+        platform = notify_payload.get("platform", "")
+        chat_id = notify_payload.get("chat_id", "")
+        if not platform or not chat_id:
+            return
+
+        text = self._build_progress_message(record)
+        if not text:
+            return
+
+        notify_state = dict(record.get("notify") or {})
+        last_rendered = str(notify_state.get("progress_last_rendered") or "")
+        last_sent_raw = str(notify_state.get("progress_last_sent_at") or "0").strip()
+        try:
+            last_sent = float(last_sent_raw or 0.0)
+        except Exception:
+            last_sent = 0.0
+        now_ts = datetime.now().timestamp()
+        if (
+            not force
+            and text == last_rendered
+            and now_ts - last_sent < self._progress_interval_sec()
+        ):
+            return
+
+        try:
+            from core.platform.registry import adapter_manager
+
+            adapter = adapter_manager.get_adapter(platform)
+        except Exception:
+            return
+
+        delivered = False
+        send_draft = getattr(adapter, "send_message_draft", None)
+        if platform == "telegram" and callable(send_draft):
+            try:
+                result_obj = send_draft(
+                    chat_id=chat_id,
+                    draft_id=self._task_draft_id(str(record.get("task_id") or "").strip()),
+                    text=text,
+                    fallback_to_message=False,
+                )
+                if inspect.isawaitable(result_obj):
+                    await result_obj
+                delivered = True
+            except Exception:
+                logger.debug(
+                    "software_delivery progress draft failed task_id=%s",
+                    str(record.get("task_id") or "").strip(),
+                    exc_info=True,
+                )
+
+        if not delivered and platform != "telegram":
+            send_message = getattr(adapter, "send_message", None)
+            if callable(send_message):
+                try:
+                    result_obj = send_message(chat_id=chat_id, text=text)
+                    if inspect.isawaitable(result_obj):
+                        await result_obj
+                    delivered = True
+                except Exception:
+                    logger.debug(
+                        "software_delivery progress notify failed task_id=%s",
+                        str(record.get("task_id") or "").strip(),
+                        exc_info=True,
+                    )
+
+        if not delivered:
+            return
+
+        self._apply_notify_payload(
+            record,
+            platform=notify_payload.get("platform", ""),
+            chat_id=notify_payload.get("chat_id", ""),
+            user_id=notify_payload.get("user_id", ""),
+        )
+        saved_notify = dict(record.get("notify") or {})
+        saved_notify["progress_last_sent_at"] = str(now_ts)
+        saved_notify["progress_last_rendered"] = text
+        record["notify"] = saved_notify
+        await self.tasks.save(record)
+
+    async def _heartbeat_coding_progress(
+        self,
+        *,
+        task_id: str,
+        stage: str,
+        cwd: str,
+        backend: str,
+        log_path: str,
+    ) -> None:
+        started_at = datetime.now().timestamp()
+        while True:
+            await asyncio.sleep(self._progress_interval_sec())
+            record = await self._load_task(task_id)
+            if not record:
+                return
+            status = str(record.get("status") or "").strip().lower()
+            if status in {"done", "failed", "validated"}:
+                return
+
+            progress = {
+                "stage": str(stage or "").strip(),
+                "backend": str(backend or "").strip(),
+                "cwd": str(cwd or "").strip(),
+                "elapsed_sec": max(0, int(datetime.now().timestamp() - started_at)),
+                "heartbeat_at": _now_iso(),
+                "note": "后台编码仍在执行",
+            }
+            progress.update(self._latest_skill_file_hint(cwd))
+            record["progress"] = progress
+            await self.tasks.save(record)
+
+            latest_file = str(progress.get("latest_file") or "").strip()
+            latest_suffix = f" latest_file={latest_file}" if latest_file else ""
+            self._append_progress_log(
+                log_path,
+                (
+                    f"[{_now_iso()}] heartbeat stage={progress['stage']} "
+                    f"backend={progress['backend']} elapsed={progress['elapsed_sec']}s"
+                    f"{latest_suffix}"
+                ),
+            )
+            await self._notify_task_progress(record, force=True)
+
+    async def _run_coding_backend_with_progress(
+        self,
+        *,
+        task_id: str,
+        stage: str,
+        instruction: str,
+        backend: str,
+        cwd: str,
+        timeout_sec: int,
+        source: str,
+        log_path: str,
+    ) -> Dict[str, Any]:
+        heartbeat_task = asyncio.create_task(
+            self._heartbeat_coding_progress(
+                task_id=task_id,
+                stage=stage,
+                cwd=cwd,
+                backend=backend,
+                log_path=log_path,
+            ),
+            name=f"software_delivery-heartbeat:{task_id}:{stage}",
+        )
+        try:
+            return await run_coding_backend(
+                instruction=instruction,
+                backend=backend,
+                cwd=cwd,
+                timeout_sec=timeout_sec,
+                source=source,
+                log_path=log_path,
+            )
+        finally:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
     async def _run_background_job(
         self,
@@ -236,6 +903,9 @@ class ManagerDevService:
                 error_code="background_exception",
             )
         finally:
+            record = await self._load_task(task_id)
+            if record:
+                await self._notify_task_completion(record)
             self._background_jobs.pop(str(task_id or "").strip(), None)
 
     def _spawn_background(self, *, task_id: str, job_coro: Any) -> None:
@@ -403,6 +1073,9 @@ class ManagerDevService:
         target_service: str = "manager",
         rollout: str = "none",
         validate_only: bool = False,
+        notify_platform: str = "",
+        notify_chat_id: str = "",
+        notify_user_id: str = "",
     ) -> Dict[str, Any]:
         workspace = await self.workspace.prepare_workspace(
             repo_path=repo_path,
@@ -478,6 +1151,11 @@ class ManagerDevService:
                 "rollout": _normalize_rollout_mode(rollout),
                 "validate_only": bool(validate_only),
             },
+            "notify": self._clean_notify_payload(
+                platform=notify_platform,
+                chat_id=notify_chat_id,
+                user_id=notify_user_id,
+            ),
             "implementation": {},
             "validation": {},
             "publish": {},
@@ -575,10 +1253,13 @@ class ManagerDevService:
             detail=f"backend={backend or os.getenv('CODING_BACKEND_DEFAULT', 'codex')}",
         )
         await self.tasks.save(record)
+        await self._notify_task_progress(record, force=True)
 
         instruction = self._build_instruction(record)
         task_log_path = self._task_log_path(str(record.get("task_id") or ""))
-        result = await run_coding_backend(
+        result = await self._run_coding_backend_with_progress(
+            task_id=str(record.get("task_id") or "").strip(),
+            stage="implement",
             instruction=instruction,
             backend=str(backend or "").strip(),
             cwd=safe_repo_path,
@@ -586,6 +1267,7 @@ class ManagerDevService:
             source="manager_dev_service",
             log_path=task_log_path,
         )
+        record = await self._load_task(str(record.get("task_id") or "").strip()) or record
 
         record["implementation"] = {
             "backend": str(result.get("backend") or "").strip(),
@@ -617,7 +1299,10 @@ class ManagerDevService:
         self._append_event(
             record,
             name="implement_done",
-            detail=_short(str(result.get("summary") or "implemented"), 500),
+            detail=self._completion_summary_text(
+                {"implementation": {"result": result}, "events": record.get("events")}
+            )
+            or "implemented",
         )
         await self.tasks.save(record)
         return self._response(
@@ -956,6 +1641,9 @@ class ManagerDevService:
         backend: str,
         summary: str,
         job_coro: Any,
+        notify_platform: str = "",
+        notify_chat_id: str = "",
+        notify_user_id: str = "",
     ) -> Dict[str, Any]:
         def _dispose_coro(value: Any) -> None:
             if asyncio.iscoroutine(value):
@@ -991,6 +1679,12 @@ class ManagerDevService:
         record.setdefault("logs", {})
         if isinstance(record["logs"], dict):
             record["logs"]["path"] = self._task_log_path(safe_task_id)
+        self._apply_notify_payload(
+            record,
+            platform=notify_platform,
+            chat_id=notify_chat_id,
+            user_id=notify_user_id,
+        )
         self._append_event(
             record,
             name="queued",
@@ -1140,6 +1834,8 @@ class ManagerDevService:
         source: str,
         timeout_sec: int,
         skill_name: str,
+        source_repo_url: str,
+        source_repo_path: str,
     ) -> None:
         record = await self._load_task(task_id)
         if not record:
@@ -1148,6 +1844,8 @@ class ManagerDevService:
         safe_backend = str(backend or "").strip()
         safe_source = str(source or f"software_delivery_{action}").strip()
         safe_cwd = str(cwd or "").strip()
+        safe_source_repo_url = str(source_repo_url or "").strip()
+        safe_source_repo_path = str(source_repo_path or "").strip()
         log_path = self._task_log_path(task_id)
         contract = dict(record.get("skill_contract") or {})
 
@@ -1163,38 +1861,131 @@ class ManagerDevService:
             data={"action": action, "skill_name": skill_name},
         )
         await self.tasks.save(record)
+        await self._notify_task_progress(record, force=True)
 
-        run_result = await run_coding_backend(
-            instruction=instruction,
-            backend=safe_backend,
-            cwd=safe_cwd,
-            timeout_sec=max(60, int(timeout_sec or 1800)),
-            source=safe_source,
-            log_path=log_path,
-        )
-        record["implementation"] = {
-            "backend": str(run_result.get("backend") or safe_backend).strip(),
-            "result": run_result,
-            "action": action,
-            "skill_name": skill_name,
-            "cwd": safe_cwd,
-            "source": safe_source,
-        }
-        if not run_result.get("ok"):
-            record["status"] = "failed"
-            record["error"] = str(
-                run_result.get("summary")
-                or run_result.get("message")
-                or "skill template execution failed"
+        source_workspace: Dict[str, Any] = {}
+        if safe_source_repo_url or safe_source_repo_path:
+            source_workspace = await self.workspace.prepare_workspace(
+                repo_path=safe_source_repo_path,
+                repo_url=safe_source_repo_url,
+            )
+            record["source_repo"] = dict(source_workspace or {})
+            await self.tasks.save(record)
+            if not source_workspace.get("ok"):
+                record["status"] = "failed"
+                record["error"] = str(
+                    source_workspace.get("message")
+                    or "failed to prepare external skill source workspace"
+                ).strip()
+                self._append_event(
+                    record,
+                    name="skill_template_source_repo_failed",
+                    detail=record["error"],
+                )
+                await self.tasks.save(record)
+                return
+
+        effective_instruction = str(instruction or "").strip()
+        source_repo_path_text = str(source_workspace.get("path") or "").strip()
+        if source_repo_path_text:
+            effective_instruction = "\n\n".join(
+                [
+                    effective_instruction,
+                    (
+                        "外部技能源码参考仓库已准备好，请从该目录提取并适配到当前目标技能目录，"
+                        "不要把最终实现留在外部仓库工作区："
+                    ),
+                    source_repo_path_text,
+                ]
             ).strip()
+
+        if (
+            action == "skill_create"
+            and source_repo_path_text
+            and (safe_source_repo_url or safe_source_repo_path)
+        ):
+            imported = self._import_external_skill_from_workspace(
+                source_repo_path=source_repo_path_text,
+                target_dir=safe_cwd,
+                skill_name=skill_name,
+                repo_url=safe_source_repo_url,
+            )
+            record = await self._load_task(str(record.get("task_id") or "").strip()) or record
+            record["implementation"] = {
+                "backend": str(imported.get("backend") or "import").strip(),
+                "result": imported,
+                "action": action,
+                "skill_name": skill_name,
+                "cwd": safe_cwd,
+                "source": safe_source,
+            }
+            if not imported.get("ok"):
+                record["status"] = "failed"
+                record["error"] = str(
+                    imported.get("message") or "external skill import failed"
+                ).strip()
+                self._append_event(
+                    record,
+                    name="skill_template_import_failed",
+                    detail=record["error"],
+                    data={"error_code": str(imported.get("error_code") or "")},
+                )
+                await self.tasks.save(record)
+                return
+
             self._append_event(
                 record,
-                name="skill_template_failed",
-                detail=record["error"],
-                data={"error_code": str(run_result.get("error_code") or "")},
+                name="skill_template_imported",
+                detail=f"imported {int(imported.get('file_count') or 0)} files from external repository",
+                data={"source_root": str(imported.get("source_root") or "")},
+            )
+            self._append_progress_log(
+                log_path,
+                (
+                    f"[{_now_iso()}] imported external skill "
+                    f"source_root={str(imported.get('source_root') or '')} "
+                    f"target_dir={safe_cwd} files={int(imported.get('file_count') or 0)}"
+                ),
             )
             await self.tasks.save(record)
-            return
+        else:
+            run_result = await self._run_coding_backend_with_progress(
+                task_id=str(record.get("task_id") or "").strip(),
+                stage="skill_template",
+                instruction=effective_instruction,
+                backend=safe_backend,
+                cwd=safe_cwd,
+                timeout_sec=max(60, int(timeout_sec or 1800)),
+                source=safe_source,
+                log_path=log_path,
+            )
+            record = await self._load_task(str(record.get("task_id") or "").strip()) or record
+            record["implementation"] = {
+                "backend": str(run_result.get("backend") or safe_backend).strip(),
+                "result": run_result,
+                "action": action,
+                "skill_name": skill_name,
+                "cwd": safe_cwd,
+                "source": safe_source,
+            }
+            if not run_result.get("ok"):
+                record["status"] = "failed"
+                record["error"] = str(
+                    run_result.get("summary")
+                    or run_result.get("message")
+                    or "skill template execution failed"
+                ).strip()
+                self._append_event(
+                    record,
+                    name="skill_template_failed",
+                    detail=record["error"],
+                    data={"error_code": str(run_result.get("error_code") or "")},
+                )
+                await self.tasks.save(record)
+                return
+
+        implementation = dict(record.get("implementation") or {})
+        implementation_result = dict(implementation.get("result") or {})
 
         preflight = await self._run_skill_contract_preflight(
             contract=contract,
@@ -1219,7 +2010,13 @@ class ManagerDevService:
         self._append_event(
             record,
             name="skill_template_done",
-            detail=_short(str(run_result.get("summary") or "skill template done"), 500),
+            detail=self._completion_summary_text(
+                {
+                    "implementation": {"result": implementation_result},
+                    "events": record.get("events"),
+                }
+            )
+            or "skill template done",
         )
         await self.tasks.save(record)
 
@@ -1233,6 +2030,11 @@ class ManagerDevService:
         skill_name: str,
         source: str,
         timeout_sec: int,
+        source_repo_url: str = "",
+        source_repo_path: str = "",
+        notify_platform: str = "",
+        notify_chat_id: str = "",
+        notify_user_id: str = "",
     ) -> Dict[str, Any]:
         safe_action = str(action or "").strip().lower()
         if safe_action not in {"skill_create", "skill_modify"}:
@@ -1323,6 +2125,15 @@ class ManagerDevService:
             "publish": {},
             "events": [],
             "error": "",
+            "notify": self._clean_notify_payload(
+                platform=notify_platform,
+                chat_id=notify_chat_id,
+                user_id=notify_user_id,
+            ),
+            "source_repo": {
+                "url": str(source_repo_url or "").strip(),
+                "path": str(source_repo_path or "").strip(),
+            },
             "created_at": _now_iso(),
             "updated_at": _now_iso(),
         }
@@ -1352,6 +2163,8 @@ class ManagerDevService:
                 source=str(source or f"software_delivery_{safe_action}").strip(),
                 timeout_sec=max(60, int(timeout_sec or 1800)),
                 skill_name=safe_skill_name,
+                source_repo_url=str(source_repo_url or "").strip(),
+                source_repo_path=str(source_repo_path or "").strip(),
             ),
         )
 
@@ -1511,6 +2324,9 @@ class ManagerDevService:
         target_service: str = "manager",
         rollout: str = "none",
         validate_only: Any = False,
+        notify_platform: str = "",
+        notify_chat_id: str = "",
+        notify_user_id: str = "",
     ) -> Dict[str, Any]:
         safe_action = str(action or "run").strip().lower() or "run"
         safe_validation_commands = _clean_list(validation_commands)
@@ -1537,6 +2353,9 @@ class ManagerDevService:
                     target_service=safe_target_service,
                     rollout=safe_rollout,
                     validate_only=safe_validate_only,
+                    notify_platform=notify_platform,
+                    notify_chat_id=notify_chat_id,
+                    notify_user_id=notify_user_id,
                 )
             if safe_action == "logs":
                 status_result = await self.status(task_id=task_id)
@@ -1566,6 +2385,9 @@ class ManagerDevService:
                         branch_name=branch_name,
                         base_branch=base_branch,
                     ),
+                    notify_platform=notify_platform,
+                    notify_chat_id=notify_chat_id,
+                    notify_user_id=notify_user_id,
                 )
             if safe_action == "validate":
                 return await self.validate(
@@ -1607,6 +2429,9 @@ class ManagerDevService:
                         rollout=safe_rollout,
                         validate_only=safe_validate_only,
                     ),
+                    notify_platform=notify_platform,
+                    notify_chat_id=notify_chat_id,
+                    notify_user_id=notify_user_id,
                 )
             if safe_action in {"skill_create", "skill_modify", "skill_template"}:
                 resolved_template_action = safe_action
@@ -1624,6 +2449,11 @@ class ManagerDevService:
                     skill_name=skill_name,
                     source=source,
                     timeout_sec=safe_timeout_sec,
+                    source_repo_url=repo_url,
+                    source_repo_path=repo_path if str(repo_url or "").strip() else "",
+                    notify_platform=notify_platform,
+                    notify_chat_id=notify_chat_id,
+                    notify_user_id=notify_user_id,
                 )
             if str(task_id or "").strip():
                 return await self._queue_existing_task(
@@ -1646,6 +2476,9 @@ class ManagerDevService:
                         rollout=safe_rollout,
                         validate_only=safe_validate_only,
                     ),
+                    notify_platform=notify_platform,
+                    notify_chat_id=notify_chat_id,
+                    notify_user_id=notify_user_id,
                 )
 
             planned = await self.plan(
@@ -1659,6 +2492,9 @@ class ManagerDevService:
                 target_service=safe_target_service,
                 rollout=safe_rollout,
                 validate_only=safe_validate_only,
+                notify_platform=notify_platform,
+                notify_chat_id=notify_chat_id,
+                notify_user_id=notify_user_id,
             )
             if not planned.get("ok"):
                 planned["terminal"] = True
@@ -1687,6 +2523,9 @@ class ManagerDevService:
                     rollout=safe_rollout,
                     validate_only=safe_validate_only,
                 ),
+                notify_platform=notify_platform,
+                notify_chat_id=notify_chat_id,
+                notify_user_id=notify_user_id,
             )
         except GitHubClientError as exc:
             return self._response(

@@ -228,11 +228,14 @@ class TelegramAdapter(BotAdapter):
         draft_id: int,
         text: str,
         message_thread_id: Optional[int] = None,
+        fallback_to_message: bool = True,
         **kwargs,
     ) -> Any:
         try:
             sender = getattr(self.bot, "send_message_draft", None)
             if not callable(sender):
+                if not fallback_to_message:
+                    raise MessageSendError("send_message_draft is not available")
                 return await self.send_message(chat_id=chat_id, text=text, **kwargs)
 
             html_text = markdown_to_telegram_html(text)
@@ -250,7 +253,12 @@ class TelegramAdapter(BotAdapter):
                 label="send_message_draft",
             )
         except Exception as e:
-            logger.warning("Telegram send_message_draft failed, fallback to send_message: %s", e)
+            logger.warning(
+                "Telegram send_message_draft failed, fallback to send_message: %s",
+                e,
+            )
+            if not fallback_to_message:
+                raise MessageSendError(str(e))
             return await self.send_message(chat_id=chat_id, text=text, **kwargs)
 
     async def send_document(

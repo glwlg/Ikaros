@@ -86,6 +86,7 @@ def test_prompt_composer_filters_skill_catalog_by_runtime_policy(monkeypatch):
     assert "worker_management" in text
     assert "skill_manager" in text
     assert "stock_watch" not in text
+    assert "以 SOP 为准" in text
 
 
 def test_prompt_composer_hides_manager_only_roles_from_worker(monkeypatch):

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.platform.exceptions import MessageSendError
 from platforms.telegram.adapter import TelegramAdapter
 
 
@@ -107,3 +108,22 @@ async def test_telegram_adapter_send_message_draft_falls_back_when_api_missing()
     assert result.id == "tg-fallback"
     assert app.bot.calls
     assert app.bot.calls[-1]["chat_id"] == 100
+
+
+@pytest.mark.asyncio
+async def test_telegram_adapter_send_message_draft_can_raise_without_message_fallback():
+    class _LegacyBot:
+        async def send_message(self, **kwargs):
+            _ = kwargs
+            return SimpleNamespace(id="unused")
+
+    app = SimpleNamespace(bot=_LegacyBot())
+    adapter = TelegramAdapter(app)
+
+    with pytest.raises(MessageSendError):
+        await adapter.send_message_draft(
+            chat_id=100,
+            draft_id=7,
+            text="处理中",
+            fallback_to_message=False,
+        )

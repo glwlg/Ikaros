@@ -206,6 +206,64 @@ async def test_software_delivery_keeps_plan_when_repo_hint_present(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_software_delivery_external_skill_integration_routes_to_local_skill_create(
+    monkeypatch,
+):
+    captured = {}
+
+    async def fake_software_delivery(**kwargs):
+        captured.update(dict(kwargs))
+        return {"ok": True, "summary": "queued"}
+
+    monkeypatch.setattr(
+        "core.skill_tool_handlers.dev_tools.software_delivery",
+        fake_software_delivery,
+    )
+
+    async def append_event(_event: str):
+        return None
+
+    dispatcher = ToolCallDispatcher(
+        runtime_user_id="u-9",
+        platform_name="telegram",
+        task_id="task-9",
+        task_inbox_id="",
+        task_workspace_root="/tmp",
+        ctx=SimpleNamespace(
+            message=SimpleNamespace(
+                text="https://github.com/runningZ1/union-search-skill 研究一下这玩意，能不能集成一下给阿黑用",
+                platform="telegram",
+                chat=SimpleNamespace(id="chat-9"),
+                user=SimpleNamespace(id="user-9"),
+            ),
+            user_data={},
+        ),
+        runtime=object(),
+        tool_broker=object(),
+        runtime_tool_allowed=lambda **_kwargs: True,
+        record_tool_profile=lambda *_args, **_kwargs: None,
+        todo_mark_step=lambda *_args, **_kwargs: None,
+        append_session_event=append_event,
+    )
+    dispatcher.set_available_tool_names({"software_delivery"})
+
+    result = await dispatcher.execute(
+        name="software_delivery",
+        args={},
+        execution_policy=None,
+        started=time.perf_counter(),
+    )
+
+    assert result["ok"] is True
+    assert captured.get("action") == "skill_create"
+    assert captured.get("repo_url") == "https://github.com/runningZ1/union-search-skill"
+    assert captured.get("skill_name") == "union-search-skill"
+    assert captured.get("notify_platform") == "telegram"
+    assert captured.get("notify_chat_id") == "chat-9"
+    assert captured.get("notify_user_id") == "user-9"
+
+
+@pytest.mark.asyncio
 async def test_manager_blocks_bash_when_software_delivery_intent(monkeypatch):
     async def append_event(_event: str):
         return None

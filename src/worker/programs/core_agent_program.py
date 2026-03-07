@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator, Dict
 
 from core.agent_orchestrator import agent_orchestrator
 from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
+from core.runtime_callbacks import set_runtime_callback
 from shared.contracts.dispatch import TaskEnvelope, TaskResult
 
 
@@ -156,7 +157,7 @@ async def run_core_agent(task: TaskEnvelope, context: Dict[str, Any]) -> TaskRes
     async def _progress_callback(snapshot: Dict[str, Any]) -> None:
         await dispatch_queue.update_progress(task.task_id, snapshot)
 
-    ctx.user_data["worker_progress_callback"] = _progress_callback
+    set_runtime_callback(ctx, "worker_progress_callback", _progress_callback)
     history = [{"role": "user", "parts": [{"text": str(task.instruction or "")}]}]
     timeout_sec = max(30, int(os.getenv("WORKER_CORE_AGENT_TIMEOUT_SEC", "1200")))
 

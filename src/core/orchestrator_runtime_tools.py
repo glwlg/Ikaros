@@ -424,11 +424,32 @@ class ToolCallDispatcher:
             or bool(owner and repo)
             or (repo_path not in {"", ".", "./"})
         )
+        integration_tokens = (
+            "集成",
+            "安装",
+            "接入",
+            "给阿黑用",
+            "让阿黑用",
+            "adopt",
+            "install",
+            "integrate",
+        )
+        has_external_skill_integration_intent = (
+            is_skill_intent
+            and (
+                bool(repo_url)
+                or "github.com/" in text
+                or bool(owner and repo)
+            )
+            and any(token in text for token in integration_tokens)
+        )
 
         if action in {"skill_create", "skill_modify", "skill_template"}:
             return action
         if action not in {"", "run", "plan"}:
             return action
+        if has_external_skill_integration_intent:
+            return "skill_create"
         if not is_skill_intent or has_repo_hint:
             return action if action in {"plan", "run"} else "run"
 

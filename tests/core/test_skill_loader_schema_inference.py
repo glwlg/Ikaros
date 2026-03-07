@@ -319,3 +319,88 @@ entrypoint: scripts/execute.py
     loader.register_skill_handlers(adapter)
 
     assert adapter.commands == ["enabled"]
+
+
+def test_builtin_command_skills_remain_opted_in_for_platform_handlers():
+    loader = SkillLoader()
+    indexed = loader.scan_skills()
+
+    assert indexed["rss_subscribe"]["platform_handlers"] is True
+    assert indexed["stock_watch"]["platform_handlers"] is True
+    assert indexed["scheduler_manager"]["platform_handlers"] is True
+    assert indexed["deployment_manager"]["platform_handlers"] is True
+
+
+def test_skill_loader_get_skill_accepts_hyphen_underscore_aliases(tmp_path: Path):
+    skill_dir = tmp_path / "skills" / "learned" / "union_search_skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+api_version: v3
+name: union_search_skill
+description: demo
+triggers:
+  - search
+input_schema:
+  type: object
+  properties: {}
+permissions:
+  filesystem: workspace
+entrypoint: scripts/execute.py
+---
+""",
+        encoding="utf-8",
+    )
+
+    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader.scan_skills()
+
+    assert loader.get_skill("union_search_skill")["name"] == "union_search_skill"
+    assert loader.get_skill("union-search-skill")["name"] == "union_search_skill"
+
+
+def test_skill_loader_refreshes_when_skill_tree_changes(tmp_path: Path):
+    root = tmp_path / "skills"
+    first_dir = root / "learned" / "first_skill"
+    first_dir.mkdir(parents=True, exist_ok=True)
+    (first_dir / "SKILL.md").write_text(
+        """---
+api_version: v3
+name: first_skill
+description: first
+triggers: [first]
+input_schema:
+  type: object
+  properties: {}
+permissions:
+  filesystem: workspace
+entrypoint: scripts/execute.py
+---
+""",
+        encoding="utf-8",
+    )
+
+    loader = SkillLoader(skills_dir=str(root))
+    assert loader.get_skill("first_skill")["name"] == "first_skill"
+    assert loader.get_skill("second_skill") is None
+
+    second_dir = root / "learned" / "second_skill"
+    second_dir.mkdir(parents=True, exist_ok=True)
+    (second_dir / "SKILL.md").write_text(
+        """---
+api_version: v3
+name: second_skill
+description: second
+triggers: [second]
+input_schema:
+  type: object
+  properties: {}
+permissions:
+  filesystem: workspace
+entrypoint: scripts/execute.py
+---
+""",
+        encoding="utf-8",
+    )
+
+    assert loader.get_skill("second_skill")["name"] == "second_skill"

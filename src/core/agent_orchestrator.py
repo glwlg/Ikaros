@@ -18,6 +18,7 @@ from core.platform.models import UnifiedContext
 from core.primitive_runtime import PrimitiveRuntime
 from core.prompt_composer import prompt_composer
 from core.orchestrator_runtime_tools import RuntimeToolAssembler, ToolCallDispatcher
+from core.runtime_callbacks import get_runtime_callback
 from core.task_inbox import task_inbox
 from core.task_manager import task_manager
 from core.tool_access_store import tool_access_store
@@ -284,10 +285,14 @@ class AgentOrchestrator:
             update_task_inbox_status=update_task_inbox_status,
         )
 
-        worker_progress_hook = user_data.get("worker_progress_callback")
+        worker_progress_hook = get_runtime_callback(ctx, "worker_progress_callback")
+        if not callable(worker_progress_hook):
+            worker_progress_hook = user_data.get("worker_progress_callback")
         if not callable(worker_progress_hook):
             worker_progress_hook = None
-        manager_progress_hook = user_data.get("manager_progress_callback")
+        manager_progress_hook = get_runtime_callback(ctx, "manager_progress_callback")
+        if not callable(manager_progress_hook):
+            manager_progress_hook = user_data.get("manager_progress_callback")
         if not callable(manager_progress_hook):
             manager_progress_hook = None
         progress_steps_raw = user_data.get("worker_progress_steps")

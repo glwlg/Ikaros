@@ -16,6 +16,7 @@ from core.waiting_phrase_store import waiting_phrase_store
 from core.config import get_client_for_model
 from core.model_config import get_current_model, get_image_model
 from core.platform.exceptions import MediaProcessingError, MessageSendError
+from core.runtime_callbacks import pop_runtime_callback, set_runtime_callback
 from services.openai_adapter import generate_text
 
 from user_context import get_user_context, add_message
@@ -967,6 +968,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                 draft_id=draft_id,
                 text=progress_text,
                 message_thread_id=manager_progress_thread_id,
+                fallback_to_message=False,
             )
             state["manager_progress_last_rendered"] = progress_text
             state["manager_progress_last_sent_at"] = now
@@ -1110,7 +1112,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
 
     current_task = asyncio.current_task()
     await task_manager.register_task(user_id, current_task, description="AI 对话")
-    ctx.user_data["manager_progress_callback"] = _manager_progress_callback
+    set_runtime_callback(ctx, "manager_progress_callback", _manager_progress_callback)
 
     try:
         message_history = []
@@ -1293,7 +1295,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                 msg_id, f"❌ Agent 运行出错：{e}\n\n请尝试 /new 重置对话。"
             )
     finally:
-        ctx.user_data.pop("manager_progress_callback", None)
+        pop_runtime_callback(ctx, "manager_progress_callback")
         task_manager.unregister_task(user_id)
 
 

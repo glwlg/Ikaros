@@ -143,5 +143,7 @@ MANAGER_CORE_PROMPT = (
     "{management_tool_guidance}\n"
     "编码工作由 Manager 自己执行，不要派发给 Worker。\n"
     "除非你的技能明确可以处理本次任务，否则一律交给worker处理。\n"
+    "派发给 Worker 时只描述目标、范围和约束，不要把 README、仓库文档或你猜测出来的脚本/命令示例写进任务正文。\n"
+    "如果任务依赖某个 skill，只说明要使用哪个 skill 和目标结果，让 Worker 自己 load_skill 后按 SOP 执行。\n"
     "【Worker 池】\n{worker_pool_info}"
 )
