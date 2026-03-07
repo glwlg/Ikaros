@@ -73,12 +73,23 @@ class _FakeValidator:
 
 
 class _FakePublisher:
+    def __init__(self):
+        self.rollout_calls = []
+
     async def publish(self, **_kwargs):
         return {
             "ok": True,
             "summary": "publish completed",
             "pull_request": {"html_url": "https://github.com/acme/project/pull/9"},
             "commit_sha": "abc123",
+        }
+
+    async def rollout_local(self, **kwargs):
+        self.rollout_calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "summary": "local rollout completed for x-bot-worker",
+            "target_service": str(kwargs.get("target_service") or ""),
         }
 
 
@@ -163,6 +174,133 @@ async def test_software_delivery_run_pipeline_success(monkeypatch):
     assert status["status"] == "done"
     assert status["data"]["log_path"].endswith(f"{result['task_id']}.log")
     assert "backend log output" in status["data"]["log_tail"]
+
+
+@pytest.mark.asyncio
+async def test_software_delivery_validate_only_stops_after_validation(monkeypatch):
+    async def fake_run_coding_backend(**kwargs):
+        _ = kwargs
+        return {
+            "ok": True,
+            "backend": "codex",
+            "summary": "coding backend completed",
+        }
+
+    monkeypatch.setattr(service_module, "run_coding_backend", fake_run_coding_backend)
+
+    publisher = _FakePublisher()
+    service = ManagerDevService()
+    service.tasks = _FakeTaskStore()
+    service.workspace = _FakeWorkspace()
+    service.planner = _FakePlanner()
+    service.validator = _FakeValidator()
+    service.publisher = publisher
+    service.github = _FakeGitHub()
+
+    result = await service.software_delivery(
+        action="run",
+        requirement="fix bug",
+        repo_path="/tmp/repo",
+        backend="codex",
+        validate_only=True,
+    )
+
+    assert result["ok"] is True
+    await _wait_background(service)
+    status = await service.software_delivery(action="status", task_id=result["task_id"])
+    assert status["status"] == "validated"
+    assert publisher.rollout_calls == []
+
+
+@pytest.mark.asyncio
+async def test_software_delivery_publish_runs_local_rollout(monkeypatch):
+    async def fake_run_coding_backend(**kwargs):
+        _ = kwargs
+        return {
+            "ok": True,
+            "backend": "codex",
+            "summary": "coding backend completed",
+        }
+
+    monkeypatch.setattr(service_module, "run_coding_backend", fake_run_coding_backend)
+
+    publisher = _FakePublisher()
+    service = ManagerDevService()
+    service.tasks = _FakeTaskStore()
+    service.workspace = _FakeWorkspace()
+    service.planner = _FakePlanner()
+    service.validator = _FakeValidator()
+    service.publisher = publisher
+    service.github = _FakeGitHub()
+
+    result = await service.software_delivery(
+        action="run",
+        requirement="fix worker bug",
+        repo_path="/tmp/repo",
+        backend="codex",
+        auto_publish=True,
+        auto_push=False,
+        auto_pr=False,
+        target_service="worker",
+        rollout="local",
+    )
+
+    assert result["ok"] is True
+    await _wait_background(service)
+    status = await service.software_delivery(action="status", task_id=result["task_id"])
+    assert status["status"] == "done"
+    assert publisher.rollout_calls[0]["target_service"] == "worker"
+    assert status["data"]["task"]["rollout"]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_software_delivery_rollout_failure_marks_task_failed(monkeypatch):
+    async def fake_run_coding_backend(**kwargs):
+        _ = kwargs
+        return {
+            "ok": True,
+            "backend": "codex",
+            "summary": "coding backend completed",
+        }
+
+    class _FailingPublisher(_FakePublisher):
+        async def rollout_local(self, **kwargs):
+            self.rollout_calls.append(dict(kwargs))
+            return {
+                "ok": False,
+                "error_code": "rollout_up_failed",
+                "message": "service failed to restart",
+                "rollback": {"attempted": True, "ok": True},
+            }
+
+    monkeypatch.setattr(service_module, "run_coding_backend", fake_run_coding_backend)
+
+    publisher = _FailingPublisher()
+    service = ManagerDevService()
+    service.tasks = _FakeTaskStore()
+    service.workspace = _FakeWorkspace()
+    service.planner = _FakePlanner()
+    service.validator = _FakeValidator()
+    service.publisher = publisher
+    service.github = _FakeGitHub()
+
+    result = await service.software_delivery(
+        action="run",
+        requirement="fix worker bug",
+        repo_path="/tmp/repo",
+        backend="codex",
+        auto_publish=True,
+        auto_push=False,
+        auto_pr=False,
+        target_service="worker",
+        rollout="local",
+    )
+
+    assert result["ok"] is True
+    await _wait_background(service)
+    status = await service.software_delivery(action="status", task_id=result["task_id"])
+    assert status["status"] == "failed"
+    assert status["data"]["task"]["rollout"]["rollback"]["attempted"] is True
 
 
 @pytest.mark.asyncio
@@ -366,3 +504,67 @@ async def test_software_delivery_skill_template_fills_missing_fields(monkeypatch
     await _wait_background(service)
     assert captured["instruction"]
     assert str(captured["cwd"]).replace("\\", "/").endswith("skills/learned/demo_skill")
+
+
+@pytest.mark.asyncio
+async def test_software_delivery_skill_template_respects_contract_block(monkeypatch):
+    service = ManagerDevService()
+    monkeypatch.setattr(
+        service,
+        "_resolve_skill_contract",
+        lambda **_kwargs: {
+            "allow_manager_modify": False,
+            "change_level": "worker-kernel",
+        },
+    )
+
+    result = await service.software_delivery(
+        action="skill_modify",
+        skill_name="demo_skill",
+        instruction="update skill",
+        cwd="/tmp/repo/skills/builtin/demo_skill",
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "skill_contract_blocked"
+
+
+@pytest.mark.asyncio
+async def test_software_delivery_skill_template_runs_contract_preflight(monkeypatch):
+    calls = []
+
+    async def fake_run_coding_backend(**kwargs):
+        _ = kwargs
+        return {
+            "ok": True,
+            "backend": "codex",
+            "summary": "template completed",
+        }
+
+    async def fake_run_shell(command, *, cwd, timeout_sec=1200):
+        calls.append((command, cwd, timeout_sec))
+        return {"ok": True, "summary": "ok", "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr(service_module, "run_coding_backend", fake_run_coding_backend)
+    monkeypatch.setattr("manager.dev.skill_contracts.run_shell", fake_run_shell)
+
+    service = ManagerDevService()
+    monkeypatch.setattr(
+        service,
+        "_resolve_skill_contract",
+        lambda **_kwargs: {
+            "allow_manager_modify": True,
+            "preflight_commands": ["python scripts/execute.py --help"],
+        },
+    )
+
+    result = await service.software_delivery(
+        action="skill_create",
+        skill_name="demo_skill",
+        instruction="create skill files",
+        cwd="/tmp/repo/skills/learned/demo_skill",
+    )
+
+    assert result["ok"] is True
+    await _wait_background(service)
+    assert calls == [("python scripts/execute.py --help", "/tmp/repo/skills/learned/demo_skill", 600)]

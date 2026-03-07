@@ -233,7 +233,7 @@ async def main():
     # ----------------------------------------------
     from core.skill_loader import skill_loader
 
-    logger.info("🔌 Registering dynamic skill handlers...")
+    logger.info("🔌 Registering opt-in dynamic skill handlers...")
     skill_loader.register_skill_handlers(adapter_manager)
     # ----------------------------------------------
 

@@ -33,6 +33,9 @@ class DevTools:
         auto_publish: Any = True,
         auto_push: Any = True,
         auto_pr: Any = True,
+        target_service: str = "manager",
+        rollout: str = "none",
+        validate_only: Any = False,
     ) -> Dict[str, Any]:
         return await manager_dev_service.software_delivery(
             action=action,
@@ -59,6 +62,9 @@ class DevTools:
             auto_publish=auto_publish,
             auto_push=auto_push,
             auto_pr=auto_pr,
+            target_service=target_service,
+            rollout=rollout,
+            validate_only=validate_only,
         )
 
 

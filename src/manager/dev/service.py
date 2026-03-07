@@ -7,9 +7,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+from manager.dev.delivery_policy import (
+    normalize_rollout_mode,
+    normalize_target_service,
+)
 from manager.dev.planner import manager_dev_planner
 from manager.dev.publisher import manager_dev_publisher
-from manager.dev.runtime import run_coding_backend
+from manager.dev.runtime import run_coding_backend, run_shell
+from manager.dev.skill_contracts import (
+    resolve_skill_contract,
+    resolve_skill_target_dir,
+    run_skill_contract_preflight,
+    sanitize_skill_name,
+)
 from manager.dev.task_store import dev_task_store
 from manager.dev.validator import manager_dev_validator
 from manager.dev.workspace import dev_workspace_manager
@@ -63,19 +73,15 @@ def _short(text: str, limit: int = 240) -> str:
 
 
 def _sanitize_skill_name(value: Any) -> str:
-    raw = str(value or "").strip().lower().replace("-", "_")
-    if not raw:
-        return ""
-    safe_chars = [ch if (ch.isalnum() or ch == "_") else "_" for ch in raw]
-    token = "".join(safe_chars)
-    while "__" in token:
-        token = token.replace("__", "_")
-    token = token.strip("_")
-    if not token:
-        return ""
-    if token[0].isdigit():
-        token = f"skill_{token}"
-    return token[:64]
+    return sanitize_skill_name(value)
+
+
+def _normalize_target_service(value: Any) -> str:
+    return normalize_target_service(value)
+
+
+def _normalize_rollout_mode(value: Any) -> str:
+    return normalize_rollout_mode(value)
 
 
 class ManagerDevService:
@@ -394,6 +400,9 @@ class ManagerDevService:
         owner: str = "",
         repo: str = "",
         base_branch: str = "",
+        target_service: str = "manager",
+        rollout: str = "none",
+        validate_only: bool = False,
     ) -> Dict[str, Any]:
         workspace = await self.workspace.prepare_workspace(
             repo_path=repo_path,
@@ -464,9 +473,15 @@ class ManagerDevService:
                 "acceptance": list(plan_payload.get("acceptance") or []),
             },
             "git": git_payload,
+            "delivery": {
+                "target_service": _normalize_target_service(target_service),
+                "rollout": _normalize_rollout_mode(rollout),
+                "validate_only": bool(validate_only),
+            },
             "implementation": {},
             "validation": {},
             "publish": {},
+            "rollout": {},
             "events": [],
             "error": "",
             "created_at": _now_iso(),
@@ -692,6 +707,8 @@ class ManagerDevService:
         base_branch: str = "",
         auto_push: bool = True,
         auto_pr: bool = True,
+        target_service: str = "",
+        rollout: str = "none",
     ) -> Dict[str, Any]:
         record = await self._load_task(task_id)
         if not record:
@@ -706,6 +723,7 @@ class ManagerDevService:
 
         repo_payload = dict(record.get("repo") or {})
         git_payload = dict(record.get("git") or {})
+        delivery_payload = dict(record.get("delivery") or {})
 
         safe_repo_path = str(repo_payload.get("path") or "").strip()
         safe_owner = str(repo_payload.get("owner") or "").strip()
@@ -723,6 +741,19 @@ class ManagerDevService:
             or safe_commit_message
         )
         safe_pr_body = str(pr_body or git_payload.get("pr_body") or "").strip()
+        resolved_target_service = _normalize_target_service(
+            target_service or delivery_payload.get("target_service") or "manager"
+        )
+        resolved_rollout = _normalize_rollout_mode(
+            rollout or delivery_payload.get("rollout") or "none"
+        )
+        delivery_payload.update(
+            {
+                "target_service": resolved_target_service,
+                "rollout": resolved_rollout,
+            }
+        )
+        record["delivery"] = delivery_payload
 
         record["status"] = "publishing"
         record["error"] = ""
@@ -794,6 +825,58 @@ class ManagerDevService:
                     detail=str(exc),
                 )
 
+        rollout_result: Dict[str, Any] = {}
+        if resolved_rollout == "local":
+            record["status"] = "rolling_out"
+            self._append_event(
+                record,
+                name="rollout_started",
+                detail=f"target_service={resolved_target_service}",
+            )
+            await self.tasks.save(record)
+            rollout_result = await self.publisher.rollout_local(
+                repo_path=safe_repo_path,
+                target_service=resolved_target_service,
+            )
+            record["rollout"] = rollout_result
+            if not rollout_result.get("ok"):
+                record["status"] = "failed"
+                record["error"] = str(
+                    rollout_result.get("message") or "rollout failed"
+                ).strip()
+                self._append_event(
+                    record,
+                    name="rollout_failed",
+                    detail=record["error"],
+                    data={"rollback": dict(rollout_result.get("rollback") or {})},
+                )
+                await self.tasks.save(record)
+                return self._response(
+                    ok=False,
+                    summary="rollout failed",
+                    task_id=str(record.get("task_id") or "").strip(),
+                    status="failed",
+                    text=record["error"],
+                    error_code=str(
+                        rollout_result.get("error_code") or "rollout_failed"
+                    ),
+                    data={
+                        "publish": publish_result,
+                        "rollout": rollout_result,
+                        "pr_url": pr_url,
+                    },
+                    terminal=True,
+                    task_outcome="failed",
+                )
+            self._append_event(
+                record,
+                name="rollout_done",
+                detail=str(
+                    rollout_result.get("summary") or "local rollout completed"
+                ).strip(),
+                data={"target_service": resolved_target_service},
+            )
+
         record["status"] = "done"
         record["error"] = ""
         self._append_event(
@@ -809,7 +892,11 @@ class ManagerDevService:
             task_id=str(record.get("task_id") or "").strip(),
             status="done",
             text=str(pr_url or "Publish completed"),
-            data={"publish": publish_result, "pr_url": pr_url},
+            data={
+                "publish": publish_result,
+                "rollout": rollout_result,
+                "pr_url": pr_url,
+            },
             terminal=True,
             task_outcome="done",
         )
@@ -842,39 +929,24 @@ class ManagerDevService:
         return "请根据用户请求创建一个新技能，并生成有效的 SKILL.md。"
 
     def _resolve_skill_template_cwd(self, *, action: str, skill_name: str) -> str:
-        safe_action = str(action or "").strip().lower()
-        safe_skill = _sanitize_skill_name(skill_name)
+        return resolve_skill_target_dir(action=action, skill_name=skill_name)
 
-        try:
-            from core.skill_loader import skill_loader
+    def _resolve_skill_contract(
+        self,
+        *,
+        action: str,
+        skill_name: str,
+        cwd: str,
+    ) -> Dict[str, Any]:
+        return resolve_skill_contract(action=action, skill_name=skill_name, cwd=cwd)
 
-            skills_root = str(getattr(skill_loader, "skills_dir", "") or "").strip()
-            if not skills_root:
-                skills_root = os.path.abspath(os.path.join(os.getcwd(), "skills"))
-
-            if safe_action == "skill_modify":
-                if not safe_skill:
-                    return ""
-                info = skill_loader.get_skill(safe_skill) or {}
-                if str(info.get("source") or "").strip() == "builtin":
-                    return ""
-                target = str(info.get("skill_dir") or "").strip()
-                if target:
-                    return target
-                return ""
-
-            target_name = (
-                safe_skill or f"skill_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
-            return os.path.abspath(os.path.join(skills_root, "learned", target_name))
-        except Exception:
-            fallback_root = os.path.abspath(
-                os.path.join(os.getcwd(), "skills", "learned")
-            )
-            target_name = (
-                safe_skill or f"skill_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
-            return os.path.abspath(os.path.join(fallback_root, target_name))
+    async def _run_skill_contract_preflight(
+        self,
+        *,
+        contract: Dict[str, Any],
+        cwd: str,
+    ) -> Dict[str, Any]:
+        return await run_skill_contract_preflight(contract=contract, cwd=cwd)
 
     async def _queue_existing_task(
         self,
@@ -949,6 +1021,9 @@ class ManagerDevService:
         auto_publish: bool,
         auto_push: bool,
         auto_pr: bool,
+        target_service: str,
+        rollout: str,
+        validate_only: bool,
     ) -> None:
         impl = await self.implement(
             task_id=task_id,
@@ -966,6 +1041,20 @@ class ManagerDevService:
         if not val.get("ok"):
             return
 
+        if validate_only:
+            record = await self._load_task(task_id)
+            if not record:
+                return
+            record["status"] = "validated"
+            record["error"] = ""
+            self._append_event(
+                record,
+                name="validate_only_done",
+                detail="validation completed without publish",
+            )
+            await self.tasks.save(record)
+            return
+
         if auto_publish:
             await self.publish(
                 task_id=task_id,
@@ -975,6 +1064,8 @@ class ManagerDevService:
                 base_branch=base_branch,
                 auto_push=auto_push,
                 auto_pr=auto_pr,
+                target_service=target_service,
+                rollout=rollout,
             )
             return
 
@@ -1003,6 +1094,9 @@ class ManagerDevService:
         auto_publish: bool,
         auto_push: bool,
         auto_pr: bool,
+        target_service: str,
+        rollout: str,
+        validate_only: bool,
     ) -> None:
         await self.resume(
             task_id=task_id,
@@ -1015,6 +1109,9 @@ class ManagerDevService:
             auto_publish=auto_publish,
             auto_push=auto_push,
             auto_pr=auto_pr,
+            target_service=target_service,
+            rollout=rollout,
+            validate_only=validate_only,
         )
 
     async def _background_implement(
@@ -1052,6 +1149,7 @@ class ManagerDevService:
         safe_source = str(source or f"software_delivery_{action}").strip()
         safe_cwd = str(cwd or "").strip()
         log_path = self._task_log_path(task_id)
+        contract = dict(record.get("skill_contract") or {})
 
         record["status"] = "implementing"
         record["error"] = ""
@@ -1094,6 +1192,24 @@ class ManagerDevService:
                 name="skill_template_failed",
                 detail=record["error"],
                 data={"error_code": str(run_result.get("error_code") or "")},
+            )
+            await self.tasks.save(record)
+            return
+
+        preflight = await self._run_skill_contract_preflight(
+            contract=contract,
+            cwd=safe_cwd,
+        )
+        record["validation"] = preflight
+        if not preflight.get("ok"):
+            record["status"] = "failed"
+            record["error"] = str(
+                preflight.get("summary") or "skill preflight failed"
+            ).strip()
+            self._append_event(
+                record,
+                name="skill_template_preflight_failed",
+                detail=record["error"],
             )
             await self.tasks.save(record)
             return
@@ -1170,6 +1286,21 @@ class ManagerDevService:
         if safe_action == "skill_create":
             os.makedirs(safe_cwd, exist_ok=True)
 
+        contract = self._resolve_skill_contract(
+            action=safe_action,
+            skill_name=safe_skill_name,
+            cwd=safe_cwd,
+        )
+        if not bool(contract.get("allow_manager_modify", True)):
+            return self._response(
+                ok=False,
+                summary="skill template failed",
+                text="contract blocks manager modification for this skill target",
+                error_code="skill_contract_blocked",
+                terminal=True,
+                task_outcome="failed",
+            )
+
         record = {
             "status": "queued",
             "goal": "skill template execution",
@@ -1183,7 +1314,10 @@ class ManagerDevService:
                 "source": str(source or f"software_delivery_{safe_action}").strip(),
                 "backend": str(backend or "").strip(),
                 "timeout_sec": max(60, int(timeout_sec or 1800)),
+                "allow_auto_publish": bool(contract.get("allow_auto_publish", False)),
+                "rollout_target": str(contract.get("rollout_target") or "").strip(),
             },
+            "skill_contract": contract,
             "implementation": {},
             "validation": {},
             "publish": {},
@@ -1290,6 +1424,9 @@ class ManagerDevService:
         auto_publish: bool = True,
         auto_push: bool = True,
         auto_pr: bool = True,
+        target_service: str = "",
+        rollout: str = "none",
+        validate_only: bool = False,
     ) -> Dict[str, Any]:
         record = await self._load_task(task_id)
         if not record:
@@ -1325,7 +1462,7 @@ class ManagerDevService:
                 val["task_outcome"] = "failed"
                 return val
 
-        if not auto_publish:
+        if validate_only or not auto_publish:
             done = await self.status(task_id=task_id)
             done["terminal"] = True
             done["task_outcome"] = "done"
@@ -1339,6 +1476,8 @@ class ManagerDevService:
             base_branch=base_branch,
             auto_push=auto_push,
             auto_pr=auto_pr,
+            target_service=target_service,
+            rollout=rollout,
         )
         return pub
 
@@ -1369,13 +1508,19 @@ class ManagerDevService:
         auto_publish: Any = True,
         auto_push: Any = True,
         auto_pr: Any = True,
+        target_service: str = "manager",
+        rollout: str = "none",
+        validate_only: Any = False,
     ) -> Dict[str, Any]:
         safe_action = str(action or "run").strip().lower() or "run"
         safe_validation_commands = _clean_list(validation_commands)
-        safe_auto_publish = _as_bool(auto_publish, default=True)
+        safe_validate_only = _as_bool(validate_only, default=False)
+        safe_auto_publish = _as_bool(auto_publish, default=True) and not safe_validate_only
         safe_auto_push = _as_bool(auto_push, default=True)
         safe_auto_pr = _as_bool(auto_pr, default=True)
         safe_timeout_sec = max(60, _to_int(timeout_sec, 1800))
+        safe_target_service = _normalize_target_service(target_service)
+        safe_rollout = _normalize_rollout_mode(rollout)
 
         try:
             if safe_action == "read_issue":
@@ -1389,6 +1534,9 @@ class ManagerDevService:
                     owner=owner,
                     repo=repo,
                     base_branch=base_branch,
+                    target_service=safe_target_service,
+                    rollout=safe_rollout,
+                    validate_only=safe_validate_only,
                 )
             if safe_action == "logs":
                 status_result = await self.status(task_id=task_id)
@@ -1433,6 +1581,8 @@ class ManagerDevService:
                     base_branch=base_branch,
                     auto_push=safe_auto_push,
                     auto_pr=safe_auto_pr,
+                    target_service=safe_target_service,
+                    rollout=safe_rollout,
                 )
             if safe_action == "status":
                 return await self.status(task_id=task_id)
@@ -1453,6 +1603,9 @@ class ManagerDevService:
                         auto_publish=safe_auto_publish,
                         auto_push=safe_auto_push,
                         auto_pr=safe_auto_pr,
+                        target_service=safe_target_service,
+                        rollout=safe_rollout,
+                        validate_only=safe_validate_only,
                     ),
                 )
             if safe_action in {"skill_create", "skill_modify", "skill_template"}:
@@ -1489,6 +1642,9 @@ class ManagerDevService:
                         auto_publish=safe_auto_publish,
                         auto_push=safe_auto_push,
                         auto_pr=safe_auto_pr,
+                        target_service=safe_target_service,
+                        rollout=safe_rollout,
+                        validate_only=safe_validate_only,
                     ),
                 )
 
@@ -1500,6 +1656,9 @@ class ManagerDevService:
                 owner=owner,
                 repo=repo,
                 base_branch=base_branch,
+                target_service=safe_target_service,
+                rollout=safe_rollout,
+                validate_only=safe_validate_only,
             )
             if not planned.get("ok"):
                 planned["terminal"] = True
@@ -1524,6 +1683,9 @@ class ManagerDevService:
                     auto_publish=safe_auto_publish,
                     auto_push=safe_auto_push,
                     auto_pr=safe_auto_pr,
+                    target_service=safe_target_service,
+                    rollout=safe_rollout,
+                    validate_only=safe_validate_only,
                 ),
             )
         except GitHubClientError as exc:

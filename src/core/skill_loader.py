@@ -1,12 +1,266 @@
 """Skill loader with unified protocol metadata (v3-first)."""
 
+import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_text_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    rows: List[str] = []
+    for item in value:
+        token = str(item or "").strip()
+        if token and token not in rows:
+            rows.append(token)
+    return rows
+
+
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _clean_code_token(value: str) -> str:
+    return str(value or "").strip().strip("`").strip()
+
+
+def _schema_for_value(value: Any) -> Dict[str, Any]:
+    if isinstance(value, bool):
+        return {"type": "boolean"}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return {"type": "integer"}
+    if isinstance(value, float):
+        return {"type": "number"}
+    if isinstance(value, list):
+        item_schema = _schema_for_value(value[0]) if value else {"type": "string"}
+        return {"type": "array", "items": item_schema}
+    if isinstance(value, dict):
+        properties = {
+            str(key): _schema_for_value(item) for key, item in dict(value).items()
+        }
+        return {"type": "object", "properties": properties}
+    return {"type": "string"}
+
+
+def _schema_type(type_name: str) -> Dict[str, Any]:
+    normalized = str(type_name or "").strip().lower()
+    if normalized in {"list", "array"}:
+        return {"type": "array", "items": {"type": "string"}}
+    if normalized in {"int", "integer"}:
+        return {"type": "integer"}
+    if normalized in {"float", "number"}:
+        return {"type": "number"}
+    if normalized in {"bool", "boolean"}:
+        return {"type": "boolean"}
+    if normalized in {"object", "dict", "map"}:
+        return {"type": "object", "properties": {}}
+    return {"type": "string"}
+
+
+def _infer_schema_from_parameter_table(markdown_content: str) -> Dict[str, Any]:
+    lines = [line.rstrip() for line in str(markdown_content or "").splitlines()]
+    for idx in range(len(lines) - 1):
+        header = [part.strip() for part in lines[idx].strip().strip("|").split("|")]
+        if len(header) < 4:
+            continue
+        if "参数" not in header[0] or "类型" not in header[1] or "必" not in header[2]:
+            continue
+        if "---" not in lines[idx + 1] and ":---" not in lines[idx + 1]:
+            continue
+
+        properties: Dict[str, Any] = {}
+        required: List[str] = []
+        cursor = idx + 2
+        while cursor < len(lines):
+            raw = lines[cursor].strip()
+            if not raw.startswith("|"):
+                break
+            parts = [part.strip() for part in raw.strip("|").split("|")]
+            if len(parts) < 4:
+                break
+            name = _clean_code_token(parts[0])
+            type_name = _clean_code_token(parts[1])
+            required_flag = _clean_code_token(parts[2]).lower()
+            description = parts[3].strip()
+            if not name:
+                cursor += 1
+                continue
+
+            field_schema = _schema_type(type_name)
+            enum_values = [
+                token.strip()
+                for token in re.findall(r"`([^`]+)`", description)
+                if token.strip()
+            ]
+            if len(enum_values) > 1 and field_schema.get("type") == "string":
+                field_schema["enum"] = enum_values
+            properties[name] = field_schema
+            if required_flag in {"是", "yes", "true", "required"}:
+                required.append(name)
+            cursor += 1
+
+        if properties:
+            schema: Dict[str, Any] = {"type": "object", "properties": properties}
+            if required:
+                schema["required"] = required
+            return schema
+    return {"type": "object", "properties": {}}
+
+
+def _infer_schema_from_json_examples(markdown_content: str) -> Dict[str, Any]:
+    pattern = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+    for match in pattern.finditer(str(markdown_content or "")):
+        try:
+            loaded = json.loads(match.group(1))
+        except Exception:
+            continue
+        if isinstance(loaded, dict):
+            return _schema_for_value(loaded)
+    return {"type": "object", "properties": {}}
+
+
+def _normalize_input_schema(frontmatter_value: Any, markdown_content: str) -> Dict[str, Any]:
+    schema = frontmatter_value if isinstance(frontmatter_value, dict) else {}
+    base: Dict[str, Any] = {
+        "type": str(schema.get("type") or "object").strip() or "object",
+        "properties": dict(schema.get("properties") or {}),
+    }
+    if isinstance(schema.get("required"), list):
+        base["required"] = [str(item).strip() for item in schema["required"] if str(item).strip()]
+
+    if base["properties"]:
+        return base
+
+    inferred = _infer_schema_from_parameter_table(markdown_content)
+    if inferred.get("properties"):
+        return inferred
+
+    inferred = _infer_schema_from_json_examples(markdown_content)
+    if inferred.get("properties"):
+        return inferred
+    return base
+
+
+def _normalize_policy_groups(value: Any) -> List[str]:
+    rows: List[str] = []
+    for item in _normalize_text_list(value):
+        token = str(item or "").strip().lower()
+        if not token:
+            continue
+        if not token.startswith("group:"):
+            token = f"group:{token}"
+        if token not in rows:
+            rows.append(token)
+    return rows
+
+
+def _normalize_tool_exports(
+    *,
+    frontmatter: Dict[str, Any],
+    markdown_content: str,
+    skill_name: str,
+    skill_description: str,
+    skill_input_schema: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    raw_exports = frontmatter.get("tool_exports")
+    if isinstance(raw_exports, dict):
+        raw_exports = [raw_exports]
+    if not isinstance(raw_exports, list):
+        return []
+
+    exports: List[Dict[str, Any]] = []
+    for item in raw_exports:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        description = str(item.get("description") or skill_description or "").strip()
+        handler = str(item.get("handler") or name).strip()
+        parameters_seed = item.get("parameters")
+        if not isinstance(parameters_seed, dict):
+            parameters_seed = item.get("input_schema")
+        parameters = (
+            _normalize_input_schema(parameters_seed, markdown_content)
+            if isinstance(parameters_seed, dict)
+            else dict(skill_input_schema or {})
+        )
+        exports.append(
+            {
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+                "handler": handler,
+                "skill_name": skill_name,
+                "prompt_hint": str(item.get("prompt_hint") or "").strip(),
+                "usage_tags": _normalize_text_list(item.get("usage_tags")),
+                "policy_groups": _normalize_policy_groups(item.get("policy_groups")),
+            }
+        )
+    return exports
+
+
+def _build_skill_contract(
+    *,
+    source: str,
+    manager_only: bool,
+    allowed_roles: List[str],
+    frontmatter: Dict[str, Any],
+    permissions: Dict[str, Any],
+) -> Dict[str, Any]:
+    runtime_target = str(frontmatter.get("runtime_target") or "").strip().lower()
+    if runtime_target not in {"manager", "worker", "worker-kernel"}:
+        if manager_only or allowed_roles == ["manager"]:
+            runtime_target = "manager"
+        else:
+            runtime_target = "worker"
+
+    change_level = str(frontmatter.get("change_level") or "").strip().lower()
+    if change_level not in {"learned", "builtin", "worker-kernel"}:
+        change_level = "learned" if source == "learned" else "builtin"
+
+    allow_manager_modify = _as_bool(
+        frontmatter.get("allow_manager_modify"),
+        default=change_level in {"learned", "builtin"},
+    )
+    allow_auto_publish = _as_bool(
+        frontmatter.get("allow_auto_publish"),
+        default=change_level == "learned",
+    )
+    rollout_target = str(frontmatter.get("rollout_target") or "").strip().lower()
+    if rollout_target not in {"manager", "worker", "api", "none"}:
+        rollout_target = "worker" if runtime_target.startswith("worker") else "manager"
+
+    return {
+        "runtime_target": runtime_target,
+        "change_level": change_level,
+        "allow_manager_modify": allow_manager_modify,
+        "allow_auto_publish": allow_auto_publish,
+        "rollout_target": rollout_target,
+        "dependencies": _normalize_text_list(frontmatter.get("dependencies")),
+        "preflight_commands": _normalize_text_list(
+            frontmatter.get("preflight_commands")
+        ),
+        "permissions": dict(permissions or {}),
+        "allowed_roles": list(allowed_roles or []),
+    }
 
 
 class SkillLoader:
@@ -94,17 +348,26 @@ class SkillLoader:
         name = str(frontmatter.get("name") or os.path.basename(skill_dir)).strip()
         description = str(frontmatter.get("description") or "").strip()
 
-        triggers = frontmatter.get("triggers") or []
-        if isinstance(triggers, str):
-            triggers = [triggers]
-        if not isinstance(triggers, list):
-            triggers = []
-
-        # We no longer parse input_schema and allowed_tools dynamically.
-        # Skills are now just markdown documents for LLM reading.
-        # But we still return a minimal representation for the UI or other basic needs.
-        input_schema = frontmatter.get("input_schema") or {"type": "object", "properties": {}}
-        allowed_tools = []
+        triggers = _normalize_text_list(frontmatter.get("triggers") or [])
+        input_schema = _normalize_input_schema(
+            frontmatter.get("input_schema"),
+            markdown_content,
+        )
+        policy_groups = _normalize_policy_groups(frontmatter.get("policy_groups"))
+        platform_handlers = _as_bool(
+            frontmatter.get("platform_handlers"),
+            default=False,
+        )
+        tool_exports = _normalize_tool_exports(
+            frontmatter=frontmatter,
+            markdown_content=markdown_content,
+            skill_name=name,
+            skill_description=description,
+            skill_input_schema=input_schema,
+        )
+        allowed_tools = _normalize_text_list(
+            frontmatter.get("allowed-tools") or frontmatter.get("allowed_tools") or []
+        )
 
         manager_only_raw: Any = frontmatter.get("manager_only")
         if manager_only_raw is None:
@@ -120,16 +383,21 @@ class SkillLoader:
             manager_only = manager_only_text in {"1", "true", "yes", "on"}
 
         api_version = str(frontmatter.get("api_version") or "v3")
-        allowed_roles_raw = frontmatter.get("allowed_roles") or []
-        if isinstance(allowed_roles_raw, str):
-            allowed_roles_raw = [allowed_roles_raw]
-        if not isinstance(allowed_roles_raw, list):
-            allowed_roles_raw = []
-        allowed_roles = []
-        for item in allowed_roles_raw:
-            role = str(item or "").strip().lower()
-            if role and role not in allowed_roles:
-                allowed_roles.append(role)
+        allowed_roles = [
+            str(item or "").strip().lower()
+            for item in _normalize_text_list(frontmatter.get("allowed_roles") or [])
+            if str(item or "").strip()
+        ]
+
+        permissions = frontmatter.get("permissions")
+        permissions_obj = dict(permissions) if isinstance(permissions, dict) else {}
+        contract = _build_skill_contract(
+            source=source,
+            manager_only=manager_only,
+            allowed_roles=allowed_roles,
+            frontmatter=frontmatter,
+            permissions=permissions_obj,
+        )
 
         scripts = []
         scripts_dir = os.path.join(skill_dir, "scripts")
@@ -149,8 +417,13 @@ class SkillLoader:
             "triggers": triggers,
             "allowed_tools": allowed_tools,
             "input_schema": input_schema,
+            "tool_exports": tool_exports,
+            "policy_groups": policy_groups,
+            "platform_handlers": platform_handlers,
+            "permissions": permissions_obj,
             "manager_only": manager_only,
             "allowed_roles": allowed_roles,
+            "contract": contract,
             "cron_instruction": frontmatter.get("cron_instruction"),
             "license": frontmatter.get("license", ""),
             "entrypoint": str(frontmatter.get("entrypoint") or "").strip(),
@@ -177,9 +450,14 @@ class SkillLoader:
                     "description": info.get("description", "")[:500],
                     "triggers": info.get("triggers", []),
                     "allowed_tools": info.get("allowed_tools", []),
+                    "tool_exports": [dict(item) for item in info.get("tool_exports") or []],
+                    "policy_groups": list(info.get("policy_groups") or []),
+                    "platform_handlers": bool(info.get("platform_handlers")),
+                    "permissions": dict(info.get("permissions") or {}),
                     "manager_only": bool(info.get("manager_only")),
                     "allowed_roles": list(info.get("allowed_roles") or []),
                     "input_schema": info.get("input_schema", {}),
+                    "contract": dict(info.get("contract") or {}),
                 }
             )
         return summary
@@ -227,6 +505,35 @@ class SkillLoader:
     def get_skill(self, skill_name: str) -> Optional[Dict[str, Any]]:
         return self.get_skill_index().get(skill_name)
 
+    def get_tool_exports(self) -> List[Dict[str, Any]]:
+        exports: List[Dict[str, Any]] = []
+        for info in self.get_skill_index().values():
+            allowed_roles = [
+                str(item or "").strip().lower()
+                for item in list(info.get("allowed_roles") or [])
+                if str(item or "").strip()
+            ]
+            for item in list(info.get("tool_exports") or []):
+                exported = dict(item or {})
+                exported.setdefault("skill_name", str(info.get("name") or "").strip())
+                exported.setdefault("allowed_roles", list(allowed_roles))
+                exported.setdefault("manager_only", bool(info.get("manager_only")))
+                exported.setdefault(
+                    "policy_groups",
+                    list(info.get("policy_groups") or []),
+                )
+                exports.append(exported)
+        return exports
+
+    def get_tool_export(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        safe_name = str(tool_name or "").strip()
+        if not safe_name:
+            return None
+        for item in self.get_tool_exports():
+            if str(item.get("name") or "").strip() == safe_name:
+                return item
+        return None
+
     def get_skill_md_content(self, skill_name: str) -> str:
         """Read the full raw markdown content for a loaded skill directory without parsing"""
         skill_info = self.get_skill(skill_name)
@@ -250,6 +557,8 @@ class SkillLoader:
         import importlib.util
 
         for skill_name, info in self.get_skill_index().items():
+            if not bool(info.get("platform_handlers")):
+                continue
             scripts = info.get("scripts", [])
             if "execute.py" not in scripts:
                 continue
