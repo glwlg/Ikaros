@@ -8,8 +8,11 @@ from typing import Any, Awaitable, Callable, cast
 from core.config import get_client_for_model
 from core.model_config import (
     load_models_config,
+    get_model_candidates_for_input,
     get_model_for_input,
     get_model_id_for_api,
+    mark_model_failed,
+    mark_model_success,
 )
 from services.openai_adapter import build_messages
 
@@ -144,7 +147,9 @@ class AiService:
         last_terminal_tool_name = ""
 
         # 根据消息内容选择合适的模型
-        current_model = self._get_model_for_request(message_history)
+        current_model, request_input_type, request_pool_type = (
+            self._get_model_for_request(message_history)
+        )
 
         current_history = build_messages(
             contents=message_history,
@@ -154,6 +159,82 @@ class AiService:
         client = _resolve_async_client(current_model)
 
         try:
+
+            async def _create_chat_completion(request_kwargs: dict[str, Any]) -> Any:
+                nonlocal current_model, client
+
+                candidate_models = get_model_candidates_for_input(
+                    input_type=request_input_type,
+                    pool_type=request_pool_type,
+                    preferred_model=current_model,
+                )
+                if not candidate_models and current_model:
+                    candidate_models = [current_model]
+                if not candidate_models:
+                    raise RuntimeError("No candidate model available for current request")
+
+                last_error: Exception | None = None
+                for index, candidate_model in enumerate(candidate_models):
+                    model_client = _resolve_async_client(candidate_model)
+                    if model_client is None:
+                        last_error = RuntimeError(
+                            f"No async client available for model: {candidate_model}"
+                        )
+                        mark_model_failed(candidate_model)
+                        next_model = (
+                            candidate_models[index + 1]
+                            if index + 1 < len(candidate_models)
+                            else ""
+                        )
+                        if next_model:
+                            logger.warning(
+                                "[AiService] Model client unavailable for %s; trying %s",
+                                candidate_model,
+                                next_model,
+                            )
+                            continue
+                        raise last_error
+
+                    payload = dict(request_kwargs)
+                    payload["model"] = get_model_id_for_api(candidate_model)
+                    try:
+                        response = await cast(
+                            Any, model_client
+                        ).chat.completions.create(**payload)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        last_error = exc
+                        mark_model_failed(candidate_model)
+                        next_model = (
+                            candidate_models[index + 1]
+                            if index + 1 < len(candidate_models)
+                            else ""
+                        )
+                        if next_model:
+                            logger.warning(
+                                "[AiService] Model request failed via %s: %s; trying %s",
+                                candidate_model,
+                                exc,
+                                next_model,
+                            )
+                            continue
+                        raise
+
+                    mark_model_success(candidate_model)
+                    if candidate_model != current_model:
+                        logger.warning(
+                            "[AiService] Model failover succeeded: %s -> %s",
+                            current_model,
+                            candidate_model,
+                        )
+                    current_model = candidate_model
+                    client = model_client
+                    return response
+
+                if last_error is not None:
+                    raise last_error
+                raise RuntimeError("No candidate model available for current request")
 
             async def _emit(event: str, payload: dict[str, Any]):
                 if not event_callback:
@@ -170,8 +251,6 @@ class AiService:
             async def _synthesize_async_dispatch_notice(
                 dispatch_rows: list[dict[str, str]],
             ) -> str:
-                if client is None:
-                    return ""
                 compact: list[str] = []
                 for row in dispatch_rows[:3]:
                     worker_name = str(row.get("worker_name") or "").strip()
@@ -193,9 +272,10 @@ class AiService:
                 synth_history = list(current_history)
                 synth_history.append({"role": "user", "content": guidance})
                 try:
-                    synth_response = await cast(Any, client).chat.completions.create(
-                        model=get_model_id_for_api(current_model),
-                        messages=synth_history,
+                    synth_response = await _create_chat_completion(
+                        {
+                            "messages": synth_history,
+                        }
                     )
                 except Exception as exc:
                     logger.warning(
@@ -221,8 +301,6 @@ class AiService:
                 )
 
             async def _synthesize_final_after_guard(*, guard_reason: str) -> str:
-                if client is None:
-                    return ""
                 guidance = (
                     "系统提示：工具调用已触发保护阈值（"
                     f"{guard_reason}"
@@ -233,9 +311,10 @@ class AiService:
                 synth_history = list(current_history)
                 synth_history.append({"role": "user", "content": guidance})
                 try:
-                    synth_response = await cast(Any, client).chat.completions.create(
-                        model=get_model_id_for_api(current_model),
-                        messages=synth_history,
+                    synth_response = await _create_chat_completion(
+                        {
+                            "messages": synth_history,
+                        }
                     )
                 except Exception as exc:
                     logger.warning(
@@ -250,9 +329,6 @@ class AiService:
                 turn_count += 1
                 await _emit("turn_start", {"turn": turn_count})
 
-                if client is None:
-                    raise RuntimeError("OpenAI async client is not initialized")
-
                 if tools:
                     logger.debug(
                         f"🤖 [AiService] Sending prompt to AI (Tools Mode):\n{current_history}"
@@ -263,9 +339,7 @@ class AiService:
                     }
                     if openai_tools:
                         request_kwargs["tools"] = openai_tools
-                    response = await cast(Any, client).chat.completions.create(
-                        **request_kwargs
-                    )
+                    response = await _create_chat_completion(request_kwargs)
                     function_calls = self._extract_tool_calls(response)
 
                     if function_calls:
@@ -771,10 +845,11 @@ class AiService:
                     logger.debug(
                         f"🤖 [AiService] Sending prompt to AI (Stream Mode):\n{current_history}"
                     )
-                    stream = await cast(Any, client).chat.completions.create(
-                        model=get_model_id_for_api(current_model),
-                        messages=current_history,
-                        stream=True,
+                    stream = await _create_chat_completion(
+                        {
+                            "messages": current_history,
+                            "stream": True,
+                        }
                     )
                     async for chunk in stream:
                         chunk_text = self._extract_stream_text(chunk)
@@ -1099,7 +1174,7 @@ class AiService:
         return bool(name) and name.startswith("ext_")
 
     @staticmethod
-    def _get_model_for_request(message_history: list) -> str:
+    def _get_model_for_request(message_history: list) -> tuple[str, str, str]:
         """根据消息历史选择合适的模型"""
         has_image = False
 
@@ -1135,9 +1210,10 @@ class AiService:
                         has_image = True
 
         input_type = "image" if has_image else "text"
-        model = get_model_for_input(input_type)
+        pool_type = "vision" if input_type == "image" else "primary"
+        model = get_model_for_input(input_type, pool_type=pool_type)
         model_id = get_model_id_for_api(model)
         logger.info(
             f"[AiService] Selected model: {model_id} (full_key: {model}, input_type: {input_type})"
         )
-        return model
+        return model, input_type, pool_type

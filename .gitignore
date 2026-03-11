@@ -55,3 +55,4 @@ src/platforms/web/node_modules
 src/api/static/dist
 记账app截图/
 scripts/init_balances.py
+skills/builtin/deep_research/.playwright-cli

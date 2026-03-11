@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import logging
 import sys
 from pathlib import Path
-from urllib.parse import quote
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SRC_ROOT = REPO_ROOT / "src"
@@ -30,6 +30,27 @@ from services.openai_adapter import generate_text
 from services.web_summary_service import fetch_webpage_content
 
 logger = logging.getLogger(__name__)
+_WEB_SEARCH_EXECUTE_MODULE = None
+
+
+def _load_web_search_execute_module():
+    global _WEB_SEARCH_EXECUTE_MODULE
+    if _WEB_SEARCH_EXECUTE_MODULE is not None:
+        return _WEB_SEARCH_EXECUTE_MODULE
+
+    script_path = (
+        REPO_ROOT / "skills" / "builtin" / "web_search" / "scripts" / "execute.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "xbot_builtin_web_search_execute",
+        script_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("web_search execute module unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _WEB_SEARCH_EXECUTE_MODULE = module
+    return module
 
 
 async def execute(ctx: UnifiedContext, params: dict, runtime=None):
@@ -54,32 +75,20 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None):
     # 1. Search Phase
     search_results = []
     try:
-        import os
-
-        base_url = os.getenv("SEARXNG_URL")
-        if not base_url:
-            yield {
-                "text": "❌ 搜索服务未配置 (SEARXNG_URL missing)，无法进行深度研究。",
-                "ui": {},
-            }
-            return
-
-        if not base_url.endswith("/search"):
-            if not base_url.endswith("/"):
-                base_url += "/"
-            base_url += "search"
-
-        encoded_query = quote(topic)
-        # Always use general + news categories for research
-        search_url = f"{base_url}?q={encoded_query}&format=json&categories=general,news,it,science&time_range=year&language={language}"
-
+        web_search_execute = _load_web_search_execute_module()
+        provider, _ = web_search_execute.build_fallback_provider_chain(queries=[topic])
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(search_url)
-            if response.status_code == 200:
-                data = response.json()
-                search_results = data.get("results", [])[:depth]
-            else:
-                yield f"⚠️ 搜索阶段失败 (Status: {response.status_code})，尝试继续..."
+            search_results = await provider.search(
+                query_text=topic,
+                categories_value="general,news,it,science",
+                time_range="year",
+                language=language,
+                engines=[],
+                client=client,
+            )
+        search_results = [
+            item for item in list(search_results or []) if isinstance(item, dict)
+        ][:depth]
     except Exception as e:
         logger.error(f"Search failed: {e}")
         yield f"⚠️ 搜索阶段出错: {e}"

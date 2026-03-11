@@ -300,6 +300,7 @@ class HeartbeatWorker:
             ctx.user_data["worker_delivery_platform"] = target_platform
         if target_chat_id:
             ctx.user_data["worker_delivery_chat_id"] = target_chat_id
+        ctx.user_data["heartbeat_session_state_enabled"] = True
         if self.mode == "readonly":
             ctx.user_data["execution_policy"] = "heartbeat_readonly_policy"
         else:
@@ -347,6 +348,11 @@ class HeartbeatWorker:
                     continue
 
             task_id = f"hb-{int(datetime.now().timestamp())}-{idx}"
+            ctx.user_data["runtime_task_id"] = task_id
+            ctx.user_data.pop("task_inbox_id", None)
+            ctx.user_data.pop("pending_ui", None)
+            ctx.user_data.pop("worker_progress_steps", None)
+            ctx.user_data.pop("worker_progress_final_preview", None)
             prompt = self._build_heartbeat_task_prompt(
                 task_id=task_id,
                 goal=goal,

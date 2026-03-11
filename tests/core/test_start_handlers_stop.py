@@ -23,11 +23,16 @@ class _DummyContext:
             text=text,
         )
         self.replies: list[str] = []
+        self.callback_data = ""
+        self.callback_user_id = user_id
 
     async def reply(self, text, **kwargs):
         _ = kwargs
         self.replies.append(str(text))
         return SimpleNamespace(id="reply")
+
+    async def answer_callback(self):
+        return True
 
 
 class _FakeTaskManager:
@@ -172,3 +177,49 @@ async def test_stop_command_reports_no_active_task(monkeypatch):
     assert fake_task_manager.cancel_calls == ["u-idle"]
     assert len(ctx.replies) == 2
     assert "当前没有正在执行的任务" in ctx.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_button_callback_continue_resumes_waiting_task(monkeypatch):
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr(start_handlers, "check_permission_unified", _allow)
+
+    fake_heartbeat_store = _FakeHeartbeatStore(
+        active_task={"id": "mgr-continue", "status": "waiting_user"}
+    )
+
+    class _FakeClosureService:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def resume_waiting_task(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {"ok": True, "message": "✅ 已恢复执行，正在继续推进阶段 2/3。"}
+
+    fake_service = _FakeClosureService()
+
+    monkeypatch.setattr(heartbeat_store_module, "heartbeat_store", fake_heartbeat_store)
+    monkeypatch.setattr(
+        "manager.relay.closure_service.manager_closure_service",
+        fake_service,
+    )
+
+    ctx = _DummyContext("u-callback", text="noop")
+    ctx.callback_data = "task_continue"
+
+    result = await start_handlers.button_callback(ctx)
+
+    assert result == start_handlers.CONVERSATION_END
+    assert fake_service.calls == [
+        {
+            "user_id": "u-callback",
+            "user_message": "continue",
+            "source": "button",
+        }
+    ]
+    assert fake_heartbeat_store.events == [
+        ("u-callback", "user_confirm_continue:mgr-continue")
+    ]
+    assert "已恢复执行" in ctx.replies[-1]

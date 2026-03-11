@@ -314,6 +314,41 @@ class FallbackSearchProvider(BaseSearchProvider):
         return []
 
 
+def build_fallback_provider_chain(
+    *,
+    queries: list[str] | None = None,
+) -> tuple[FallbackSearchProvider, list[str]]:
+    providers: list[BaseSearchProvider] = []
+    normalized_queries = [str(item or "").strip() for item in list(queries or [])]
+    normalized_queries = [item for item in normalized_queries if item]
+
+    tier1_providers: list[BaseSearchProvider] = []
+
+    tavily_api_key = str(os.getenv("TAVILY_API_KEY", "")).strip()
+    if tavily_api_key:
+        tier1_providers.append(TavilyProvider(api_key=tavily_api_key))
+
+    exa_api_key = str(os.getenv("EXA_API_KEY", "")).strip()
+    if exa_api_key:
+        tier1_providers.append(ExaProvider(api_key=exa_api_key))
+
+    random.shuffle(tier1_providers)
+    providers.extend(tier1_providers)
+
+    if tier1_providers and len(normalized_queries) > 2:
+        logger.info("Paid tier1 provider detected, limiting max queries to 2.")
+        normalized_queries = normalized_queries[:2]
+
+    providers.append(DuckDuckGoProvider())
+
+    search_endpoint = _normalize_base_url(os.getenv("SEARXNG_URL", ""))
+    if search_endpoint:
+        providers.append(SearxngProvider(endpoint=search_endpoint))
+
+    providers.append(PublicSearxngProvider())
+    return FallbackSearchProvider(providers=providers), normalized_queries
+
+
 MAX_QUERIES = 5
 MAX_RESULTS = 10
 DEFAULT_INTENT_PROFILE = "general"
@@ -774,42 +809,7 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
     if not engines:
         engines = _normalize_text_list(profile_settings.get("engines"))
 
-    # Assemble Fallback search providers
-    providers = []
-
-    tier1_providers = []
-
-    # 1. Tavily
-    tavily_api_key = str(os.getenv("TAVILY_API_KEY", "")).strip()
-    if tavily_api_key:
-        tier1_providers.append(TavilyProvider(api_key=tavily_api_key))
-
-    # 2. Exa
-    exa_api_key = str(os.getenv("EXA_API_KEY", "")).strip()
-    if exa_api_key:
-        tier1_providers.append(ExaProvider(api_key=exa_api_key))
-
-    # Shuffle Tier 1 to round-robin if multiple are provided
-    random.shuffle(tier1_providers)
-    providers.extend(tier1_providers)
-
-    # 限制高级付费搜索引的并行查询数量 (节约额度)
-    if tier1_providers and len(queries) > 2:
-        logger.info("Paid tier1 provider detected, limiting max queries to 2.")
-        queries = queries[:2]
-
-    # 3. DuckDuckGo
-    providers.append(DuckDuckGoProvider())
-
-    # 4. Local SearXNG
-    search_endpoint = _normalize_base_url(os.getenv("SEARXNG_URL", ""))
-    if search_endpoint:
-        providers.append(SearxngProvider(endpoint=search_endpoint))
-
-    # 4. Public SearXNG backoff
-    providers.append(PublicSearxngProvider())
-
-    provider = FallbackSearchProvider(providers=providers)
+    provider, queries = build_fallback_provider_chain(queries=queries)
 
     weather_intent = intent_profile == "weather"
     strict_default = bool(profile_settings.get("strict_sources"))

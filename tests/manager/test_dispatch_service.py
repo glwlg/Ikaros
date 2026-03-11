@@ -91,6 +91,39 @@ class _FakeWorkerTaskStore:
         return [row for row in self.rows if row.get("worker_id") == worker_id]
 
 
+class _FakeTaskInboxTask:
+    def __init__(self, metadata=None):
+        self.metadata = dict(metadata or {})
+
+
+class _FakeTaskInbox:
+    def __init__(self, metadata=None):
+        self.task = _FakeTaskInboxTask(metadata=metadata)
+        self.status_calls: list[dict] = []
+
+    async def get(self, task_id: str):
+        _ = task_id
+        return self.task
+
+    async def update_status(self, task_id: str, status: str, **kwargs):
+        self.status_calls.append(
+            {"task_id": str(task_id), "status": str(status), **dict(kwargs)}
+        )
+        metadata = kwargs.get("metadata")
+        if isinstance(metadata, dict):
+            self.task.metadata = dict(metadata)
+        return True
+
+
+class _FakeHeartbeatStore:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def update_session_active_task(self, user_id: str, **kwargs):
+        self.calls.append({"user_id": str(user_id), **dict(kwargs)})
+        return dict(kwargs)
+
+
 @pytest.mark.asyncio
 async def test_manager_dispatch_service_dispatches_async_task(monkeypatch):
     monkeypatch.setattr(service_module, "worker_registry", _FakeRegistry())
@@ -186,3 +219,83 @@ async def test_manager_dispatch_service_prefers_lower_load_worker(monkeypatch):
     assert result["priority"] == 60
     assert result["selection_score"] > 0
     assert result["worker_metrics"]["queue_depth"] == 0
+
+
+@pytest.mark.asyncio
+async def test_manager_dispatch_service_injects_stage_metadata_for_session(monkeypatch):
+    monkeypatch.setattr(service_module, "worker_registry", _FakeRegistry())
+    fake_queue = _FakeQueue()
+    fake_store = _FakeWorkerTaskStore()
+    fake_task_inbox = _FakeTaskInbox(
+        metadata={
+            "original_user_request": "帮我修复并验证部署流程",
+        }
+    )
+    fake_heartbeat = _FakeHeartbeatStore()
+    monkeypatch.setattr(service_module, "dispatch_queue", fake_queue)
+    monkeypatch.setattr(service_module, "worker_task_store", fake_store)
+    monkeypatch.setattr(service_module, "task_inbox", fake_task_inbox)
+    monkeypatch.setattr(service_module, "heartbeat_store", fake_heartbeat)
+
+    result = await service_module.manager_dispatch_service.dispatch_worker(
+        instruction="帮我修复并验证部署流程",
+        metadata={
+            "user_id": "u-stage",
+            "session_task_id": "session-1",
+            "task_inbox_id": "session-1",
+            "original_user_request": "帮我修复并验证部署流程",
+        },
+    )
+
+    assert result["ok"] is True
+    assert fake_queue.last_metadata["staged_session"] is True
+    assert fake_queue.last_metadata["session_task_id"] == "session-1"
+    assert fake_queue.last_metadata["task_inbox_id"] == "session-1"
+    assert fake_queue.last_metadata["stage_id"] == "stage-1"
+    assert fake_queue.last_metadata["stage_index"] == 1
+    assert fake_queue.last_metadata["stage_total"] >= 1
+    assert fake_queue.last_metadata["attempt_index"] == 1
+    assert isinstance(fake_queue.last_metadata["stage_plan"], dict)
+    assert "你正在执行用户任务的阶段" in fake_store.calls[0]["instruction"]
+    assert fake_task_inbox.status_calls
+    assert fake_heartbeat.calls
+
+
+@pytest.mark.asyncio
+async def test_manager_dispatch_service_prefers_explicit_instruction_over_raw_user_text(
+    monkeypatch,
+):
+    monkeypatch.setattr(service_module, "worker_registry", _FakeRegistry())
+    fake_queue = _FakeQueue()
+    fake_store = _FakeWorkerTaskStore()
+    fake_task_inbox = _FakeTaskInbox(
+        metadata={
+            "original_user_request": "介绍一下他的详细生平",
+        }
+    )
+    fake_heartbeat = _FakeHeartbeatStore()
+    monkeypatch.setattr(service_module, "dispatch_queue", fake_queue)
+    monkeypatch.setattr(service_module, "worker_task_store", fake_store)
+    monkeypatch.setattr(service_module, "task_inbox", fake_task_inbox)
+    monkeypatch.setattr(service_module, "heartbeat_store", fake_heartbeat)
+
+    explicit_instruction = (
+        "请调研并整理中国唐代名将郭子仪的详细生平，重点包括出身、"
+        "安史之乱中的贡献、与皇帝关系、晚年经历和历史评价。"
+    )
+
+    result = await service_module.manager_dispatch_service.dispatch_worker(
+        instruction=explicit_instruction,
+        metadata={
+            "user_id": "u-stage",
+            "session_task_id": "session-2",
+            "task_inbox_id": "session-2",
+            "original_user_request": "介绍一下他的详细生平",
+        },
+    )
+
+    assert result["ok"] is True
+    assert fake_queue.last_metadata["task_goal"] == explicit_instruction
+    assert fake_queue.last_metadata["original_user_request"] == "介绍一下他的详细生平"
+    assert "郭子仪" in fake_store.calls[0]["instruction"]
+    assert "介绍一下他的详细生平" not in fake_store.calls[0]["instruction"]

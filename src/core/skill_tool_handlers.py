@@ -70,6 +70,23 @@ def _dispatch_metadata_from_runtime(
         metadata_obj["chat_id"] = forced_chat_id
     if "session_id" not in metadata_obj:
         metadata_obj["session_id"] = str(dispatcher.task_id or "")
+    if "task_inbox_id" not in metadata_obj:
+        metadata_obj["task_inbox_id"] = str(getattr(dispatcher, "task_inbox_id", "") or "")
+    if "session_task_id" not in metadata_obj:
+        metadata_obj["session_task_id"] = (
+            str(metadata_obj.get("task_inbox_id") or "").strip()
+            or str(dispatcher.task_id or "")
+        )
+    if "original_user_request" not in metadata_obj:
+        extractor = getattr(dispatcher, "_extract_user_request", None)
+        if callable(extractor):
+            metadata_obj["original_user_request"] = str(extractor() or "")
+    if "task_goal" not in metadata_obj:
+        metadata_obj["task_goal"] = str(
+            tool_args.get("instruction")
+            or metadata_obj.get("original_user_request")
+            or ""
+        )
     return metadata_obj
 
 

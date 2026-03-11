@@ -13,6 +13,14 @@ from core.runtime_callbacks import set_runtime_callback
 from shared.contracts.dispatch import TaskEnvelope, TaskResult
 
 
+_BLOCKING_EVENTS = {
+    "max_turn_limit",
+    "loop_guard",
+    "semantic_loop_guard",
+    "tool_budget_guard",
+}
+
+
 def _worker_user_id(task: TaskEnvelope) -> str:
     metadata = dict(task.metadata or {})
     logical_user = (
@@ -149,6 +157,64 @@ async def _collect_chunks(stream: AsyncIterator[str]) -> list[str]:
     return chunks
 
 
+def _build_progress_snapshot(
+    *,
+    latest_snapshot: Dict[str, Any],
+    last_error: str,
+    fallback_preview: str,
+) -> Dict[str, Any]:
+    snapshot = {
+        "turn": max(0, int(latest_snapshot.get("turn") or 0)),
+        "running_tool": str(latest_snapshot.get("running_tool") or "").strip(),
+        "failed_tools": [
+            str(item).strip()
+            for item in list(latest_snapshot.get("failed_tools") or [])
+            if str(item).strip()
+        ],
+        "recent_steps": [
+            dict(item)
+            for item in list(latest_snapshot.get("recent_steps") or [])
+            if isinstance(item, dict)
+        ][-6:],
+        "final_preview": str(
+            latest_snapshot.get("final_preview") or fallback_preview or ""
+        ).strip()[:180],
+        "last_error": str(last_error or "").strip()[:500],
+    }
+    return snapshot
+
+
+def _build_attempt_payload(
+    *,
+    task: TaskEnvelope,
+    payload: Dict[str, Any],
+    attempt_outcome: str,
+    failure_mode: str = "",
+    closure_reason: str = "",
+    diagnostic_summary: str = "",
+    progress_snapshot: Dict[str, Any] | None = None,
+    manager_followup_required: bool = False,
+) -> Dict[str, Any]:
+    merged = dict(payload or {})
+    merged["attempt_outcome"] = str(attempt_outcome or "").strip().lower() or "done"
+    merged["manager_followup_required"] = bool(manager_followup_required)
+    if failure_mode:
+        merged["failure_mode"] = str(failure_mode).strip().lower()
+    if closure_reason:
+        merged["closure_reason"] = str(closure_reason).strip().lower()
+    if diagnostic_summary:
+        merged["diagnostic_summary"] = str(diagnostic_summary).strip()[:1000]
+    if isinstance(progress_snapshot, dict) and progress_snapshot:
+        merged["progress_snapshot"] = dict(progress_snapshot)
+
+    meta = dict(task.metadata or {})
+    for key in ("stage_id", "stage_title", "attempt_index"):
+        value = meta.get(key)
+        if value not in (None, "") and key not in merged:
+            merged[key] = value
+    return merged
+
+
 async def run_core_agent(task: TaskEnvelope, context: Dict[str, Any]) -> TaskResult:
     from shared.queue.dispatch_queue import dispatch_queue
 
@@ -156,20 +222,39 @@ async def run_core_agent(task: TaskEnvelope, context: Dict[str, Any]) -> TaskRes
     latest_terminal_payload: Dict[str, Any] = {}
     latest_terminal_text = ""
     latest_terminal_summary = ""
+    latest_snapshot: Dict[str, Any] = {}
+    latest_terminal_ok = False
+    latest_terminal_failure_mode = ""
+    latest_closure_reason = ""
+    latest_error_text = ""
 
     async def _progress_callback(snapshot: Dict[str, Any]) -> None:
         nonlocal latest_terminal_payload, latest_terminal_text, latest_terminal_summary
+        nonlocal latest_snapshot, latest_terminal_ok, latest_terminal_failure_mode
+        nonlocal latest_closure_reason, latest_error_text
         await dispatch_queue.update_progress(task.task_id, snapshot)
         event_name = str(snapshot.get("event") or "").strip().lower()
+        latest_snapshot = dict(snapshot or {})
+        if event_name in _BLOCKING_EVENTS:
+            latest_closure_reason = event_name
+        summary = str(snapshot.get("summary") or "").strip()
+        if summary and bool(snapshot.get("ok")) is False:
+            latest_error_text = summary
         if event_name != "tool_call_finished":
             return
-        if not bool(snapshot.get("ok")) or not bool(snapshot.get("terminal")):
+        if not bool(snapshot.get("terminal")):
             return
         terminal_payload = snapshot.get("terminal_payload")
         if isinstance(terminal_payload, dict) and terminal_payload:
             latest_terminal_payload = dict(terminal_payload)
         latest_terminal_text = str(snapshot.get("terminal_text") or "").strip()
         latest_terminal_summary = str(snapshot.get("summary") or "").strip()
+        latest_terminal_ok = bool(snapshot.get("ok"))
+        latest_terminal_failure_mode = str(
+            snapshot.get("failure_mode") or "recoverable"
+        ).strip()
+        if not latest_terminal_ok:
+            latest_error_text = latest_terminal_text or latest_terminal_summary
 
     set_runtime_callback(ctx, "worker_progress_callback", _progress_callback)
     history = [{"role": "user", "parts": [{"text": str(task.instruction or "")}]}]
@@ -196,6 +281,41 @@ async def run_core_agent(task: TaskEnvelope, context: Dict[str, Any]) -> TaskRes
             or latest_terminal_summary
             or final_text
         )
+        progress_snapshot = _build_progress_snapshot(
+            latest_snapshot=latest_snapshot,
+            last_error=latest_error_text,
+            fallback_preview=final_text,
+        )
+        if latest_terminal_text and not latest_terminal_ok:
+            message = latest_terminal_text or latest_terminal_summary or final_text
+            blocked_payload = _build_attempt_payload(
+                task=task,
+                payload=payload,
+                attempt_outcome="blocked",
+                failure_mode=latest_terminal_failure_mode or "recoverable",
+                closure_reason=latest_closure_reason or "explicit_failure",
+                diagnostic_summary=message,
+                progress_snapshot=progress_snapshot,
+                manager_followup_required=True,
+            )
+            blocked_payload["text"] = message
+            return TaskResult(
+                task_id=task.task_id,
+                worker_id=str(context.get("worker_id") or task.worker_id),
+                ok=False,
+                summary=message[:200],
+                error=message,
+                payload=blocked_payload,
+            )
+
+        payload = _build_attempt_payload(
+            task=task,
+            payload=payload,
+            attempt_outcome="done",
+            diagnostic_summary=summary_text,
+            progress_snapshot=progress_snapshot,
+            manager_followup_required=False,
+        )
         return TaskResult(
             task_id=task.task_id,
             worker_id=str(context.get("worker_id") or task.worker_id),
@@ -205,23 +325,51 @@ async def run_core_agent(task: TaskEnvelope, context: Dict[str, Any]) -> TaskRes
         )
     except asyncio.TimeoutError:
         message = f"worker core-agent timeout after {timeout_sec}s"
+        progress_snapshot = _build_progress_snapshot(
+            latest_snapshot=latest_snapshot,
+            last_error=message,
+            fallback_preview=message,
+        )
         return TaskResult(
             task_id=task.task_id,
             worker_id=str(context.get("worker_id") or task.worker_id),
             ok=False,
             summary=message,
             error=message,
-            payload={"text": message},
+            payload=_build_attempt_payload(
+                task=task,
+                payload={"text": message},
+                attempt_outcome="blocked",
+                failure_mode="recoverable",
+                closure_reason="timeout",
+                diagnostic_summary=message,
+                progress_snapshot=progress_snapshot,
+                manager_followup_required=True,
+            ),
         )
     except Exception as exc:
         message = f"worker core-agent failed: {exc}"
+        progress_snapshot = _build_progress_snapshot(
+            latest_snapshot=latest_snapshot,
+            last_error=message,
+            fallback_preview=message,
+        )
         return TaskResult(
             task_id=task.task_id,
             worker_id=str(context.get("worker_id") or task.worker_id),
             ok=False,
             summary=message,
             error=message,
-            payload={"text": message},
+            payload=_build_attempt_payload(
+                task=task,
+                payload={"text": message},
+                attempt_outcome="blocked",
+                failure_mode="recoverable",
+                closure_reason=latest_closure_reason or "exception",
+                diagnostic_summary=message,
+                progress_snapshot=progress_snapshot,
+                manager_followup_required=True,
+            ),
         )
 
 

@@ -333,6 +333,131 @@ async def test_worker_result_relay_fallback_strips_internal_sections(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_worker_result_relay_prefers_full_text_for_user_facing_final_output(
+    monkeypatch,
+):
+    fake_adapter = _FakeAdapter()
+    monkeypatch.setattr(
+        relay_module.adapter_manager,
+        "get_adapter",
+        lambda _platform: fake_adapter,
+    )
+
+    relay = WorkerResultRelay()
+    task = TaskEnvelope(
+        task_id="tsk-final-full-text",
+        worker_id="worker-main",
+        instruction="介绍郭子仪的详细生平",
+        source="user_chat",
+        metadata={"worker_name": "阿黑"},
+    )
+    full_text = (
+        "郭子仪（697年—781年），是唐代中后期最重要的军事统帅与重臣之一。\n\n"
+        "## 一、出身与早年\n\n"
+        "郭子仪早年以武举入仕，长期在边镇历练，逐步积累了稳定的军政经验。\n\n"
+        "## 二、安史之乱中的作用\n\n"
+        "安史之乱爆发后，郭子仪与李光弼等将领并肩作战，先后参与收复长安、洛阳，"
+        "成为支撑肃宗政权的重要支柱。\n\n"
+        "## 三、历史地位\n\n"
+        "他不仅能打仗，也善于在乱局中重建秩序，因此后世常把他视为“再造大唐”的功臣。\n\n"
+        "## 简短总结\n\n"
+        "郭子仪最难得之处，不只是战功卓著，更在于他多次把唐朝从崩溃边缘拉了回来。"
+    )
+    result = {
+        "ok": True,
+        "summary": "郭子仪（697年—781年），是唐代中后期最重要的军事统帅与重臣之一。\n\n## 一、出身与早年\n\n郭子仪早年以武举入仕，长",
+        "payload": {
+            "text": full_text,
+            "delivery_mode": "full_text",
+            "user_facing_output": True,
+        },
+    }
+
+    delivered = await relay._deliver_task(
+        platform="telegram",
+        chat_id="c-final-full-text",
+        task=task,
+        result=result,
+    )
+
+    assert delivered is True
+    assert fake_adapter.messages
+    final_text = str(fake_adapter.messages[-1]["text"])
+    assert final_text.startswith("✅ 阿黑 已完成任务")
+    assert "安史之乱中的作用" in final_text
+    assert "把唐朝从崩溃边缘拉了回来" in final_text
+    assert final_text.endswith(full_text)
+
+
+@pytest.mark.asyncio
+async def test_worker_result_relay_delivers_waiting_user_summary_for_staged_failure(
+    monkeypatch,
+):
+    fake_adapter = _FakeAdapter()
+    monkeypatch.setattr(
+        relay_module.adapter_manager,
+        "get_adapter",
+        lambda _platform: fake_adapter,
+    )
+
+    class _FakeClosureService:
+        async def resolve_attempt(self, *, task, result, platform, chat_id):
+            _ = (task, result, platform, chat_id)
+            return {
+                "kind": "waiting_user",
+                "text": (
+                    "⏸ 任务暂时卡住了，但我还没有结束它。\n\n"
+                    "建议下一步：\n- 回复“继续”\n- 或直接补充约束"
+                ),
+                "ui": {
+                    "actions": [
+                        [
+                            {"text": "继续执行", "callback_data": "task_continue"},
+                            {"text": "停止任务", "callback_data": "task_stop"},
+                        ]
+                    ]
+                },
+                "files": [],
+                "auto_repair_allowed": False,
+            }
+
+    monkeypatch.setattr(relay_module, "manager_closure_service", _FakeClosureService())
+
+    relay = WorkerResultRelay()
+    task = TaskEnvelope(
+        task_id="tsk-stage-blocked",
+        worker_id="worker-main",
+        instruction="do",
+        source="user_chat",
+        metadata={
+            "worker_name": "阿黑",
+            "staged_session": True,
+            "task_inbox_id": "session-1",
+            "session_task_id": "session-1",
+        },
+    )
+    result = {
+        "ok": False,
+        "summary": "failed",
+        "error": "failed",
+        "payload": {"text": "failed"},
+    }
+
+    delivered = await relay._deliver_task(
+        platform="telegram",
+        chat_id="chat-stage-blocked",
+        task=task,
+        result=result,
+    )
+
+    assert delivered is True
+    assert fake_adapter.messages
+    final_text = str(fake_adapter.messages[-1]["text"])
+    assert "任务暂时卡住了" in final_text
+    assert "任务执行失败" not in final_text
+
+
+@pytest.mark.asyncio
 async def test_worker_result_relay_process_once_marks_delivered(monkeypatch):
     fake_adapter = _FakeAdapter()
     monkeypatch.setattr(

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import core.agent_orchestrator as orchestrator_module
 import core.heartbeat_worker as heartbeat_worker_module
+import core.skill_tool_handlers as skill_tool_handlers_module
 from core.agent_orchestrator import AgentOrchestrator
 from core.heartbeat_store import heartbeat_store
 from core.heartbeat_worker import HeartbeatWorker
@@ -68,12 +68,14 @@ async def test_manager_reply_uses_worker_name_and_hides_internal_worker_tokens(
         instruction: str,
         worker_id: str = "",
         backend: str = "",
+        priority: int | None = None,
         source: str = "manager_dispatch",
         metadata: dict | None = None,
     ):
         _ = instruction
         _ = worker_id
         _ = backend
+        _ = priority
         _ = source
         captured_metadata.update(dict(metadata or {}))
         return {
@@ -112,7 +114,9 @@ async def test_manager_reply_uses_worker_name_and_hides_internal_worker_tokens(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
     )
     monkeypatch.setattr(
-        orchestrator_module.dispatch_tools, "dispatch_worker", fake_dispatch_worker
+        skill_tool_handlers_module.dispatch_tools,
+        "dispatch_worker",
+        fake_dispatch_worker,
     )
     monkeypatch.setattr(
         orchestrator.ai_service, "generate_response_stream", fake_stream
@@ -156,20 +160,23 @@ async def test_heartbeat_dispatches_to_worker_and_delivers_manager_result(
     await heartbeat_store.set_delivery_target(user_id, "discord", "target-42")
 
     orchestrator = AgentOrchestrator()
+    captured_dispatch: dict[str, object] = {}
 
     async def fake_dispatch_worker(
         *,
         instruction: str,
         worker_id: str = "",
         backend: str = "",
+        priority: int | None = None,
         source: str = "manager_dispatch",
         metadata: dict | None = None,
     ):
         _ = instruction
         _ = worker_id
         _ = backend
+        _ = priority
         _ = source
-        _ = metadata
+        captured_dispatch.update(dict(metadata or {}))
         return {
             "ok": True,
             "worker_id": "worker-main",
@@ -217,7 +224,9 @@ async def test_heartbeat_dispatches_to_worker_and_delivers_manager_result(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
     )
     monkeypatch.setattr(
-        orchestrator_module.dispatch_tools, "dispatch_worker", fake_dispatch_worker
+        skill_tool_handlers_module.dispatch_tools,
+        "dispatch_worker",
+        fake_dispatch_worker,
     )
     monkeypatch.setattr(
         orchestrator.ai_service, "generate_response_stream", fake_stream
@@ -240,3 +249,5 @@ async def test_heartbeat_dispatches_to_worker_and_delivers_manager_result(
     assert sent
     assert sent[0][0] == "target-42"
     assert "Nova Patrol" in sent[0][1]
+    assert str(captured_dispatch.get("task_inbox_id") or "").strip()
+    assert str(captured_dispatch.get("session_task_id") or "").strip()

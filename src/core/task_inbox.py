@@ -24,7 +24,15 @@ def _normalize_priority(value: str) -> str:
 
 def _normalize_status(value: str) -> str:
     token = str(value or "").strip().lower()
-    if token in {"pending", "running", "completed", "failed", "cancelled"}:
+    if token in {
+        "pending",
+        "planning",
+        "running",
+        "waiting_user",
+        "completed",
+        "failed",
+        "cancelled",
+    }:
         return token
     return "pending"
 

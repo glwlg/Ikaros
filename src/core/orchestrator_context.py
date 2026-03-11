@@ -48,7 +48,12 @@ class OrchestratorRuntimeContext:
             platform_name == "worker_kernel" or runtime_user_id.startswith("worker::")
         )
         heartbeat_runtime_user = platform_name == "heartbeat_daemon"
-        session_state_enabled = not worker_kernel_user and not heartbeat_runtime_user
+        heartbeat_session_state_enabled = bool(
+            user_data.get("heartbeat_session_state_enabled")
+        )
+        session_state_enabled = not worker_kernel_user and (
+            not heartbeat_runtime_user or heartbeat_session_state_enabled
+        )
 
         runtime_policy_ctx = tool_access_store.resolve_runtime_policy(
             runtime_user_id=runtime_user_id,
@@ -60,12 +65,13 @@ class OrchestratorRuntimeContext:
         manager_runtime = runtime_agent_kind != "worker"
 
         task_info = task_manager.get_task_info(user_id)
-        task_id = (
-            task_info.get("task_id")
-            if isinstance(task_info, dict) and task_info.get("task_id")
-            else f"{int(datetime.datetime.now().timestamp())}"
-        )
-        task_inbox_id = ""
+        runtime_task_id = str(user_data.get("runtime_task_id") or "").strip()
+        task_id = runtime_task_id
+        if not task_id and isinstance(task_info, dict):
+            task_id = str(task_info.get("task_id") or "").strip()
+        if not task_id:
+            task_id = f"{int(datetime.datetime.now().timestamp())}"
+        task_inbox_id = str(user_data.get("task_inbox_id") or "").strip()
 
         return cls(
             user_id=user_id,
@@ -193,12 +199,22 @@ class OrchestratorRuntimeContext:
             self.user_id,
             {
                 "id": self.task_id,
+                "session_task_id": self.task_inbox_id or self.task_id,
+                "task_inbox_id": self.task_inbox_id,
                 "goal": task_goal,
                 "status": "running",
-                "source": "user_chat",
+                "source": self._task_inbox_source(),
                 "result_summary": "",
                 "needs_confirmation": False,
                 "confirmation_deadline": "",
+                "stage_index": 0,
+                "stage_total": 0,
+                "stage_id": "",
+                "stage_title": "",
+                "attempt_index": 0,
+                "last_blocking_reason": "",
+                "resume_instruction_preview": "",
+                "adjustments_count": 0,
             },
         )
         task_manager.set_heartbeat_path(

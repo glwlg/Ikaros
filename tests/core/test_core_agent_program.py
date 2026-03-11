@@ -75,3 +75,68 @@ async def test_run_core_agent_preserves_terminal_payload_files(monkeypatch, tmp_
     assert result.payload["files"][0]["path"] == str(image_path)
     assert "图片已生成" in result.payload["text"]
     assert fake_queue.progress_events
+
+
+@pytest.mark.asyncio
+async def test_run_core_agent_returns_blocked_payload_on_terminal_failure(monkeypatch):
+    class _FakeDispatchQueue:
+        def __init__(self):
+            self.progress_events: list[dict] = []
+
+        async def update_progress(self, task_id, snapshot):
+            self.progress_events.append(
+                {
+                    "task_id": str(task_id),
+                    "snapshot": dict(snapshot or {}),
+                }
+            )
+
+    async def _fake_handle_message(ctx, history):
+        del history
+        callback = get_runtime_callback(ctx, "worker_progress_callback")
+        assert callable(callback)
+        await callback(
+            {
+                "event": "tool_call_finished",
+                "turn": 5,
+                "name": "bash",
+                "ok": False,
+                "summary": "工具调用预算耗尽",
+                "terminal": True,
+                "task_outcome": "failed",
+                "failure_mode": "recoverable",
+                "terminal_text": "工具调用预算耗尽",
+            }
+        )
+        yield "工具调用预算耗尽"
+
+    fake_queue = _FakeDispatchQueue()
+    monkeypatch.setattr(dispatch_queue_module, "dispatch_queue", fake_queue)
+    monkeypatch.setattr(
+        program_module.agent_orchestrator,
+        "handle_message",
+        _fake_handle_message,
+    )
+
+    task = TaskEnvelope(
+        task_id="tsk-blocked",
+        worker_id="worker-main",
+        instruction="请继续修复部署问题",
+        source="manager_dispatch",
+        metadata={
+            "user_id": "u-1",
+            "stage_id": "stage-2",
+            "stage_title": "执行主要任务",
+            "attempt_index": 2,
+        },
+    )
+
+    result = await program_module.run_core_agent(task, {"worker_id": "worker-main"})
+
+    assert result.ok is False
+    assert result.payload["attempt_outcome"] == "blocked"
+    assert result.payload["manager_followup_required"] is True
+    assert result.payload["failure_mode"] == "recoverable"
+    assert result.payload["stage_id"] == "stage-2"
+    assert result.payload["attempt_index"] == 2
+    assert result.payload["progress_snapshot"]["turn"] == 5

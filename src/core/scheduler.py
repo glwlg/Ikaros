@@ -14,8 +14,10 @@ import hashlib
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from core.heartbeat_store import heartbeat_store
 from core.platform.registry import adapter_manager
 from core.platform.models import UnifiedContext
+from shared.queue.dispatch_queue import dispatch_queue
 
 from core.state_store import (
     add_reminder,
@@ -32,6 +34,111 @@ logger = logging.getLogger(__name__)
 
 # Global Scheduler Instance
 scheduler = AsyncIOScheduler()
+
+
+def _normalize_proactive_platform(platform: str) -> str:
+    normalized = str(platform or "").strip().lower()
+    if normalized == "worker_runtime":
+        return "telegram"
+    return normalized
+
+
+async def _resolve_proactive_delivery_target(
+    user_id: int | str,
+    platform: str,
+) -> tuple[str, str]:
+    normalized_platform = _normalize_proactive_platform(platform)
+    user_id_text = str(user_id or "").strip()
+
+    if (
+        normalized_platform
+        and normalized_platform != "heartbeat_daemon"
+        and user_id_text == heartbeat_store.shared_dir_name
+    ):
+        (
+            fallback_platform,
+            fallback_chat_id,
+        ) = await _recent_delivery_target_for_platform(
+            normalized_platform,
+        )
+        if fallback_platform and fallback_chat_id:
+            return fallback_platform, fallback_chat_id
+
+    delivery = await heartbeat_store.get_delivery_target(user_id_text)
+    target_platform = _normalize_proactive_platform(delivery.get("platform", ""))
+    target_chat_id = str(delivery.get("chat_id") or "").strip()
+
+    if target_platform and target_chat_id:
+        if not normalized_platform or normalized_platform == target_platform:
+            return target_platform, target_chat_id
+
+    if (
+        normalized_platform
+        and normalized_platform != "heartbeat_daemon"
+        and user_id_text != heartbeat_store.shared_dir_name
+    ):
+        (
+            fallback_platform,
+            fallback_chat_id,
+        ) = await _recent_delivery_target_for_platform(
+            normalized_platform,
+        )
+        if fallback_platform and fallback_chat_id:
+            return fallback_platform, fallback_chat_id
+
+    if normalized_platform and normalized_platform != "heartbeat_daemon":
+        if user_id_text and user_id_text != heartbeat_store.shared_dir_name:
+            return normalized_platform, user_id_text
+
+    return "", ""
+
+
+async def _recent_delivery_target_for_platform(platform: str) -> tuple[str, str]:
+    normalized_platform = _normalize_proactive_platform(platform)
+    if not normalized_platform or normalized_platform == "heartbeat_daemon":
+        return "", ""
+
+    try:
+        tasks = await dispatch_queue.list_tasks(limit=50)
+    except Exception:
+        return "", ""
+
+    for task in tasks:
+        meta = dict(task.metadata or {})
+        task_platform = _normalize_proactive_platform(meta.get("platform", ""))
+        session_id = str(meta.get("session_id") or "").strip()
+        chat_id = str(meta.get("chat_id") or "").strip()
+        user_id = str(meta.get("user_id") or "").strip()
+        if session_id.startswith("hb-"):
+            continue
+        if chat_id in {"0", heartbeat_store.shared_dir_name}:
+            continue
+        if user_id in {"0", heartbeat_store.shared_dir_name}:
+            continue
+        if task_platform != normalized_platform or not chat_id:
+            continue
+        return task_platform, chat_id
+
+    return "", ""
+
+
+async def _remember_proactive_delivery_target(
+    user_id: int | str,
+    platform: str,
+    chat_id: str,
+) -> None:
+    target_platform = _normalize_proactive_platform(platform)
+    target_chat_id = str(chat_id or "").strip()
+    if not target_platform or not target_chat_id:
+        return
+    try:
+        await heartbeat_store.set_delivery_target(
+            str(user_id or "").strip(),
+            target_platform,
+            target_chat_id,
+        )
+    except Exception:
+        logger.debug("Failed to remember proactive delivery target.", exc_info=True)
 
 
 def _is_google_rss_redirect(url: str) -> bool:
@@ -542,6 +649,18 @@ async def check_and_send_rss_updates(subscriptions: list):
 
         # 批量发送消息
         for (platform, uid), updates in user_updates_map.items():
+            target_platform, target_chat_id = await _resolve_proactive_delivery_target(
+                uid,
+                platform,
+            )
+            if not target_platform or not target_chat_id:
+                logger.warning(
+                    "RSS push skipped: no delivery target for user=%s on %s",
+                    uid,
+                    platform,
+                )
+                continue
+
             msg_header = f"📢 **RSS 订阅日报 ({len(updates)} 条更新)**\n\n"
             msg_body = ""
             current_batch = []
@@ -557,7 +676,14 @@ async def check_and_send_rss_updates(subscriptions: list):
                 if len(msg_header) + len(msg_body) + len(item_text) > 4000:
                     try:
                         await send_via_adapter(
-                            chat_id=uid, text=msg_header + msg_body, platform=platform
+                            chat_id=target_chat_id,
+                            text=msg_header + msg_body,
+                            platform=target_platform,
+                        )
+                        await _remember_proactive_delivery_target(
+                            uid,
+                            target_platform,
+                            target_chat_id,
                         )
                         success_updates.extend(current_batch)
                         sent_count += 1
@@ -576,7 +702,14 @@ async def check_and_send_rss_updates(subscriptions: list):
             if msg_body:
                 try:
                     await send_via_adapter(
-                        chat_id=uid, text=msg_header + msg_body, platform=platform
+                        chat_id=target_chat_id,
+                        text=msg_header + msg_body,
+                        platform=target_platform,
+                    )
+                    await _remember_proactive_delivery_target(
+                        uid,
+                        target_platform,
+                        target_chat_id,
                     )
                     success_updates.extend(current_batch)
                     sent_count += 1
@@ -715,9 +848,37 @@ async def stock_push_job():
                 # 格式化消息
                 message = format_stock_message(quotes)
 
+                (
+                    target_platform,
+                    target_chat_id,
+                ) = await _resolve_proactive_delivery_target(
+                    user_id,
+                    platform,
+                )
+                if not target_platform or not target_chat_id:
+                    logger.warning(
+                        "Stock push skipped: no delivery target for user=%s on %s",
+                        user_id,
+                        platform,
+                    )
+                    continue
+
                 # 推送给用户 (via specific platform)
-                await send_via_adapter(chat_id=user_id, text=message, platform=platform)
-                logger.info(f"Sent stock quotes to user {user_id} on {platform}")
+                await send_via_adapter(
+                    chat_id=target_chat_id,
+                    text=message,
+                    platform=target_platform,
+                )
+                await _remember_proactive_delivery_target(
+                    user_id,
+                    target_platform,
+                    target_chat_id,
+                )
+                logger.info(
+                    "Sent stock quotes to user %s on %s",
+                    user_id,
+                    target_platform,
+                )
 
             except Exception as e:
                 logger.error(
@@ -860,12 +1021,33 @@ async def run_skill_cron_job(
         # Push Notification Logic
         if need_push and user_id > 0:
             if full_response:
-                logger.info(f"[Cron] Pushing result to {user_id} on {platform}")
-                await send_via_adapter(
-                    chat_id=user_id,
-                    text=f"⏰ **定时任务执行报告 ({instruction})**\n\n{full_response}",
-                    platform=platform,
+                (
+                    target_platform,
+                    target_chat_id,
+                ) = await _resolve_proactive_delivery_target(
+                    user_id,
+                    platform,
                 )
+                if not target_platform or not target_chat_id:
+                    logger.warning(
+                        "[Cron] Push skipped: no delivery target for user=%s on %s",
+                        user_id,
+                        platform,
+                    )
+                else:
+                    logger.info(
+                        f"[Cron] Pushing result to {user_id} on {target_platform}"
+                    )
+                    await send_via_adapter(
+                        chat_id=target_chat_id,
+                        text=f"⏰ **定时任务执行报告 ({instruction})**\n\n{full_response}",
+                        platform=target_platform,
+                    )
+                    await _remember_proactive_delivery_target(
+                        user_id,
+                        target_platform,
+                        target_chat_id,
+                    )
             else:
                 logger.info(f"[Cron] No output to push for {instruction}")
 

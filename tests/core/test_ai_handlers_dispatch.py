@@ -253,35 +253,71 @@ def test_build_manager_progress_text_hides_verbose_tool_output():
     assert "Daily Query" not in text
 
 
-def test_build_runtime_phrase_pools_reads_generated_phrase_store(monkeypatch):
+@pytest.mark.asyncio
+async def test_try_handle_waiting_confirmation_treats_text_as_adjustment(monkeypatch):
+    class _FakeHeartbeatStore:
+        async def get_session_active_task(self, user_id: str):
+            _ = user_id
+            return {"id": "mgr-1", "status": "waiting_user"}
+
+        async def update_session_active_task(self, user_id: str, **kwargs):
+            _ = (user_id, kwargs)
+            return None
+
+        async def release_lock(self, user_id: str):
+            _ = user_id
+            return True
+
+        async def append_session_event(self, user_id: str, event: str):
+            _ = (user_id, event)
+            return None
+
+    class _FakeClosureService:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def resume_waiting_task(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {"ok": True, "message": "✅ 已记录你的补充说明，正在继续推进阶段 1/2。"}
+
+    fake_service = _FakeClosureService()
+    monkeypatch.setattr("core.heartbeat_store.heartbeat_store", _FakeHeartbeatStore())
     monkeypatch.setattr(
-        ai_handlers.waiting_phrase_store,
-        "load_phrase_pools_for_runtime_user",
-        lambda _uid: (
-            ["📨 阿黑已收到，马上处理。", "⚡ 正在安排执行顺序..."],
-            ["🤖 正在并行调用工具...", "📚 正在交叉验证结果..."],
-        ),
+        "manager.relay.closure_service.manager_closure_service",
+        fake_service,
     )
 
+    replies: list[str] = []
+
+    class _Ctx:
+        message = SimpleNamespace(user=SimpleNamespace(id="u-1"))
+
+        async def reply(self, text, **kwargs):
+            _ = kwargs
+            replies.append(str(text))
+            return SimpleNamespace(id="reply")
+
+    handled = await ai_handlers._try_handle_waiting_confirmation(
+        _Ctx(),
+        "把范围限制在最近 7 天，并先检查容器状态",
+    )
+
+    assert handled is True
+    assert fake_service.calls == [
+        {
+            "user_id": "u-1",
+            "user_message": "把范围限制在最近 7 天，并先检查容器状态",
+            "source": "text",
+        }
+    ]
+    assert "已记录你的补充说明" in replies[-1]
+
+
+def test_build_runtime_phrase_pools_uses_static_indicator_frames():
     received, loading = ai_handlers._build_runtime_phrase_pools("u-1")
 
-    assert "📨 阿黑已收到，马上处理。" in received
-    assert "🤖 正在并行调用工具..." in loading
-    assert "⚡ 信号已接收，开始解析..." not in received
-    assert "🤖 调用赛博算力中..." not in loading
-
-
-def test_build_runtime_phrase_pools_fallbacks_when_generated_phrase_empty(monkeypatch):
-    monkeypatch.setattr(
-        ai_handlers.waiting_phrase_store,
-        "load_phrase_pools_for_runtime_user",
-        lambda _uid: ([], []),
-    )
-
-    received, loading = ai_handlers._build_runtime_phrase_pools("u-empty")
-
-    assert "⚡ 信号已接收，开始解析..." in received
-    assert "🤖 调用赛博算力中..." in loading
+    assert received == ["..."]
+    assert loading == [".", "..", "...", ".."]
 
 
 class _DummyOutgoingMessage:
@@ -413,11 +449,6 @@ async def test_handle_ai_chat_does_not_attach_plain_path_from_final_text(
     monkeypatch.setattr(ai_handlers, "get_user_settings", _fake_get_user_settings)
     monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
     monkeypatch.setattr(
-        ai_handlers,
-        "_build_runtime_phrase_pools",
-        lambda _uid: (["收到"], ["处理中"]),
-    )
-    monkeypatch.setattr(
         ai_handlers, "process_and_send_code_files", _identity_process_code_files
     )
     monkeypatch.setattr(message_utils, "process_reply_message", _fake_process_reply_message)
@@ -431,19 +462,3 @@ async def test_handle_ai_chat_does_not_attach_plain_path_from_final_text(
     await ai_handlers.handle_ai_chat(ctx)
 
     assert not ctx.photos
-
-
-def test_build_runtime_phrase_pools_fallbacks_on_soul_errors(monkeypatch):
-    def _raise_error(_uid: str):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(
-        ai_handlers.waiting_phrase_store,
-        "load_phrase_pools_for_runtime_user",
-        _raise_error,
-    )
-
-    received, loading = ai_handlers._build_runtime_phrase_pools("u-3")
-
-    assert "⚡ 信号已接收，开始解析..." in received
-    assert "🤖 调用赛博算力中..." in loading

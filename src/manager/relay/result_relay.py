@@ -14,6 +14,7 @@ from typing import Any, Dict
 from core.file_artifacts import extract_saved_file_rows, normalize_file_rows
 from core.heartbeat_store import heartbeat_store
 from core.platform.registry import adapter_manager
+from manager.relay.closure_service import manager_closure_service
 from services.md_converter import adapt_md_file_for_platform
 from shared.contracts.dispatch import TaskEnvelope
 from shared.queue.dispatch_queue import dispatch_queue
@@ -135,6 +136,15 @@ def _extract_payload(
         file_rows = extract_saved_file_rows(text)
 
     return text, ui, file_rows
+
+
+def _should_deliver_full_text(result: Dict[str, Any]) -> bool:
+    payload = result.get("payload") if isinstance(result, dict) else {}
+    payload_obj = dict(payload) if isinstance(payload, dict) else {}
+    delivery_mode = str(payload_obj.get("delivery_mode") or "").strip().lower()
+    if delivery_mode == "full_text":
+        return True
+    return bool(payload_obj.get("user_facing_output"))
 
 
 def _collapse_blank_lines(text: str) -> str:
@@ -296,6 +306,23 @@ def _fallback_delivery_body(
     return "任务执行完成。"
 
 
+def _is_heartbeat_delivery(task: TaskEnvelope) -> bool:
+    if str(task.source or "").strip().lower() == "heartbeat":
+        return True
+    metadata = dict(task.metadata or {})
+    candidates = (
+        metadata.get("session_id"),
+        metadata.get("session_task_id"),
+        metadata.get("task_goal"),
+        metadata.get("original_user_request"),
+    )
+    for value in candidates:
+        text = str(value or "").strip().lower()
+        if text.startswith("hb-") or text == "heartbeat":
+            return True
+    return False
+
+
 def _format_progress_summary(tool_name: str, summary: str, *, ok: bool) -> str:
     raw = str(summary or "").strip()
     if not raw:
@@ -355,6 +382,15 @@ def _build_progress_text(task: TaskEnvelope, progress: Dict[str, Any]) -> str:
     progress_obj = dict(progress or {})
     event = str(progress_obj.get("event") or "").strip().lower()
     worker_name = str(task.metadata.get("worker_name") or task.worker_id or "执行助手")
+    visible_task_id = (
+        str(task.metadata.get("user_visible_task_id") or "").strip()
+        or str(task.metadata.get("session_task_id") or "").strip()
+        or str(task.metadata.get("task_inbox_id") or "").strip()
+        or str(task.task_id or "").strip()
+    )
+    stage_index = max(0, int(task.metadata.get("stage_index") or 0))
+    stage_total = max(0, int(task.metadata.get("stage_total") or 0))
+    stage_title = str(task.metadata.get("stage_title") or "").strip()
     turn = max(0, int(progress_obj.get("turn") or 0))
     recent_steps = [
         dict(item) for item in list(progress_obj.get("recent_steps") or []) if isinstance(item, dict)
@@ -376,7 +412,12 @@ def _build_progress_text(task: TaskEnvelope, progress: Dict[str, Any]) -> str:
         if str(item).strip()
     ]
 
-    lines = [f"⏳ {worker_name} 正在处理任务", f"任务ID：`{task.task_id}`"]
+    lines = [f"⏳ {worker_name} 正在处理任务", f"任务ID：`{visible_task_id}`"]
+    if stage_index > 0 and stage_total > 0:
+        stage_line = f"阶段：{stage_index}/{max(1, stage_total)}"
+        if stage_title:
+            stage_line += f" - {stage_title}"
+        lines.append(stage_line)
     if turn > 0:
         lines.append(f"回合：{turn}")
 
@@ -490,6 +531,8 @@ class WorkerResultRelay:
             return fallback
         if not _looks_like_raw_worker_output(text, files):
             return fallback
+        if _is_heartbeat_delivery(task):
+            return fallback
 
         try:
             from core.config import get_client_for_model
@@ -572,12 +615,22 @@ class WorkerResultRelay:
         text, ui, files = _extract_payload(result)
 
         if ok:
-            body = await self._summarize_delivery_body(
-                task=task,
-                result=result,
-                text=text or str(result.get("summary") or ""),
-                files=files,
-            )
+            if _should_deliver_full_text(result):
+                body = _collapse_blank_lines(
+                    _strip_internal_sections(
+                        _strip_file_path_lines(
+                            text or str(result.get("summary") or ""),
+                            files,
+                        )
+                    )
+                )
+            else:
+                body = await self._summarize_delivery_body(
+                    task=task,
+                    result=result,
+                    text=text or str(result.get("summary") or ""),
+                    files=files,
+                )
             body = body or str(result.get("summary") or "任务执行完成。")
             final_text = f"✅ {worker_name} 已完成任务\n\n{body}".strip()
         else:
@@ -1020,23 +1073,50 @@ class WorkerResultRelay:
             )
             return False
 
-        text, ui, files = await self._build_delivery_text(task, result)
-        if not text:
-            text = "任务执行完成，但无可展示输出。"
-
-        repair_task_id = await self._maybe_trigger_skill_auto_repair(
+        closure = await manager_closure_service.resolve_attempt(
             task=task,
             result=result,
             platform=platform,
             chat_id=chat_id,
         )
+        closure_kind = str(closure.get("kind") or "").strip().lower()
+        if closure_kind == "legacy":
+            text, ui, files = await self._build_delivery_text(task, result)
+        elif closure_kind == "final":
+            text, ui, files = await self._build_delivery_text(
+                task,
+                dict(closure.get("result") or result),
+            )
+        else:
+            text = str(closure.get("text") or "").strip()
+            ui = dict(closure.get("ui") or {})
+            files = normalize_file_rows(closure.get("files") or [])
+        if not text:
+            text = "任务执行完成，但无可展示输出。"
+
+        repair_task_id = ""
+        if bool(closure.get("auto_repair_allowed", closure_kind == "legacy")):
+            repair_task_id = await self._maybe_trigger_skill_auto_repair(
+                task=task,
+                result=result,
+                platform=platform,
+                chat_id=chat_id,
+            )
         if repair_task_id:
-            text = (
-                text.rstrip()
-                + "\n\n🛠 已自动发起技能修复任务 "
-                + f"`{repair_task_id}`"
-                + "，Manager 会继续把这个 skill 修到可直接调用。"
-            ).strip()
+            if closure_kind == "waiting_user":
+                text = (
+                    text.rstrip()
+                    + "\n\n🛠 已自动发起技能修复任务 "
+                    + f"`{repair_task_id}`"
+                    + "，但当前原任务仍保留，你可以回复“继续”或补充说明后继续推进。"
+                ).strip()
+            else:
+                text = (
+                    text.rstrip()
+                    + "\n\n🛠 已自动发起技能修复任务 "
+                    + f"`{repair_task_id}`"
+                    + "，Manager 会继续把这个 skill 修到可直接调用。"
+                ).strip()
 
         delivered_any = False
         chunks = _split_chunks(text)
@@ -1187,9 +1267,15 @@ class WorkerResultRelay:
                     if str(raw_thread_id or "").strip()
                     else None
                 )
+                draft_seed = (
+                    str(metadata.get("user_visible_task_id") or "").strip()
+                    or str(metadata.get("session_task_id") or "").strip()
+                    or str(metadata.get("task_inbox_id") or "").strip()
+                    or str(task.task_id or "").strip()
+                )
                 draft_id = max(
                     1,
-                    int(zlib.crc32(str(task.task_id or "").encode("utf-8")) & 0x7FFFFFFF),
+                    int(zlib.crc32(draft_seed.encode("utf-8")) & 0x7FFFFFFF),
                 )
                 result_obj = send_draft(
                     chat_id=chat_id,

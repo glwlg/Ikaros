@@ -5,6 +5,16 @@ import logging
 import os
 from typing import Any, Dict, List
 
+from core.heartbeat_store import heartbeat_store
+from core.task_inbox import task_inbox
+from manager.planning.stage_planner import (
+    build_stage_instruction,
+    count_adjustments,
+    get_current_stage,
+    get_stage_position,
+    mark_stage_running,
+    normalize_stage_plan,
+)
 from core.worker_store import worker_registry, worker_task_store
 from shared.queue.dispatch_queue import dispatch_queue
 
@@ -31,6 +41,81 @@ def _dispatch_priority(*, source: str, metadata: Dict[str, Any]) -> int:
     if normalized_source == "system":
         return 10
     return 40
+
+
+def _safe_text(value: Any, *, limit: int = 4000) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _session_task_id_from_metadata(metadata: Dict[str, Any]) -> str:
+    return (
+        _safe_text(metadata.get("session_task_id"), limit=80)
+        or _safe_text(metadata.get("task_inbox_id"), limit=80)
+        or _safe_text(metadata.get("session_id"), limit=80)
+    )
+
+
+def _is_staged_session(metadata: Dict[str, Any]) -> bool:
+    if str(metadata.get("staged_session") or "").strip().lower() == "true":
+        return True
+    return bool(_session_task_id_from_metadata(metadata))
+
+
+def _prepare_stage_dispatch(
+    *,
+    instruction: str,
+    metadata: Dict[str, Any],
+) -> tuple[str, Dict[str, Any]]:
+    meta = dict(metadata or {})
+    if not _is_staged_session(meta):
+        return instruction, meta
+
+    resolved_task_goal = (
+        _safe_text(meta.get("task_goal"), limit=6000)
+        or _safe_text(instruction, limit=6000)
+        or _safe_text(meta.get("original_user_request"), limit=6000)
+    )
+    original_request = (
+        _safe_text(meta.get("original_user_request"), limit=6000)
+        or resolved_task_goal
+    )
+    session_task_id = _session_task_id_from_metadata(meta)
+    stage_plan = normalize_stage_plan(
+        meta.get("stage_plan") if isinstance(meta.get("stage_plan"), dict) else None,
+        original_request=resolved_task_goal,
+    )
+    current_stage = get_current_stage(stage_plan)
+    if current_stage is None:
+        return instruction, meta
+
+    stage_id = _safe_text(current_stage.get("id"), limit=80)
+    stage_plan = mark_stage_running(stage_plan, stage_id=stage_id)
+    current_stage = get_current_stage(stage_plan) or current_stage
+    stage_index, stage_total = get_stage_position(stage_plan, stage_id)
+    attempt_index = max(1, int(current_stage.get("attempt_count") or 1))
+    prepared_instruction = build_stage_instruction(
+        original_request=resolved_task_goal,
+        plan=stage_plan,
+        stage=current_stage,
+        previous_summary=_safe_text(stage_plan.get("last_stage_summary"), limit=1200),
+        previous_output=_safe_text(stage_plan.get("last_stage_output"), limit=2400),
+        last_blocking_reason=_safe_text(meta.get("last_blocking_reason"), limit=1200),
+    )
+
+    meta["staged_session"] = True
+    meta["session_task_id"] = session_task_id
+    meta["task_goal"] = resolved_task_goal
+    meta["original_user_request"] = original_request
+    meta["stage_plan"] = stage_plan
+    meta["stage_id"] = stage_id
+    meta["stage_title"] = _safe_text(current_stage.get("title"), limit=200)
+    meta["stage_index"] = stage_index
+    meta["stage_total"] = stage_total
+    meta["attempt_index"] = attempt_index
+    meta["resume_instruction_preview"] = _safe_text(prepared_instruction, limit=1200)
+    meta["adjustments_count"] = count_adjustments(stage_plan)
+    meta["user_visible_task_id"] = session_task_id
+    return prepared_instruction, meta
 
 
 def _score_worker(
@@ -85,6 +170,90 @@ class WorkerSelection:
 
 
 class ManagerDispatchService:
+    async def _sync_session_dispatch_state(
+        self,
+        *,
+        metadata: Dict[str, Any],
+        worker_name: str,
+        worker_id: str,
+    ) -> None:
+        user_id = _safe_text(metadata.get("user_id"), limit=80)
+        task_inbox_id = _safe_text(metadata.get("task_inbox_id"), limit=80)
+        session_task_id = _session_task_id_from_metadata(metadata)
+        stage_index = max(0, int(metadata.get("stage_index") or 0))
+        stage_total = max(0, int(metadata.get("stage_total") or 0))
+        stage_id = _safe_text(metadata.get("stage_id"), limit=80)
+        stage_title = _safe_text(metadata.get("stage_title"), limit=200)
+        attempt_index = max(0, int(metadata.get("attempt_index") or 0))
+        adjustments_count = max(0, int(metadata.get("adjustments_count") or 0))
+        resume_preview = _safe_text(metadata.get("resume_instruction_preview"), limit=2000)
+        task_goal = _safe_text(metadata.get("task_goal"), limit=2000)
+
+        if task_inbox_id:
+            try:
+                task_obj = await task_inbox.get(task_inbox_id)
+                merged_metadata = dict((task_obj.metadata if task_obj else {}) or {})
+                merged_metadata.update(
+                    {
+                        "stage_plan": dict(metadata.get("stage_plan") or {}),
+                        "session_task_id": session_task_id,
+                        "stage_id": stage_id,
+                        "stage_index": stage_index,
+                        "stage_total": stage_total,
+                        "attempt_index": attempt_index,
+                        "task_goal": _safe_text(metadata.get("task_goal"), limit=6000),
+                        "original_user_request": _safe_text(
+                            metadata.get("original_user_request"), limit=6000
+                        ),
+                    }
+                )
+                await task_inbox.update_status(
+                    task_inbox_id,
+                    "running",
+                    event="stage_attempt_dispatched",
+                    detail=(
+                        f"worker={worker_name or worker_id}; "
+                        f"stage={stage_index}/{max(1, stage_total)}:{stage_title or stage_id}"
+                    )[:200],
+                    metadata=merged_metadata,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to sync staged task inbox state task=%s",
+                    task_inbox_id,
+                    exc_info=True,
+                )
+
+        if user_id:
+            try:
+                await heartbeat_store.update_session_active_task(
+                    user_id,
+                    session_task_id=session_task_id,
+                    task_inbox_id=task_inbox_id,
+                    status="running",
+                    goal=task_goal,
+                    stage_index=stage_index,
+                    stage_total=stage_total,
+                    stage_id=stage_id,
+                    stage_title=stage_title,
+                    attempt_index=attempt_index,
+                    result_summary=(
+                        f"正在推进阶段 {stage_index}/{max(1, stage_total)}："
+                        f"{stage_title or stage_id or '执行任务'}"
+                    )[:500],
+                    needs_confirmation=False,
+                    confirmation_deadline="",
+                    last_blocking_reason="",
+                    resume_instruction_preview=resume_preview,
+                    adjustments_count=adjustments_count,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to sync staged active task user=%s",
+                    user_id,
+                    exc_info=True,
+                )
+
     async def _recent_error_rate(self, worker_id: str, *, limit: int = 12) -> float:
         rows = await worker_task_store.list_recent(worker_id=worker_id, limit=limit)
         if not rows:
@@ -218,6 +387,10 @@ class ManagerDispatchService:
             }
 
         meta = dict(metadata or {})
+        task_instruction, meta = _prepare_stage_dispatch(
+            instruction=task_instruction,
+            metadata=meta,
+        )
         if not str(meta.get("program_id") or "").strip():
             meta["program_id"] = (
                 str(os.getenv("WORKER_DEFAULT_PROGRAM_ID", "default-worker")).strip()
@@ -256,6 +429,11 @@ class ManagerDispatchService:
         meta.setdefault("selection_reason", selected.reason)
         meta.setdefault("selection_score", int(selected.score or 0))
         meta.setdefault("worker_metrics", dict(selected.metrics or {}))
+        meta.setdefault(
+            "session_task_id",
+            _session_task_id_from_metadata(meta) or str(meta.get("task_inbox_id") or ""),
+        )
+        meta.setdefault("user_visible_task_id", str(meta.get("session_task_id") or ""))
 
         queued = await dispatch_queue.submit_task(
             worker_id=selected_worker_id,
@@ -284,10 +462,27 @@ class ManagerDispatchService:
                 exc,
             )
 
+        if _is_staged_session(meta):
+            await self._sync_session_dispatch_state(
+                metadata=meta,
+                worker_name=selected_worker_name,
+                worker_id=selected_worker_id,
+            )
+
+        user_visible_task_id = (
+            _safe_text(meta.get("user_visible_task_id"), limit=80)
+            or queued.task_id
+        )
+        stage_index = max(0, int(meta.get("stage_index") or 0))
+        stage_total = max(0, int(meta.get("stage_total") or 0))
+        stage_hint = ""
+        if stage_index > 0 and stage_total > 0:
+            stage_hint = f"stage={stage_index}/{stage_total}; "
         manager_hint = (
             "worker dispatch accepted; "
             f"worker_name={selected_worker_name}; "
-            f"task_id={queued.task_id}; "
+            f"task_id={user_visible_task_id}; "
+            f"{stage_hint}"
             "status=running_async; "
             "reply user naturally in Chinese and mention the task id once."
         )
@@ -296,16 +491,21 @@ class ManagerDispatchService:
             "worker_id": selected_worker_id,
             "worker_name": selected_worker_name,
             "task_id": queued.task_id,
+            "session_task_id": str(meta.get("session_task_id") or ""),
             "backend": str(backend or selected_worker_obj.get("backend") or ""),
             "result": "",
-            "summary": f"worker job queued: {queued.task_id}"[:200],
+            "summary": f"worker job queued: {user_visible_task_id}"[:200],
             "text": manager_hint,
             "ui": {},
             "payload": {
                 "text": manager_hint,
                 "dispatch": "queued",
                 "worker_name": selected_worker_name,
-                "task_id": queued.task_id,
+                "task_id": user_visible_task_id,
+                "attempt_task_id": queued.task_id,
+                "session_task_id": str(meta.get("session_task_id") or ""),
+                "stage_index": stage_index,
+                "stage_total": stage_total,
                 "manager_reply_style": "natural",
                 "priority": priority,
             },

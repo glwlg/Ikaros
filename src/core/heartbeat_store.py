@@ -234,6 +234,8 @@ class HeartbeatStore:
         now = _now_iso()
         normalized = {
             "id": _truncate(task.get("id", ""), 80),
+            "session_task_id": _truncate(task.get("session_task_id", ""), 80),
+            "task_inbox_id": _truncate(task.get("task_inbox_id", ""), 80),
             "goal": _truncate(task.get("goal", ""), 2000),
             "status": _truncate(task.get("status", "running"), 40).lower() or "running",
             "source": _truncate(task.get("source", "message"), 80) or "message",
@@ -244,9 +246,23 @@ class HeartbeatStore:
             "confirmation_deadline": _truncate(
                 task.get("confirmation_deadline", ""), 64
             ),
+            "stage_index": max(0, int(task.get("stage_index") or 0)),
+            "stage_total": max(0, int(task.get("stage_total") or 0)),
+            "stage_id": _truncate(task.get("stage_id", ""), 80),
+            "stage_title": _truncate(task.get("stage_title", ""), 200),
+            "attempt_index": max(0, int(task.get("attempt_index") or 0)),
+            "last_blocking_reason": _truncate(
+                task.get("last_blocking_reason", ""), 2000
+            ),
+            "resume_instruction_preview": _truncate(
+                task.get("resume_instruction_preview", ""), 2000
+            ),
+            "adjustments_count": max(0, int(task.get("adjustments_count") or 0)),
         }
         if not normalized["id"]:
             return None
+        if not normalized["session_task_id"]:
+            normalized["session_task_id"] = normalized["id"]
         return normalized
 
     def _normalize_status(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -388,9 +404,7 @@ class HeartbeatStore:
                 if normalized:
                     lines.append(f"- {normalized}")
         else:
-            lines.append(
-                "- Check critical updates and only notify when action is needed"
-            )
+            lines.append("- 检查自己和worker的运行状态是否良好")
         body = "\n".join(lines).rstrip() + "\n"
         return f"---\n{header}\n---\n\n{body}"
 
@@ -507,7 +521,9 @@ class HeartbeatStore:
 
     async def list_users(self) -> List[str]:
         shared_dir = self._ensure_shared_dir()
-        if (shared_dir / "HEARTBEAT.md").exists() or (shared_dir / "STATUS.json").exists():
+        if (shared_dir / "HEARTBEAT.md").exists() or (
+            shared_dir / "STATUS.json"
+        ).exists():
             return [self.shared_dir_name]
         return []
 
@@ -734,12 +750,22 @@ class HeartbeatStore:
             if current is None:
                 return None
             for key in (
+                "session_task_id",
+                "task_inbox_id",
                 "goal",
                 "status",
                 "source",
                 "result_summary",
                 "needs_confirmation",
                 "confirmation_deadline",
+                "stage_index",
+                "stage_total",
+                "stage_id",
+                "stage_title",
+                "attempt_index",
+                "last_blocking_reason",
+                "resume_instruction_preview",
+                "adjustments_count",
             ):
                 if key in fields:
                     current[key] = fields[key]

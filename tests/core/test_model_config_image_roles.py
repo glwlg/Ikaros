@@ -1,4 +1,4 @@
-from core.model_config import ModelsConfig
+from core.model_config import ModelConfig, ModelManager, ModelsConfig, ProviderConfig
 import core.model_config as model_config_module
 
 
@@ -59,3 +59,58 @@ def test_model_config_lazy_loads_generation_model_from_file(tmp_path, monkeypatc
     monkeypatch.setattr(model_config_module, "_primary_model", "")
 
     assert model_config_module.get_image_generation_model() == "demo/image-gen"
+
+
+def test_model_config_primary_pool_failover_skips_failed_models(monkeypatch):
+    cfg = ModelsConfig(
+        model={"primary": "proxy/gpt-5.4"},
+        models={
+            "primary": {
+                "proxy/gpt-5.4": {},
+                "proxy/bailian/qwen3.5-flash": {},
+            }
+        },
+        providers={
+            "proxy": ProviderConfig(
+                baseUrl="https://example.invalid/v1",
+                apiKey="test-key",
+                models=[
+                    ModelConfig(id="gpt-5.4", name="gpt-5.4", input=["text"]),
+                    ModelConfig(
+                        id="bailian/qwen3.5-flash",
+                        name="bailian/qwen3.5-flash",
+                        input=["text"],
+                    ),
+                    ModelConfig(
+                        id="gemini-3.1-flash-lite",
+                        name="gemini-3.1-flash-lite",
+                        input=["text"],
+                    ),
+                ],
+            )
+        },
+    )
+    manager = ModelManager(cfg, "proxy/gpt-5.4")
+
+    monkeypatch.setattr(model_config_module, "_models_config", cfg)
+    monkeypatch.setattr(model_config_module, "_model_manager", manager)
+    monkeypatch.setattr(model_config_module, "_primary_model", "proxy/gpt-5.4")
+
+    assert model_config_module.get_model_candidates_for_input("text") == [
+        "proxy/gpt-5.4",
+        "proxy/bailian/qwen3.5-flash",
+    ]
+    assert (
+        model_config_module.get_model_for_input("text", pool_type="primary")
+        == "proxy/gpt-5.4"
+    )
+
+    model_config_module.mark_model_failed("proxy/gpt-5.4")
+
+    assert model_config_module.get_model_candidates_for_input("text") == [
+        "proxy/bailian/qwen3.5-flash"
+    ]
+    assert (
+        model_config_module.get_model_for_input("text", pool_type="primary")
+        == "proxy/bailian/qwen3.5-flash"
+    )

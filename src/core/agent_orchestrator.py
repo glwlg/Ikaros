@@ -394,6 +394,9 @@ class AgentOrchestrator:
                     snapshot["task_outcome"] = str(
                         payload.get("task_outcome") or ""
                     ).strip()
+                    snapshot["failure_mode"] = str(
+                        payload.get("failure_mode") or ""
+                    ).strip()
                     terminal_payload = payload.get("terminal_payload")
                     if isinstance(terminal_payload, dict) and terminal_payload:
                         snapshot["terminal_payload"] = dict(terminal_payload)

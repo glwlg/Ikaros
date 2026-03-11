@@ -10,9 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from core.platform.models import UnifiedContext, MessageType
-import random
 from core.markdown_memory_store import markdown_memory_store
-from core.waiting_phrase_store import waiting_phrase_store
 
 from core.config import get_client_for_model
 from core.file_artifacts import (
@@ -37,31 +35,14 @@ logger = logging.getLogger(__name__)
 LONG_RESPONSE_FILE_THRESHOLD = 9000
 
 DEFAULT_RECEIVED_PHRASES = [
-    "📨 收到！大脑急速运转中...",
-    "⚡ 信号已接收，开始解析...",
-    "🍪 Bip Bip! 消息直达核心...",
-    "📡 神经连接建立中...",
-    "💭 正在调取相关记忆...",
-    "🐌 稍微有点堵车，马上就好...",
-    "✨ 指令已确认，准备施法...",
+    "...",
 ]
 
 DEFAULT_LOADING_PHRASES = [
-    "🤖 调用赛博算力中...",
-    "💭 此问题稍显深奥...",
-    "🛁 顺手清洗下数据管道...",
-    "📡 正在尝试连接火星通讯...",
-    "🍪 先给 AI 喂块饼干补充体力...",
-    "🐌 稍等，前面有点堵...",
-    "📚 翻阅百科全书中...",
-    "🔨 正在狂敲代码实现需求...",
-    "🌌 试图穿越虫洞寻找答案...",
-    "🧹 清理一下内存碎片...",
-    "🔌 检查下网线接好没...",
-    "🎨 正在为您绘制思维导图...",
-    "🍕 吃口披萨，马上回来...",
-    "🧘 数字冥想中...",
-    "🏃 全力冲刺中...",
+    ".",
+    "..",
+    "...",
+    "..",
 ]
 
 
@@ -349,41 +330,9 @@ def _build_manager_progress_text(snapshot: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def _normalize_phrase_pool(items: list[str], *, limit: int = 24) -> list[str]:
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for raw in items:
-        phrase = " ".join(str(raw or "").split()).strip().strip("`*")
-        if not phrase:
-            continue
-        if phrase in seen:
-            continue
-        seen.add(phrase)
-        normalized.append(phrase)
-        if len(normalized) >= max(1, int(limit)):
-            break
-    return normalized
-
-
 def _build_runtime_phrase_pools(runtime_user_id: str) -> tuple[list[str], list[str]]:
-    fallback_received = list(DEFAULT_RECEIVED_PHRASES)
-    fallback_loading = list(DEFAULT_LOADING_PHRASES)
-    try:
-        pools = waiting_phrase_store.load_phrase_pools_for_runtime_user(
-            str(runtime_user_id)
-        )
-        if not pools:
-            return fallback_received, fallback_loading
-
-        received, loading = pools
-        normalized_received = _normalize_phrase_pool(received, limit=24)
-        normalized_loading = _normalize_phrase_pool(loading, limit=24)
-        if not normalized_received or not normalized_loading:
-            return fallback_received, fallback_loading
-        return normalized_received, normalized_loading
-    except Exception as exc:
-        logger.debug("Failed to build dynamic phrase pools from SOUL.MD: %s", exc)
-        return fallback_received, fallback_loading
+    _ = runtime_user_id
+    return list(DEFAULT_RECEIVED_PHRASES), list(DEFAULT_LOADING_PHRASES)
 
 
 def _pop_pending_ui_payload(user_data: dict[str, Any]) -> dict[str, Any] | None:
@@ -655,14 +604,11 @@ async def _try_handle_waiting_confirmation(
     if not text:
         return False
 
-    continue_cues = {"继续", "继续执行", "继续重部署", "resume", "continue"}
     stop_cues = {"停止", "取消", "停止任务", "stop", "cancel"}
-    intent_continue = text in continue_cues
     intent_stop = text in stop_cues
-    if not intent_continue and not intent_stop:
-        return False
 
     from core.heartbeat_store import heartbeat_store
+    from manager.relay.closure_service import manager_closure_service
 
     user_id = str(ctx.message.user.id)
     active_task = await heartbeat_store.get_session_active_task(user_id)
@@ -670,21 +616,7 @@ async def _try_handle_waiting_confirmation(
         return False
 
     task_id = str(active_task.get("id"))
-    if intent_continue:
-        await heartbeat_store.update_session_active_task(
-            user_id,
-            status="running",
-            needs_confirmation=False,
-            confirmation_deadline="",
-        )
-        await heartbeat_store.release_lock(user_id)
-        await heartbeat_store.append_session_event(
-            user_id, f"user_continue_by_text:{task_id}"
-        )
-        await ctx.reply("✅ 已确认继续执行，正在继续处理。")
-        # Let the current message continue through normal chat handling.
-        return False
-    else:
+    if intent_stop:
         await heartbeat_store.update_session_active_task(
             user_id,
             status="cancelled",
@@ -699,6 +631,23 @@ async def _try_handle_waiting_confirmation(
         )
         await ctx.reply("🛑 已停止该任务。")
         return True
+
+    resume = await manager_closure_service.resume_waiting_task(
+        user_id=user_id,
+        user_message=user_message,
+        source="text",
+    )
+    if bool(resume.get("ok")):
+        await ctx.reply(str(resume.get("message") or "✅ 已继续当前任务。"))
+        return True
+
+    await ctx.reply(
+        str(
+            resume.get("message")
+            or "⚠️ 当前任务暂时无法继续，请稍后重试或重新下达任务。"
+        )
+    )
+    return True
 
 
 async def _try_handle_memory_commands(ctx: UnifiedContext, user_message: str) -> bool:
@@ -932,7 +881,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
     received_phrases, loading_phrases = _build_runtime_phrase_pools(str(user_id))
 
     if not has_media:
-        thinking_msg = await ctx.reply(random.choice(received_phrases))
+        thinking_msg = await ctx.reply(received_phrases[0])
     else:
         thinking_msg = await ctx.reply("🤔 让我看看引用具体内容...")
 
@@ -966,6 +915,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
         "manager_progress_last_sent_at": 0.0,
         "manager_progress_last_rendered": "",
         "manager_progress_final_preview": "",
+        "loading_frame_index": 0,
     }
     manager_progress_steps: list[dict[str, Any]] = []
     pending_manager_files: list[dict[str, str]] = []
@@ -989,34 +939,29 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
 
     async def loading_animation():
         """
-        后台动画任务：每隔几秒检查是否有新内容。
-        如果卡住了（比如在调用 Tools），通过修改消息来“卖萌”。
+        后台动画任务：如果迟迟没有首个可见结果，用省略号做轻量占位。
         """
         while state["running"]:
-            await asyncio.sleep(4)  # Check every 4s
+            await asyncio.sleep(1.2)
             if not state["running"]:
                 break
 
             now = time.time()
-            # 如果超过 5 秒没有更新文本（说明卡在 Tool 或者生成慢）
-            if now - state["last_update_time"] > 5:
+            if now - state["last_update_time"] > 2.5:
                 manager_progress_text = str(state.get("manager_progress_text") or "").strip()
                 if manager_progress_text and not state["final_text"]:
                     try:
                         await _push_manager_progress_update(force=False)
                     except Exception as e:
                         logger.debug(f"Manager progress update failed: {e}")
-                    state["last_update_time"] = time.time()
                     continue
 
-                phrase = random.choice(loading_phrases)
+                if state["final_text"]:
+                    continue
 
-                # 如果已经有一部分文本了，附在后面；如果是空的，直接显示
-                display_text = state["final_text"]
-                if display_text:
-                    display_text += f"\n\n⏳ {phrase}"
-                else:
-                    display_text = phrase
+                frame_index = int(state.get("loading_frame_index") or 0)
+                display_text = loading_phrases[frame_index % len(loading_phrases)]
+                state["loading_frame_index"] = frame_index + 1
 
                 try:
                     msg_id = getattr(
@@ -1025,9 +970,6 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                     await ctx.edit_message(msg_id, display_text)
                 except Exception as e:
                     logger.debug(f"Animation edit failed: {e}")
-
-                # Update time to avoid spamming edits (waiting another cycle)
-                state["last_update_time"] = time.time()
 
     # Default to True for backward compatibility or if adapter missing
     can_update = getattr(ctx._adapter, "can_update_message", True)

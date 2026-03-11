@@ -196,6 +196,7 @@ async def button_callback(ctx: UnifiedContext) -> int:
     try:
         if data in {"task_continue", "task_stop"}:
             from core.heartbeat_store import heartbeat_store
+            from manager.relay.closure_service import manager_closure_service
 
             hb_user_id = str(ctx.callback_user_id or ctx.message.user.id)
             active_task = await heartbeat_store.get_session_active_task(hb_user_id)
@@ -205,17 +206,25 @@ async def button_callback(ctx: UnifiedContext) -> int:
 
             task_id = str(active_task.get("id"))
             if data == "task_continue":
-                await heartbeat_store.update_session_active_task(
-                    hb_user_id,
-                    status="running",
-                    needs_confirmation=False,
-                    confirmation_deadline="",
+                resume = await manager_closure_service.resume_waiting_task(
+                    user_id=hb_user_id,
+                    user_message="continue",
+                    source="button",
                 )
-                await heartbeat_store.release_lock(hb_user_id)
-                await heartbeat_store.append_session_event(
-                    hb_user_id, f"user_confirm_continue:{task_id}"
-                )
-                await ctx.reply("✅ 已确认继续执行，请继续发送消息以推进任务。")
+                if bool(resume.get("ok")):
+                    await heartbeat_store.append_session_event(
+                        hb_user_id, f"user_confirm_continue:{task_id}"
+                    )
+                    await ctx.reply(
+                        str(resume.get("message") or "✅ 已确认继续执行。")
+                    )
+                else:
+                    await ctx.reply(
+                        str(
+                            resume.get("message")
+                            or "⚠️ 当前任务暂时无法继续，请稍后重试。"
+                        )
+                    )
             else:
                 await heartbeat_store.update_session_active_task(
                     hb_user_id,
