@@ -419,3 +419,50 @@ async def test_task_tracker_lists_auto_followup_pr_task_as_open(_isolated_state)
 
     assert result["ok"] is True
     assert [row["task_id"] for row in result["data"]["tasks"]] == [task.task_id]
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_list_open_excludes_heartbeat_tasks_by_default(
+    _isolated_state,
+):
+    user_task = await task_inbox.submit(
+        source="user_chat",
+        goal="用户发起的任务",
+        user_id="u-hb-exclude",
+    )
+    heartbeat_task = await task_inbox.submit(
+        source="heartbeat",
+        goal="heartbeat 跟进任务",
+        user_id="u-hb-exclude",
+    )
+    await task_inbox.update_status(
+        user_task.task_id,
+        "waiting_external",
+        event="followup_waiting",
+        metadata={
+            "followup": {
+                "done_when": "PR merged",
+                "next_review_after": "2026-03-13T00:00:00+08:00",
+            }
+        },
+    )
+    await task_inbox.update_status(
+        heartbeat_task.task_id,
+        "waiting_external",
+        event="followup_waiting",
+        metadata={
+            "followup": {
+                "done_when": "PR merged",
+                "next_review_after": "2026-03-13T00:00:00+08:00",
+            }
+        },
+    )
+
+    result = await task_tracker_service.list_open(
+        user_id="u-hb-exclude", due_only=True, limit=10
+    )
+
+    assert result["ok"] is True
+    task_ids = [row["task_id"] for row in result["data"]["tasks"]]
+    assert user_task.task_id in task_ids
+    assert heartbeat_task.task_id not in task_ids

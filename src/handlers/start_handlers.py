@@ -185,7 +185,7 @@ async def help_command(ctx: UnifiedContext) -> None:
         "• **手动教学**：/teach - 强制触发学习模式\n"
         "• /skills - 查看已安装技能\n\n"
         "**常用命令：**\n"
-        "/start 主菜单 | /new 新对话 | /chatlog 检索 | /heartbeat 心跳 | /worker Worker"
+        "/start 主菜单 | /new 新对话 | /chatlog 检索 | /heartbeat 心跳 | /task 任务 | /worker Worker"
     )
 
 
@@ -294,7 +294,7 @@ async def button_callback(ctx: UnifiedContext) -> int:
                 "• /teach - 教我学会新技能 (自定义代码)\n"
                 "• /skills - 查看已安装技能\n\n"
                 "**常用命令：**\n"
-                "/start 主菜单 | /new 新对话 | /chatlog 检索 | /heartbeat 心跳 | /worker Worker",
+                "/start 主菜单 | /new 新对话 | /chatlog 检索 | /heartbeat 心跳 | /task 任务 | /worker Worker",
                 reply_markup=reply_markup,
             )
             return CONVERSATION_END

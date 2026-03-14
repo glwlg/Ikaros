@@ -46,6 +46,7 @@ from handlers import (
     chatlog_command,
     stop_command,
     heartbeat_command,
+    task_command,
     worker_command,
     accounting_command,
 )
@@ -214,6 +215,7 @@ async def main():
     )
     adapter_manager.on_command("stop", stop_command, description="停止当前任务")
     adapter_manager.on_command("heartbeat", heartbeat_command, description="管理心跳")
+    adapter_manager.on_command("task", task_command, description="查看 Manager 任务")
     adapter_manager.on_command(
         "worker", worker_command, description="管理 Worker 执行层"
     )

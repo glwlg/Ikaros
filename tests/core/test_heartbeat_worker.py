@@ -159,6 +159,14 @@ async def test_heartbeat_worker_readonly_action_does_not_dispatch_to_worker(
     assert sent and sent[0][0] == "100"
 
 
+def test_heartbeat_worker_defaults_to_execute_mode(monkeypatch):
+    monkeypatch.delenv("HEARTBEAT_MODE", raising=False)
+
+    worker = HeartbeatWorker()
+
+    assert worker.mode == "execute"
+
+
 @pytest.mark.asyncio
 async def test_heartbeat_worker_long_output_keeps_full_links(monkeypatch, tmp_path):
     runtime_root = (tmp_path / "runtime_tasks").resolve()

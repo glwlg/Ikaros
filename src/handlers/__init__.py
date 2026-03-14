@@ -20,5 +20,6 @@ from .ai_handlers import (
     handle_sticker_message,
 )
 from .heartbeat_handlers import heartbeat_command
+from .task_handlers import task_command
 from .worker_handlers import worker_command
 from .accounting_handlers import accounting_command

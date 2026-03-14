@@ -67,9 +67,7 @@ class HeartbeatWorker:
         self.tick_sec = max(5, int(tick_raw))
 
         self.suppress_ok = os.getenv("HEARTBEAT_SUPPRESS_OK", "true").lower() == "true"
-        self.mode = (
-            os.getenv("HEARTBEAT_MODE", "readonly").strip().lower() or "readonly"
-        )
+        self.mode = os.getenv("HEARTBEAT_MODE", "execute").strip().lower() or "execute"
         self.readonly_dispatch = (
             os.getenv("HEARTBEAT_READONLY_DISPATCH", "false").lower() == "true"
         )
