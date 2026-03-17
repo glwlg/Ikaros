@@ -62,6 +62,9 @@ class PromptComposer:
     4) tool inventory
     """
 
+    def __init__(self) -> None:
+        self._text_cache: Dict[str, tuple[int, str]] = {}
+
     @staticmethod
     def _read_markdown_file(path: Path) -> str:
         try:
@@ -71,8 +74,43 @@ class PromptComposer:
             return ""
         return ""
 
+    def _read_cached_text_file(self, path: Path) -> str:
+        try:
+            resolved = path.resolve()
+            if not resolved.exists():
+                return ""
+            stat = resolved.stat()
+            cache_key = str(resolved)
+            cached = self._text_cache.get(cache_key)
+            if cached and cached[0] == int(stat.st_mtime_ns):
+                return cached[1]
+            text = resolved.read_text(encoding="utf-8").strip()
+            self._text_cache[cache_key] = (int(stat.st_mtime_ns), text)
+            return text
+        except Exception:
+            return ""
+
     def _load_manager_agents_doc(self) -> str:
-        return self._read_markdown_file((Path(DATA_DIR) / "AGENTS.md").resolve())
+        return self._read_cached_text_file((Path(DATA_DIR) / "AGENTS.md").resolve())
+
+    def _load_manager_memory_snapshot(self, *, max_chars: int = 1200) -> str:
+        content = self._read_cached_text_file(markdown_memory_store.manager_memory_path())
+        if not content:
+            return ""
+        if len(content) <= max_chars:
+            return content
+        return content[-max_chars:]
+
+    @staticmethod
+    def _build_manager_session_context_contract() -> str:
+        return (
+            "【当前会话上下文约束】\n"
+            "- 私聊会话中的用户长期记忆会在新会话开始时通过隐藏 system 消息 `【会话记忆种子】` 注入；长会话还可能携带 `【会话压缩摘要】`。\n"
+            "- 正常对话、首轮补参、天气/出行/偏好等常见场景，先使用这些会话内上下文；默认不要再调用 `read` 读取 `data/user/MEMORY.md` 或 `data/user/memory/*.md`。\n"
+            "- 只有在以下情况才补充读取记忆文件：用户明确要求查看/修正记忆；当前会话没有相关记忆种子或摘要且任务确实依赖稳定个人事实；执行专门的记忆维护任务。\n"
+            "- 若当前用户消息与会话记忆种子冲突，以当前用户最新明确表达为准；不要为了旧记忆而压过用户当前输入。\n"
+            "- 本块优先级高于旧文档里任何“先读 MEMORY.md”之类的历史说明。"
+        )
 
     def compose_base(
         self,
@@ -82,6 +120,7 @@ class PromptComposer:
         tools: Iterable[Any] | None = None,
         runtime_policy_ctx: Dict[str, Any] | None = None,
         mode: str = "chat",
+        allowed_skill_names: Iterable[str] | None = None,
     ) -> str:
         soul_payload = soul_store.resolve_for_runtime_user(str(runtime_user_id or ""))
         runtime_role = self._runtime_role(runtime_user_id, platform)
@@ -93,12 +132,13 @@ class PromptComposer:
             agents_doc = self._load_manager_agents_doc()
             if agents_doc:
                 parts.append("【AGENTS】\n" + agents_doc)
+            parts.append(self._build_manager_session_context_contract())
 
         parts.append("【SOUL】\n" + soul_payload.content.strip())
 
         # 如果是 manager 模式，添加 Manager 核心 Prompt
         if str(mode or "").strip().lower() == "manager":
-            manager_memory = markdown_memory_store.load_manager_snapshot(max_chars=1200)
+            manager_memory = self._load_manager_memory_snapshot(max_chars=1200)
             if manager_memory:
                 parts.append("【MANAGER 经验记忆】\n" + manager_memory)
             worker_pool_info = self._get_worker_pool_info()
@@ -121,6 +161,7 @@ class PromptComposer:
         skill_catalog = self._build_skill_catalog(
             runtime_user_id=runtime_user_id,
             platform=platform,
+            allowed_skill_names=allowed_skill_names,
         )
         if skill_catalog:
             parts.append(skill_catalog)
@@ -128,12 +169,18 @@ class PromptComposer:
         # 拼接当前日期
         # parts.append("\n【当前日期】\n" + datetime.now().strftime("%Y-%m-%d"))
 
-        logger.info(
-            "Final Prompt: \n"
-            + "\n\n".join([item for item in parts if str(item).strip()]).strip()
+        final_prompt = "\n\n".join([item for item in parts if str(item).strip()]).strip()
+        logger.debug(
+            "Prompt composed role=%s mode=%s len=%s allowed_skills=%s",
+            runtime_role,
+            str(mode or "").strip().lower() or "chat",
+            len(final_prompt),
+            ",".join(sorted({str(item).strip() for item in list(allowed_skill_names or []) if str(item).strip()}))
+            if allowed_skill_names is not None
+            else "*",
         )
 
-        return "\n\n".join([item for item in parts if str(item).strip()]).strip()
+        return final_prompt
 
     @staticmethod
     def _runtime_role(runtime_user_id: str, platform: str) -> str:
@@ -148,6 +195,7 @@ class PromptComposer:
         *,
         runtime_user_id: str = "",
         platform: str = "",
+        allowed_skill_names: Iterable[str] | None = None,
     ) -> str:
         """构建可用技能目录，引导 LLM 按需加载 SOP。"""
         try:
@@ -159,11 +207,22 @@ class PromptComposer:
                 return ""
 
             runtime_role = self._runtime_role(runtime_user_id, platform)
+            allowed_name_set = (
+                {
+                    str(item or "").strip()
+                    for item in list(allowed_skill_names or [])
+                    if str(item or "").strip()
+                }
+                if allowed_skill_names is not None
+                else None
+            )
             lines: List[str] = []
             for item in skills:
                 name = str(item.get("name") or "").strip()
                 desc = _short_desc(str(item.get("description") or ""), limit=60)
                 if not name:
+                    continue
+                if allowed_name_set is not None and name not in allowed_name_set:
                     continue
                 allowed_roles = _normalize_text_list(item.get("allowed_roles"))
                 if allowed_roles and runtime_role not in allowed_roles:

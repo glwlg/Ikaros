@@ -68,3 +68,9 @@ entrypoint: scripts/execute.py
 # Codex Session
 
 Manager 用这个技能直接驱动 Codex 开发回合。它支持在用户确认后继续同一逻辑会话，而不是把实现过程硬编码成固定流水线。
+
+## CLI
+
+可直接在技能目录执行：
+
+`python scripts/execute.py --action status --session-id <session_id>`

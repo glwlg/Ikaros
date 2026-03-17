@@ -207,7 +207,7 @@ class TestSubscriptionRepo:
         assert len(subs) == 0
 
     @pytest.mark.asyncio
-    async def test_list_subscriptions_filters_by_user(self, mock_db):
+    async def test_list_subscriptions_uses_single_shared_scope(self, mock_db):
         from core.state_io import init_db
         from core.state_store import create_subscription, list_subscriptions
 
@@ -225,10 +225,8 @@ class TestSubscriptionRepo:
         subs_a = await list_subscriptions(12345)
         subs_b = await list_subscriptions(67890)
 
-        assert len(subs_a) == 1
-        assert len(subs_b) == 1
-        assert subs_a[0]["title"] == "A"
-        assert subs_b[0]["title"] == "B"
+        assert [row["title"] for row in subs_a] == ["A", "B"]
+        assert [row["title"] for row in subs_b] == ["A", "B"]
 
 
 class TestAllowedUsersStateStore:

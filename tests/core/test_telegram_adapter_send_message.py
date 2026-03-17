@@ -13,6 +13,7 @@ class _FakeBot:
         self.photo_calls = []
         self.video_calls = []
         self.audio_calls = []
+        self.reaction_calls = []
 
     async def send_message(self, **kwargs):
         self.calls.append(dict(kwargs))
@@ -33,6 +34,10 @@ class _FakeBot:
     async def send_audio(self, **kwargs):
         self.audio_calls.append(dict(kwargs))
         return SimpleNamespace(id="tg-audio")
+
+    async def set_message_reaction(self, **kwargs):
+        self.reaction_calls.append(dict(kwargs))
+        return True
 
 
 @pytest.mark.asyncio
@@ -177,3 +182,23 @@ async def test_telegram_adapter_send_photo_uses_bot_photo_api():
     assert payload["chat_id"] == 100
     assert payload["photo"] == "/tmp/demo.png"
     assert payload["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_telegram_adapter_set_message_reaction_uses_bot_api():
+    fake_bot = _FakeBot()
+    app = SimpleNamespace(bot=fake_bot)
+    adapter = TelegramAdapter(app)
+    context = SimpleNamespace(message=SimpleNamespace(chat=SimpleNamespace(id="100")))
+
+    result = await adapter.set_message_reaction(
+        context,
+        "200",
+        "👀",
+    )
+
+    assert result is True
+    assert fake_bot.reaction_calls
+    payload = fake_bot.reaction_calls[-1]
+    assert payload["chat_id"] == 100
+    assert payload["message_id"] == 200

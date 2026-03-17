@@ -394,16 +394,20 @@ def build_stage_instruction(
     original_request: str,
     plan: StagePlan,
     stage: Dict[str, Any],
+    resolved_task_goal: str = "",
     previous_summary: str = "",
     previous_output: str = "",
     last_blocking_reason: str = "",
 ) -> str:
-    safe_request = _safe_text(original_request, limit=5000)
+    safe_request = _safe_text(resolved_task_goal or original_request, limit=5000)
     safe_summary = _safe_text(previous_summary, limit=1200)
     safe_output = _safe_text(previous_output, limit=2400)
     safe_blocking = _safe_text(last_blocking_reason, limit=1200)
     stage_id = _safe_text(stage.get("id"), limit=80)
     position, total = get_stage_position(plan, stage_id)
+    stage_goal = _safe_text(stage.get("goal"), limit=4000) or safe_request
+    if max(1, total) == 1 and resolved_task_goal:
+        stage_goal = safe_request
 
     completed_rows = []
     for row in list(plan.get("stages") or []):
@@ -425,7 +429,7 @@ def build_stage_instruction(
         f"你正在执行用户任务的阶段 {position}/{max(1, total)}。",
         f"原始用户任务：{safe_request or '未提供'}",
         f"当前阶段：{_safe_text(stage.get('title'), limit=200) or stage_id or '未命名阶段'}",
-        f"阶段目标：{_safe_text(stage.get('goal'), limit=4000) or safe_request}",
+        f"阶段目标：{stage_goal}",
         f"成功标准：{_safe_text(stage.get('success_signal'), limit=400) or '完成当前阶段目标并给出可交付摘要。'}",
     ]
     if completed_rows:
@@ -442,7 +446,14 @@ def build_stage_instruction(
         lines.append("用户最新补充/修正：")
         lines.extend([f"- {item}" for item in adjustments[-4:]])
     if max(1, total) > 1:
-        lines.append(
-            "注意：本次只完成当前阶段，不要假装整个任务已经全部完成；如果缺少条件无法继续，请明确说明阻塞点。"
-        )
+        if position < total:
+            lines.append(
+                "注意：本次只完成当前阶段，不要假装整个任务已经全部完成；如果缺少条件无法继续，请明确说明阻塞点。"
+            )
+        else:
+            lines.append(
+                "注意：这是最后阶段，默认目标是收口并直接产出最终可交付结果。"
+                "不要只重复“还不能交付”的验证说明；若发现信息缺口，优先继续调用可用工具补齐并整理正式输出。"
+                "只有在工具预算已耗尽或客观条件确实不足时，才说明阻塞点和缺失项。"
+            )
     return "\n\n".join([item for item in lines if str(item).strip()]).strip()

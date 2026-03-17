@@ -159,7 +159,6 @@ def register_handlers(adapter_manager):
 
 async def list_tasks_command(ctx: UnifiedContext):
     """处理 schedule 列表展示，显示带按钮的任务列表"""
-    user_id = ctx.message.user.id if ctx.message.user else "0"
     tasks = await get_all_active_tasks()
 
     if not tasks:
@@ -173,23 +172,10 @@ async def list_tasks_command(ctx: UnifiedContext):
         return {"text": "📭 当前没有活跃的定时任务。", "ui": {}}
 
     msg = "📋 **定时任务列表**\n\n"
-    # Filter/Sort?
-    # Separate own tasks vs others
-    own_tasks = []
-    other_tasks = []
-
-    for t in tasks:
-        if t.get("user_id") == user_id:
-            own_tasks.append(t)
-        else:
-            other_tasks.append(t)
-
-    # Display logic: show all but distinguish
-    all_sorted = own_tasks + other_tasks
+    all_sorted = list(tasks)
 
     for t in all_sorted:
-        owner_mark = "👤" if t.get("user_id") == user_id else "🤖"
-        msg += f"{owner_mark} **ID: {t['id']}**\n"
+        msg += f"🕒 **ID: {t['id']}**\n"
         msg += f"   Cron: `{t['crontab']}`\n"
         msg += f"   Desc: `{t['instruction']}`\n"
         msg += f"   Push: {t.get('need_push', True)}\n\n"

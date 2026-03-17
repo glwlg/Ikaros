@@ -1,19 +1,23 @@
+from __future__ import annotations
+
 import asyncio
+import contextlib
 import json
 import os
 import re
 import shutil
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import yaml
 
-from core.config import ADMIN_USER_IDS, DATA_DIR
+from core.config import DATA_DIR
+from core.state_paths import SINGLE_USER_SCOPE
 
 try:
     from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover - Python runtime fallback
+except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 
@@ -31,39 +35,36 @@ def _parse_iso(value: str) -> datetime | None:
         return None
     try:
         dt = datetime.fromisoformat(raw)
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=_now_local().tzinfo)
-        return dt
     except Exception:
         return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_now_local().tzinfo)
+    return dt
 
 
 def _parse_hhmm(value: str, fallback: str) -> time:
     text = str(value or "").strip() or fallback
     try:
-        parts = text.split(":", 1)
-        hour = int(parts[0])
-        minute = int(parts[1]) if len(parts) > 1 else 0
+        hour_text, minute_text = (text.split(":", 1) + ["0"])[:2]
+        hour = int(hour_text)
+        minute = int(minute_text)
         if 0 <= hour <= 23 and 0 <= minute <= 59:
             return time(hour=hour, minute=minute)
     except Exception:
         pass
-    fb_parts = fallback.split(":", 1)
-    return time(hour=int(fb_parts[0]), minute=int(fb_parts[1]))
+    fb_hour, fb_minute = (fallback.split(":", 1) + ["0"])[:2]
+    return time(hour=int(fb_hour), minute=int(fb_minute))
 
 
 def _parse_every_seconds(value: str) -> int:
     raw = str(value or "").strip().lower()
     if not raw:
         return 30 * 60
-
     match = re.fullmatch(r"(\d+)\s*([smhd]?)", raw)
     if not match:
         return 30 * 60
-
     amount = max(1, int(match.group(1)))
     unit = match.group(2) or "m"
-
     if unit == "s":
         return amount
     if unit == "m":
@@ -91,31 +92,13 @@ def _truncate(value: Any, max_len: int) -> str:
     return text[:max_len]
 
 
-def _encode_user_dir_name(user_id: str) -> str:
-    return f"uid={user_id.encode('utf-8').hex()}"
-
-
-def _decode_user_dir_name(name: str) -> str | None:
-    if not name.startswith("uid="):
-        return None
-    payload = name[4:]
-    if not payload or len(payload) % 2 != 0:
-        return None
-    try:
-        return bytes.fromhex(payload).decode("utf-8")
-    except Exception:
-        return None
-
-
 class HeartbeatStore:
-    """Per-user heartbeat configuration + runtime status store."""
+    """Single-user heartbeat configuration + runtime status store."""
 
     def __init__(self):
         self.root = (Path(DATA_DIR) / "runtime_tasks").resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        self.default_user_id = "0"
-        self.shared_dir_name = "user"
-        self.legacy_import_marker = ".legacy-import-complete"
+        self.scope = SINGLE_USER_SCOPE
         self.lock_timeout_sec = max(
             1, int(os.getenv("HEARTBEAT_LOCK_TIMEOUT_SEC", "20"))
         )
@@ -132,208 +115,36 @@ class HeartbeatStore:
         self.session_event_keep = max(
             10, int(os.getenv("HEARTBEAT_SESSION_EVENT_KEEP", "40"))
         )
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _docs_root(self) -> Path:
         path = self.root.parent.resolve()
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _heartbeat_file_token(self, user_id: str | None) -> str:
-        normalized = self._normalize_user_id(user_id)
-        if normalized == self.shared_dir_name:
-            return ""
-        if normalized not in {".", ".."} and re.fullmatch(
-            r"[A-Za-z0-9_-]+", normalized
-        ):
-            return normalized
-        return _encode_user_dir_name(normalized)
-
-    def _decode_heartbeat_file_token(self, token: str) -> str | None:
-        raw = str(token or "").strip()
-        if not raw:
-            return self.shared_dir_name
-        decoded = _decode_user_dir_name(raw)
-        if decoded is not None:
-            return decoded
-        if re.fullmatch(r"[A-Za-z0-9_-]+", raw):
-            return raw
-        return None
-
-    def _list_heartbeat_docs(self) -> List[Path]:
-        docs_root = self._docs_root()
-        paths: List[Path] = []
-        for path in docs_root.glob("HEARTBEAT*.md"):
-            if not path.is_file():
-                continue
-            name = path.name
-            if name.endswith(".v1.bak.md"):
-                continue
-            if name == "HEARTBEAT.md" or (
-                name.startswith("HEARTBEAT.") and name.endswith(".md")
-            ):
-                paths.append(path.resolve())
-        return sorted(paths)
-
-    def _heartbeat_doc_user_id(self, path: Path) -> str | None:
-        name = path.name
-        if name == "HEARTBEAT.md":
-            if path.exists():
-                try:
-                    parsed, _checklist = self._parse_markdown(
-                        path.read_text(encoding="utf-8")
-                    )
-                except Exception:
-                    parsed = {}
-                explicit = str(parsed.get("user_id") or "").strip()
-                if explicit:
-                    return explicit
-            return self.shared_dir_name
-        if not name.startswith("HEARTBEAT.") or not name.endswith(".md"):
-            return None
-        token = name[len("HEARTBEAT.") : -3]
-        if token.endswith(".v1.bak"):
-            return None
-        decoded = self._decode_heartbeat_file_token(token)
-        if decoded:
-            return decoded
-        if path.exists():
-            try:
-                parsed, _checklist = self._parse_markdown(
-                    path.read_text(encoding="utf-8")
-                )
-            except Exception:
-                parsed = {}
-            explicit = str(parsed.get("user_id") or "").strip()
-            if explicit:
-                return explicit
-        return None
-
     def heartbeat_path(self, user_id: str) -> Path:
-        token = self._heartbeat_file_token(user_id)
-        if not token:
-            return (self._docs_root() / "HEARTBEAT.md").resolve()
-        return (self._docs_root() / f"HEARTBEAT.{token}.md").resolve()
+        _ = user_id
+        return (self._docs_root() / "HEARTBEAT.md").resolve()
 
     def status_path(self, user_id: str) -> Path:
-        return self._user_dir(user_id) / "STATUS.json"
+        _ = user_id
+        self.root.mkdir(parents=True, exist_ok=True)
+        return (self.root / "STATUS.json").resolve()
 
     def backup_legacy_path(self, user_id: str) -> Path:
-        hb_path = self.heartbeat_path(user_id)
-        if hb_path.name == "HEARTBEAT.md":
-            return (self._docs_root() / "HEARTBEAT.v1.bak.md").resolve()
-        return hb_path.with_name(f"{hb_path.stem}.v1.bak.md").resolve()
+        _ = user_id
+        return (self._docs_root() / "HEARTBEAT.v1.bak.md").resolve()
 
-    def _normalize_user_id(self, user_id: str | None) -> str:
-        raw = str(user_id or "").strip()
-        return raw or self.default_user_id
-
-    def _user_dir_name(self, user_id: str | None) -> str:
-        normalized = self._normalize_user_id(user_id)
-        if (
-            normalized != self.shared_dir_name
-            and normalized not in {".", ".."}
-            and re.fullmatch(r"[A-Za-z0-9_-]+", normalized)
-        ):
-            return normalized
-        return _encode_user_dir_name(normalized)
-
-    def _legacy_shared_dir(self) -> Path:
-        path = (self.root / self.shared_dir_name).resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def _legacy_shared_heartbeat_path(self) -> Path:
-        return self._legacy_shared_dir() / "HEARTBEAT.md"
-
-    def _legacy_shared_status_path(self) -> Path:
-        return self._legacy_shared_dir() / "STATUS.json"
-
-    def _legacy_user_dirs(self, user_id: str | None = None) -> List[Path]:
-        candidates: List[Path] = []
-        seen: set[str] = set()
-
-        def add(name: str | None) -> None:
-            raw = str(name or "").strip()
-            if not raw or raw == self.shared_dir_name or raw in seen:
-                return
-            path = (self.root / raw).resolve()
-            try:
-                path.relative_to(self.root)
-            except ValueError:
-                return
-            if not path.exists() or not path.is_dir():
-                return
-            seen.add(raw)
-            candidates.append(path)
-
-        def add_path(path: Path) -> None:
-            try:
-                relative = path.resolve().relative_to(self.root).as_posix()
-            except Exception:
-                return
-            add(relative)
-
-        add(user_id)
-        for admin_id in sorted(ADMIN_USER_IDS):
-            add(str(admin_id))
-        if user_id is None and self.root.exists():
-            for path in self.root.rglob("*"):
-                if not path.is_dir():
-                    continue
-                try:
-                    relative_path = path.resolve().relative_to(self.root)
-                except Exception:
-                    continue
-                if (
-                    relative_path.parts
-                    and relative_path.parts[0] == self.shared_dir_name
-                ):
-                    continue
-                relative = relative_path.as_posix()
-                if "/" not in relative:
-                    continue
-                if (path / "HEARTBEAT.md").exists() or (path / "STATUS.json").exists():
-                    add_path(path)
-        return candidates
-
-    @staticmethod
-    def _merge_missing_tree(src: Path, dst: Path) -> None:
-        if not src.exists() or not src.is_dir():
-            return
-        for child in src.rglob("*"):
-            if not child.is_file():
-                continue
-            relative = child.relative_to(src)
-            target = (dst / relative).resolve()
-            if target.exists():
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(child, target)
-
-    def _ensure_shared_dir(self, user_id: str | None = None) -> Path:
-        path = self._legacy_shared_dir()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def _user_dir(self, user_id: str) -> Path:
-        path = (self.root / self._user_dir_name(user_id)).resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def _user_lock(self, user_id: str) -> asyncio.Lock:
-        key = self._normalize_user_id(user_id)
-        lock = self._locks.get(key)
+    def _scope_lock(self) -> asyncio.Lock:
+        lock = self._locks.get(self.scope)
         if lock is None:
             lock = asyncio.Lock()
-            self._locks[key] = lock
+            self._locks[self.scope] = lock
         return lock
 
-    def _default_spec(self, user_id: str) -> Dict[str, Any]:
-        canonical_user_id = self._normalize_user_id(user_id)
+    def _default_spec(self) -> dict[str, Any]:
         return {
             "version": 2,
-            "user_id": canonical_user_id,
             "every": self.default_every,
             "target": self.default_target,
             "active_hours": {
@@ -344,11 +155,9 @@ class HeartbeatStore:
             "updated_at": _now_iso(),
         }
 
-    def _default_status(self, user_id: str) -> Dict[str, Any]:
-        canonical_user_id = self._normalize_user_id(user_id)
+    def _default_status(self) -> dict[str, Any]:
         return {
             "version": 2,
-            "user_id": canonical_user_id,
             "locked_by": "",
             "lock_expires_at": "",
             "last_update": _now_iso(),
@@ -373,8 +182,8 @@ class HeartbeatStore:
         }
 
     def _normalize_active_task(
-        self, task: Dict[str, Any] | None
-    ) -> Dict[str, Any] | None:
+        self, task: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
         if not isinstance(task, dict):
             return None
         now = _now_iso()
@@ -416,13 +225,38 @@ class HeartbeatStore:
             normalized["session_task_id"] = normalized["id"]
         return normalized
 
-    def _normalize_status(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        default = self._default_status(user_id)
+    def _normalize_spec(self, data: dict[str, Any] | None) -> dict[str, Any]:
+        default = self._default_spec()
         merged = dict(default)
-        merged.update(data or {})
+        merged.update(dict(data or {}))
+        active = dict(default["active_hours"])
+        active.update(dict((data or {}).get("active_hours") or {}))
+        active["start"] = (
+            _truncate(active.get("start", self.default_active_start), 5)
+            or self.default_active_start
+        )
+        active["end"] = (
+            _truncate(active.get("end", self.default_active_end), 5)
+            or self.default_active_end
+        )
+        return {
+            "version": 2,
+            "every": _normalize_every(str(merged.get("every", self.default_every))),
+            "target": _truncate(merged.get("target", self.default_target), 40)
+            or self.default_target,
+            "active_hours": active,
+            "paused": bool(merged.get("paused", False)),
+            "updated_at": _truncate(merged.get("updated_at", _now_iso()), 64)
+            or _now_iso(),
+        }
+
+    def _normalize_status(self, data: dict[str, Any] | None) -> dict[str, Any]:
+        default = self._default_status()
+        merged = dict(default)
+        merged.update(dict(data or {}))
 
         heartbeat = dict(default["heartbeat"])
-        heartbeat.update((data or {}).get("heartbeat") or {})
+        heartbeat.update(dict((data or {}).get("heartbeat") or {}))
         heartbeat["last_run_at"] = _truncate(heartbeat.get("last_run_at", ""), 64)
         heartbeat["last_result"] = _truncate(heartbeat.get("last_result", ""), 4000)
         heartbeat["next_due_at"] = _truncate(heartbeat.get("next_due_at", ""), 64)
@@ -430,16 +264,14 @@ class HeartbeatStore:
         if level not in {"OK", "NOTICE", "ACTION"}:
             level = "NOTICE"
         heartbeat["last_level"] = level
-        merged["heartbeat"] = heartbeat
 
         delivery = dict(default["delivery"])
-        delivery.update((data or {}).get("delivery") or {})
+        delivery.update(dict((data or {}).get("delivery") or {}))
         delivery["last_platform"] = _truncate(delivery.get("last_platform", ""), 64)
         delivery["last_chat_id"] = _truncate(delivery.get("last_chat_id", ""), 128)
-        merged["delivery"] = delivery
 
         session = dict(default["session"])
-        session.update((data or {}).get("session") or {})
+        session.update(dict((data or {}).get("session") or {}))
         session["active_task"] = self._normalize_active_task(session.get("active_task"))
         session["active_worker_id"] = (
             _truncate(session.get("active_worker_id", "worker-main"), 80)
@@ -452,66 +284,29 @@ class HeartbeatStore:
         session["events"] = [
             _truncate(item, 800) for item in raw_events if str(item or "").strip()
         ][-self.session_event_keep :]
-        merged["session"] = session
 
         notes = merged.get("migration_notes")
         if not isinstance(notes, list):
             notes = []
-        merged["migration_notes"] = [
-            _truncate(item, 500) for item in notes if str(item or "").strip()
-        ][-20:]
+        notes = [_truncate(item, 500) for item in notes if str(item or "").strip()][-20:]
 
-        merged["version"] = 2
-        merged["user_id"] = (
-            _truncate((data or {}).get("user_id", default["user_id"]), 128)
-            or default["user_id"]
-        )
-        merged["locked_by"] = _truncate(merged.get("locked_by", ""), 200)
-        merged["lock_expires_at"] = _truncate(merged.get("lock_expires_at", ""), 64)
-        merged["last_update"] = (
-            _truncate(merged.get("last_update", _now_iso()), 64) or _now_iso()
-        )
-        merged["last_error"] = _truncate(merged.get("last_error", ""), 1000)
-        return merged
+        return {
+            "version": 2,
+            "locked_by": _truncate(merged.get("locked_by", ""), 200),
+            "lock_expires_at": _truncate(merged.get("lock_expires_at", ""), 64),
+            "last_update": _truncate(merged.get("last_update", _now_iso()), 64)
+            or _now_iso(),
+            "last_error": _truncate(merged.get("last_error", ""), 1000),
+            "heartbeat": heartbeat,
+            "delivery": delivery,
+            "session": session,
+            "migration_notes": notes,
+        }
 
-    def _normalize_spec(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        default = self._default_spec(user_id)
-        merged = dict(default)
-        merged.update(data or {})
-
-        active = dict(default["active_hours"])
-        active.update((data or {}).get("active_hours") or {})
-        active["start"] = (
-            _truncate(active.get("start", self.default_active_start), 5)
-            or self.default_active_start
-        )
-        active["end"] = (
-            _truncate(active.get("end", self.default_active_end), 5)
-            or self.default_active_end
-        )
-
-        merged["version"] = 2
-        merged["user_id"] = (
-            _truncate((data or {}).get("user_id", default["user_id"]), 128)
-            or default["user_id"]
-        )
-        merged["every"] = _normalize_every(str(merged.get("every", self.default_every)))
-        merged["target"] = (
-            _truncate(merged.get("target", self.default_target), 40)
-            or self.default_target
-        )
-        merged["active_hours"] = active
-        merged["paused"] = bool(merged.get("paused", False))
-        merged["updated_at"] = (
-            _truncate(merged.get("updated_at", _now_iso()), 64) or _now_iso()
-        )
-        return merged
-
-    def _parse_markdown(self, text: str) -> Tuple[Dict[str, Any], List[str]]:
-        data: Dict[str, Any] = {}
-        checklist: List[str] = []
-        raw = text or ""
-
+    def _parse_markdown(self, text: str) -> tuple[dict[str, Any], list[str]]:
+        data: dict[str, Any] = {}
+        checklist: list[str] = []
+        raw = str(text or "")
         body = raw
         if raw.startswith("---"):
             parts = raw.split("---", 2)
@@ -523,7 +318,6 @@ class HeartbeatStore:
                 except Exception:
                     data = {}
                 body = parts[2]
-
         in_checklist = False
         for line in body.splitlines():
             stripped = line.strip()
@@ -536,18 +330,16 @@ class HeartbeatStore:
                     checklist.append(item)
             elif in_checklist and stripped.startswith("#"):
                 break
-
         return data, checklist
 
-    def _render_markdown(self, spec: Dict[str, Any], checklist: List[str]) -> str:
-        payload = self._normalize_spec(str(spec.get("user_id", "")), spec)
+    def _render_markdown(self, spec: dict[str, Any], checklist: list[str]) -> str:
+        payload = self._normalize_spec(spec)
         header = yaml.safe_dump(
             payload,
             allow_unicode=True,
             sort_keys=False,
             default_flow_style=False,
         ).strip()
-
         lines = ["# Heartbeat checklist", ""]
         if checklist:
             for item in checklist:
@@ -559,19 +351,17 @@ class HeartbeatStore:
         body = "\n".join(lines).rstrip() + "\n"
         return f"---\n{header}\n---\n\n{body}"
 
-    def _is_legacy_heartbeat(self, data: Dict[str, Any], raw_text: str) -> bool:
+    def _is_legacy_heartbeat(self, data: dict[str, Any], raw_text: str) -> bool:
         if "tasks" in data:
             return True
         if int(data.get("version", 1) or 1) == 2:
             return False
         lowered = raw_text.lower()
-        if "## events" in lowered or "# heartbeat" in lowered:
-            return True
-        return False
+        return "## events" in lowered or "# heartbeat" in lowered
 
-    def _summarize_legacy(self, data: Dict[str, Any], raw_text: str) -> str:
+    def _summarize_legacy(self, data: dict[str, Any], raw_text: str) -> str:
         tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
-        summary_parts: List[str] = []
+        summary_parts: list[str] = []
         if tasks:
             summary_parts.append(f"legacy tasks={len(tasks)}")
             latest = tasks[-1]
@@ -579,11 +369,11 @@ class HeartbeatStore:
                 latest_id = _truncate(latest.get("id", ""), 30)
                 latest_status = _truncate(latest.get("status", ""), 20)
                 summary_parts.append(f"latest={latest_id}:{latest_status}")
-        event_lines = []
-        for line in raw_text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("- "):
-                event_lines.append(stripped[2:].strip())
+        event_lines = [
+            line.strip()[2:].strip()
+            for line in raw_text.splitlines()
+            if line.strip().startswith("- ")
+        ]
         if event_lines:
             summary_parts.append(f"legacy_events={len(event_lines)}")
             summary_parts.append(f"tail={_truncate(event_lines[-1], 180)}")
@@ -591,21 +381,8 @@ class HeartbeatStore:
             summary_parts.append("legacy heartbeat payload migrated")
         return "; ".join(summary_parts)
 
-    def _legacy_shared_checklist(
-        self, user_id: str, parsed: Dict[str, Any], checklist: List[str]
-    ) -> List[str]:
-        normalized_user_id = self._normalize_user_id(user_id)
-        by_user = parsed.get("checklist_by_user")
-        if isinstance(by_user, dict):
-            rows = by_user.get(normalized_user_id)
-            if isinstance(rows, list):
-                return [str(item).strip() for item in rows if str(item or "").strip()]
-        if str(parsed.get("user_id") or "").strip() == normalized_user_id:
-            return list(checklist)
-        return []
-
     @staticmethod
-    def _read_json_payload(path: Path) -> Dict[str, Any] | None:
+    def _read_json_payload(path: Path) -> dict[str, Any] | None:
         if not path.exists():
             return None
         try:
@@ -616,300 +393,211 @@ class HeartbeatStore:
             return None
         return loaded
 
-    def _read_legacy_shared_status_payload(self) -> Dict[str, Any] | None:
-        return self._read_json_payload(self._legacy_shared_status_path())
-
-    def _legacy_shared_status(
-        self, user_id: str, payload: Dict[str, Any] | None = None
-    ) -> Dict[str, Any] | None:
-        loaded = (
-            payload
-            if isinstance(payload, dict)
-            else self._read_legacy_shared_status_payload()
-        )
-        if not isinstance(loaded, dict):
-            return None
-
-        normalized_user_id = self._normalize_user_id(user_id)
-        owns_top_level_status = (
-            str(loaded.get("user_id") or "").strip() == normalized_user_id
-        )
-        status = dict(loaded) if owns_top_level_status else {}
-        for source_key, target_key in (
-            ("heartbeat_by_user", "heartbeat"),
-            ("delivery_by_user", "delivery"),
-            ("session_by_user", "session"),
-        ):
-            scoped = loaded.get(source_key)
-            if not isinstance(scoped, dict):
+    def _heartbeat_candidates(self) -> list[Path]:
+        docs_root = self._docs_root()
+        paths: list[Path] = []
+        canonical = self.heartbeat_path(self.scope)
+        if canonical.exists():
+            paths.append(canonical)
+        for path in sorted(docs_root.glob("HEARTBEAT*.md")):
+            resolved = path.resolve()
+            if not resolved.is_file():
                 continue
-            scoped_value = scoped.get(normalized_user_id)
-            if isinstance(scoped_value, dict):
-                status[target_key] = scoped_value
-        status["user_id"] = normalized_user_id
-        return self._normalize_status(normalized_user_id, status)
+            if resolved == canonical:
+                continue
+            if resolved.name.endswith(".v1.bak.md"):
+                continue
+            paths.append(resolved)
+        for path in sorted(self.root.rglob("HEARTBEAT.md")):
+            resolved = path.resolve()
+            if resolved not in paths:
+                paths.append(resolved)
+        return paths
 
-    def _legacy_shared_owner_ids(
-        self, parsed: Dict[str, Any], status_payload: Dict[str, Any] | None
-    ) -> set[str]:
-        owners: set[str] = set()
+    def _status_candidates(self) -> list[Path]:
+        canonical = self.status_path(self.scope)
+        paths: list[Path] = []
+        if canonical.exists():
+            paths.append(canonical)
+        for path in sorted(self.root.rglob("STATUS.json")):
+            resolved = path.resolve()
+            if resolved == canonical:
+                continue
+            paths.append(resolved)
+        return paths
 
-        def add_owner(value: Any) -> None:
-            owner = str(value or "").strip()
-            if owner and owner != self.shared_dir_name:
-                owners.add(owner)
+    def _has_existing_state_unlocked(self) -> bool:
+        return bool(self._heartbeat_candidates() or self._status_candidates())
 
-        add_owner(parsed.get("user_id"))
-        for key in ("spec_by_user", "checklist_by_user"):
-            scoped = parsed.get(key)
-            if isinstance(scoped, dict):
-                for owner_id in scoped.keys():
-                    add_owner(owner_id)
+    def _choose_best_heartbeat(self) -> tuple[dict[str, Any], list[str], list[str]]:
+        default_spec = self._default_spec()
+        best_spec = default_spec
+        best_checklist: list[str] = []
+        notes: list[str] = []
+        best_score = -1.0
+        for path in self._heartbeat_candidates():
+            try:
+                raw_text = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            parsed, checklist = self._parse_markdown(raw_text)
+            entry_notes: list[str] = []
+            if self._is_legacy_heartbeat(parsed, raw_text):
+                backup = self.backup_legacy_path(self.scope)
+                if not backup.exists():
+                    backup.write_text(raw_text, encoding="utf-8")
+                entry_notes.append(f"{_now_iso()} | {self._summarize_legacy(parsed, raw_text)}")
+                parsed = default_spec
+                checklist = []
+            spec = self._normalize_spec(parsed)
+            try:
+                mtime_score = path.stat().st_mtime
+            except Exception:
+                mtime_score = 0.0
+            score = (len(checklist) * 10_000_000.0) + mtime_score
+            if score <= best_score:
+                continue
+            best_score = score
+            best_spec = spec
+            best_checklist = checklist
+            notes = entry_notes
+        return best_spec, best_checklist, notes
 
-        if isinstance(status_payload, dict):
-            add_owner(status_payload.get("user_id"))
-            for key in ("heartbeat_by_user", "delivery_by_user", "session_by_user"):
-                scoped = status_payload.get(key)
-                if isinstance(scoped, dict):
-                    for owner_id in scoped.keys():
-                        add_owner(owner_id)
+    def _choose_best_status(self) -> tuple[dict[str, Any], list[str]]:
+        best_status = self._default_status()
+        notes: list[str] = []
+        best_score = -1.0
+        for path in self._status_candidates():
+            payload = self._read_json_payload(path)
+            if payload is None:
+                continue
+            status = self._normalize_status(payload)
+            try:
+                mtime_score = path.stat().st_mtime
+            except Exception:
+                mtime_score = 0.0
+            score = mtime_score
+            if score <= best_score:
+                continue
+            best_score = score
+            best_status = status
+            notes = []
+        return best_status, notes
 
-        return owners
-
-    def _has_explicit_legacy_owner(
-        self,
-        user_id: str,
-        parsed: Dict[str, Any],
-        status_payload: Dict[str, Any] | None,
-    ) -> bool:
-        normalized_user_id = self._normalize_user_id(user_id)
-        return normalized_user_id in self._legacy_shared_owner_ids(
-            parsed, status_payload
-        )
-
-    def _legacy_shared_state(
-        self, user_id: str
-    ) -> Tuple[Dict[str, Any], List[str], Dict[str, Any]] | None:
-        return self._legacy_state_from_paths(
-            user_id,
-            self._legacy_shared_heartbeat_path(),
-            self._legacy_shared_status_path(),
-        )
-
-    def _legacy_state_from_paths(
-        self, user_id: str, hb_path: Path, status_path: Path
-    ) -> Tuple[Dict[str, Any], List[str], Dict[str, Any]] | None:
-        status_payload = self._read_json_payload(status_path)
-        if not hb_path.exists() and status_payload is None:
-            return None
-
-        raw_text = hb_path.read_text(encoding="utf-8") if hb_path.exists() else ""
-        parsed, checklist = self._parse_markdown(raw_text)
-        normalized_user_id = self._normalize_user_id(user_id)
-        ownership_source = parsed
-        migration_note = ""
-
-        if raw_text and self._is_legacy_heartbeat(parsed, raw_text):
-            backup = self.backup_legacy_path(normalized_user_id)
-            if not backup.exists():
-                backup.write_text(raw_text, encoding="utf-8")
-            migration_note = self._summarize_legacy(parsed, raw_text)
-            parsed = self._default_spec(normalized_user_id)
-            checklist = []
-
-        if not self._has_explicit_legacy_owner(
-            user_id, ownership_source, status_payload
-        ):
-            return None
-
-        status = self._legacy_shared_status(user_id, status_payload)
-
-        spec_source = parsed
-        spec_by_user = parsed.get("spec_by_user")
-        if isinstance(spec_by_user, dict):
-            scoped_spec = spec_by_user.get(normalized_user_id)
-            if isinstance(scoped_spec, dict):
-                spec_source = scoped_spec
-            elif str(parsed.get("user_id") or "").strip() != normalized_user_id:
-                spec_source = {}
-        elif str(parsed.get("user_id") or "").strip() != normalized_user_id:
-            spec_source = {}
-        spec = self._normalize_spec(normalized_user_id, spec_source)
-        scoped_checklist = self._legacy_shared_checklist(
-            normalized_user_id, parsed, checklist
-        )
-        status = status or self._default_status(normalized_user_id)
-        if migration_note:
-            notes = status.get("migration_notes")
-            if not isinstance(notes, list):
-                notes = []
-            notes.append(f"{_now_iso()} | {migration_note}")
-            status["migration_notes"] = notes[-20:]
-            status["last_update"] = _now_iso()
-        return spec, scoped_checklist, status
-
-    def _legacy_user_state(
-        self, user_id: str
-    ) -> Tuple[Dict[str, Any], List[str], Dict[str, Any]] | None:
-        for legacy_dir in self._legacy_user_dirs(user_id):
-            legacy_state = self._legacy_state_from_paths(
-                user_id,
-                legacy_dir / "HEARTBEAT.md",
-                legacy_dir / "STATUS.json",
-            )
-            if legacy_state is not None:
-                return legacy_state
-        return None
-
-    def _read_status_raw_unlocked(self, user_id: str) -> Dict[str, Any]:
-        path = self.status_path(user_id)
-        if not path.exists():
-            data = self._default_status(user_id)
-            path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            return data
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(loaded, dict):
-                loaded = {}
-        except Exception:
-            loaded = {}
-        normalized = self._normalize_status(user_id, loaded)
+    def _write_status_unlocked(self, status: dict[str, Any]) -> dict[str, Any]:
+        path = self.status_path(self.scope)
+        normalized = self._normalize_status(status)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(normalized, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
         return normalized
 
-    def _write_status_unlocked(self, user_id: str, status: Dict[str, Any]) -> None:
-        path = self.status_path(user_id)
-        normalized = self._normalize_status(user_id, status)
-        path.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+    def _cleanup_legacy_layout_unlocked(self) -> int:
+        canonical_hb = self.heartbeat_path(self.scope)
+        canonical_status = self.status_path(self.scope)
+        removed = 0
 
-    def _ensure_user_files_unlocked(
-        self, user_id: str
-    ) -> Tuple[Dict[str, Any], List[str], Dict[str, Any]]:
-        hb_path = self.heartbeat_path(user_id)
-        status_path = self.status_path(user_id)
+        for path in self._heartbeat_candidates():
+            if path == canonical_hb:
+                continue
+            with contextlib.suppress(Exception):
+                path.unlink()
+                removed += 1
 
-        if not hb_path.exists() and not status_path.exists():
-            legacy_state = self._legacy_user_state(user_id)
-            if legacy_state is None:
-                legacy_state = self._legacy_shared_state(user_id)
-            if legacy_state is not None:
-                spec, checklist, status = legacy_state
-                hb_path.write_text(
-                    self._render_markdown(spec, checklist), encoding="utf-8"
-                )
-                self._write_status_unlocked(user_id, status)
-                return spec, checklist, self._read_status_raw_unlocked(user_id)
+        for path in self._status_candidates():
+            if path == canonical_status:
+                continue
+            with contextlib.suppress(Exception):
+                path.unlink()
+                removed += 1
 
-        status = self._read_status_raw_unlocked(user_id)
-        if not hb_path.exists():
-            spec = self._default_spec(user_id)
-            checklist: List[str] = []
-            hb_path.write_text(self._render_markdown(spec, checklist), encoding="utf-8")
-            return spec, checklist, status
+        for marker in sorted(self.root.rglob(".legacy-import-complete")):
+            with contextlib.suppress(Exception):
+                marker.unlink()
+                removed += 1
 
-        raw_text = hb_path.read_text(encoding="utf-8")
-        parsed, checklist = self._parse_markdown(raw_text)
+        for child in sorted(self.root.iterdir(), reverse=True):
+            if child == canonical_status:
+                continue
+            if child.is_file():
+                if child.name == "STATUS.json":
+                    continue
+                with contextlib.suppress(Exception):
+                    child.unlink()
+                    removed += 1
+                continue
+            if child.is_dir():
+                with contextlib.suppress(Exception):
+                    shutil.rmtree(child)
+                    removed += 1
+        return removed
 
-        migration_note = ""
-        if self._is_legacy_heartbeat(parsed, raw_text):
-            backup = self.backup_legacy_path(user_id)
-            if not backup.exists():
-                backup.write_text(raw_text, encoding="utf-8")
-            migration_note = self._summarize_legacy(parsed, raw_text)
-            parsed = self._default_spec(user_id)
-            checklist = []
-
-        spec = self._normalize_spec(user_id, parsed)
-        hb_path.write_text(self._render_markdown(spec, checklist), encoding="utf-8")
-
-        if migration_note:
-            notes = status.get("migration_notes")
-            if not isinstance(notes, list):
-                notes = []
-            notes.append(f"{_now_iso()} | {migration_note}")
+    def _ensure_canonical_unlocked(
+        self,
+        *,
+        materialize: bool = True,
+    ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+        if not materialize and not self._has_existing_state_unlocked():
+            return self._default_spec(), [], self._default_status()
+        self.root.mkdir(parents=True, exist_ok=True)
+        spec, checklist, hb_notes = self._choose_best_heartbeat()
+        status, status_notes = self._choose_best_status()
+        notes = list(status.get("migration_notes") or [])
+        notes.extend(hb_notes)
+        notes.extend(status_notes)
+        if notes:
             status["migration_notes"] = notes[-20:]
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
-            status = self._read_status_raw_unlocked(user_id)
-
-        return spec, checklist, status
+        canonical_hb = self.heartbeat_path(self.scope)
+        canonical_hb.write_text(
+            self._render_markdown(spec, checklist),
+            encoding="utf-8",
+        )
+        normalized_status = self._write_status_unlocked(status)
+        return self._normalize_spec(spec), list(checklist), normalized_status
 
     async def ensure_user_files(self, user_id: str) -> None:
-        async with self._user_lock(user_id):
-            self._ensure_user_files_unlocked(user_id)
+        _ = user_id
+        async with self._scope_lock():
+            self._ensure_canonical_unlocked()
 
-    async def get_state(self, user_id: str) -> Dict[str, Any]:
-        async with self._user_lock(user_id):
-            spec, checklist, status = self._ensure_user_files_unlocked(user_id)
+    async def get_state(self, user_id: str) -> dict[str, Any]:
+        _ = user_id
+        async with self._scope_lock():
+            spec, checklist, status = self._ensure_canonical_unlocked()
             return {
                 "spec": spec,
                 "checklist": checklist,
                 "status": status,
             }
 
-    async def list_users(self) -> List[str]:
-        await self.normalize_runtime_tree()
-        users: set[str] = set()
-        for legacy_dir in self._legacy_user_dirs():
-            try:
-                users.add(legacy_dir.resolve().relative_to(self.root).as_posix())
-            except Exception:
-                continue
-
-        for path in self._list_heartbeat_docs():
-            user_id = self._heartbeat_doc_user_id(path)
-            if user_id:
-                users.add(user_id)
-
-        if self.root.exists():
-            for child in self.root.iterdir():
-                if (
-                    child.is_dir()
-                    and child.name != self.shared_dir_name
-                    and (
-                        child.name.startswith("uid=")
-                        or (child / "HEARTBEAT.md").exists()
-                        or (child / "STATUS.json").exists()
-                    )
-                ):
-                    users.add(_decode_user_dir_name(child.name) or child.name)
-
-        shared_hb = self._legacy_shared_heartbeat_path()
-        parsed: Dict[str, Any] = {}
-        if shared_hb.exists():
-            parsed, _checklist = self._parse_markdown(
-                shared_hb.read_text(encoding="utf-8")
-            )
-
-        status_payload = self._read_legacy_shared_status_payload()
-        users.update(self._legacy_shared_owner_ids(parsed, status_payload))
-
-        return sorted(users)
+    async def list_users(self) -> list[str]:
+        async with self._scope_lock():
+            return [self.scope] if self._has_existing_state_unlocked() else []
 
     async def compact_user(self, user_id: str) -> None:
-        async with self._user_lock(user_id):
-            spec, checklist, status = self._ensure_user_files_unlocked(user_id)
+        _ = user_id
+        async with self._scope_lock():
+            spec, checklist, status = self._ensure_canonical_unlocked()
             spec["updated_at"] = _now_iso()
-            self.heartbeat_path(user_id).write_text(
-                self._render_markdown(spec, checklist), encoding="utf-8"
+            self.heartbeat_path(self.scope).write_text(
+                self._render_markdown(spec, checklist),
+                encoding="utf-8",
             )
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
 
     async def compact_all_users(self) -> int:
         await self.normalize_runtime_tree()
         users = await self.list_users()
-        for user_id in users:
-            await self.compact_user(user_id)
+        if not users:
+            return 0
+        await self.compact_user(self.scope)
         return len(users)
 
-    async def get_heartbeat_spec(self, user_id: str) -> Dict[str, Any]:
+    async def get_heartbeat_spec(self, user_id: str) -> dict[str, Any]:
         state = await self.get_state(user_id)
         spec = dict(state["spec"])
         spec["checklist"] = list(state["checklist"])
@@ -924,9 +612,10 @@ class HeartbeatStore:
         active_start: str | None = None,
         active_end: str | None = None,
         paused: bool | None = None,
-    ) -> Dict[str, Any]:
-        async with self._user_lock(user_id):
-            spec, checklist, status = self._ensure_user_files_unlocked(user_id)
+    ) -> dict[str, Any]:
+        _ = user_id
+        async with self._scope_lock():
+            spec, checklist, status = self._ensure_canonical_unlocked()
             if every is not None:
                 spec["every"] = _normalize_every(every)
             if target is not None:
@@ -940,47 +629,52 @@ class HeartbeatStore:
             if paused is not None:
                 spec["paused"] = bool(paused)
             spec["updated_at"] = _now_iso()
-            self.heartbeat_path(user_id).write_text(
-                self._render_markdown(spec, checklist), encoding="utf-8"
+            self.heartbeat_path(self.scope).write_text(
+                self._render_markdown(spec, checklist),
+                encoding="utf-8",
             )
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
-            normalized = self._normalize_spec(user_id, spec)
-            normalized["checklist"] = checklist
+            self._write_status_unlocked(status)
+            normalized = self._normalize_spec(spec)
+            normalized["checklist"] = list(checklist)
             return normalized
 
-    async def list_checklist(self, user_id: str) -> List[str]:
+    async def list_checklist(self, user_id: str) -> list[str]:
         state = await self.get_state(user_id)
         return list(state["checklist"])
 
-    async def add_checklist_item(self, user_id: str, item: str) -> List[str]:
+    async def add_checklist_item(self, user_id: str, item: str) -> list[str]:
+        _ = user_id
         normalized = _truncate(item, 400)
         if not normalized:
-            return await self.list_checklist(user_id)
-        async with self._user_lock(user_id):
-            spec, checklist, status = self._ensure_user_files_unlocked(user_id)
+            return await self.list_checklist(self.scope)
+        async with self._scope_lock():
+            spec, checklist, status = self._ensure_canonical_unlocked()
             if normalized not in checklist:
                 checklist.append(normalized)
                 spec["updated_at"] = _now_iso()
-                self.heartbeat_path(user_id).write_text(
-                    self._render_markdown(spec, checklist), encoding="utf-8"
+                self.heartbeat_path(self.scope).write_text(
+                    self._render_markdown(spec, checklist),
+                    encoding="utf-8",
                 )
                 status["last_update"] = _now_iso()
-                self._write_status_unlocked(user_id, status)
-            return checklist
+                self._write_status_unlocked(status)
+            return list(checklist)
 
-    async def remove_checklist_item(self, user_id: str, index: int) -> List[str]:
-        async with self._user_lock(user_id):
-            spec, checklist, status = self._ensure_user_files_unlocked(user_id)
+    async def remove_checklist_item(self, user_id: str, index: int) -> list[str]:
+        _ = user_id
+        async with self._scope_lock():
+            spec, checklist, status = self._ensure_canonical_unlocked()
             if 1 <= index <= len(checklist):
                 checklist.pop(index - 1)
                 spec["updated_at"] = _now_iso()
-                self.heartbeat_path(user_id).write_text(
-                    self._render_markdown(spec, checklist), encoding="utf-8"
+                self.heartbeat_path(self.scope).write_text(
+                    self._render_markdown(spec, checklist),
+                    encoding="utf-8",
                 )
                 status["last_update"] = _now_iso()
-                self._write_status_unlocked(user_id, status)
-            return checklist
+                self._write_status_unlocked(status)
+            return list(checklist)
 
     async def mark_heartbeat_run(
         self,
@@ -988,25 +682,24 @@ class HeartbeatStore:
         result: str,
         *,
         run_at: str | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
+        _ = user_id
         stamp = run_at or _now_iso()
-        async with self._user_lock(user_id):
-            spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
+        async with self._scope_lock():
+            spec, _checklist, status = self._ensure_canonical_unlocked()
             every_sec = _parse_every_seconds(spec.get("every", self.default_every))
             run_dt = _parse_iso(stamp) or _now_local()
             next_due = (run_dt + timedelta(seconds=every_sec)).isoformat(
                 timespec="seconds"
             )
-            level = self.classify_result(result)
-
-            heartbeat = status.get("heartbeat") or {}
+            heartbeat = dict(status.get("heartbeat") or {})
             heartbeat["last_run_at"] = stamp
             heartbeat["last_result"] = _truncate(result, 4000)
             heartbeat["next_due_at"] = next_due
-            heartbeat["last_level"] = level
+            heartbeat["last_level"] = self.classify_result(result)
             status["heartbeat"] = heartbeat
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
             return dict(heartbeat)
 
     @staticmethod
@@ -1036,12 +729,13 @@ class HeartbeatStore:
         return "NOTICE"
 
     async def normalize_runtime_tree(self) -> int:
-        legacy_dirs = self._legacy_user_dirs()
-        if not legacy_dirs:
-            return 0
-        return len(legacy_dirs)
+        async with self._scope_lock():
+            if not self._has_existing_state_unlocked():
+                return 0
+            self._ensure_canonical_unlocked()
+            return self._cleanup_legacy_layout_unlocked()
 
-    async def get_delivery_target(self, user_id: str) -> Dict[str, str]:
+    async def get_delivery_target(self, user_id: str) -> dict[str, str]:
         state = await self.get_state(user_id)
         delivery = state["status"].get("delivery") or {}
         return {
@@ -1052,39 +746,42 @@ class HeartbeatStore:
     async def set_delivery_target(
         self, user_id: str, platform: str, chat_id: str
     ) -> None:
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
-            delivery = status.get("delivery") or {}
+        _ = user_id
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
+            delivery = dict(status.get("delivery") or {})
             delivery["last_platform"] = _truncate(platform, 64)
             delivery["last_chat_id"] = _truncate(chat_id, 128)
             status["delivery"] = delivery
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
 
-    async def get_session_active_task(self, user_id: str) -> Dict[str, Any] | None:
+    async def get_session_active_task(self, user_id: str) -> dict[str, Any] | None:
         state = await self.get_state(user_id)
         task = (state["status"].get("session") or {}).get("active_task")
         return self._normalize_active_task(task)
 
     async def set_session_active_task(
-        self, user_id: str, task: Dict[str, Any]
-    ) -> Dict[str, Any] | None:
+        self, user_id: str, task: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        _ = user_id
         normalized = self._normalize_active_task(task)
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
-            session = status.get("session") or {}
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
+            session = dict(status.get("session") or {})
             session["active_task"] = normalized
             status["session"] = session
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
             return normalized
 
     async def update_session_active_task(
         self, user_id: str, **fields
-    ) -> Dict[str, Any] | None:
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
-            session = status.get("session") or {}
+    ) -> dict[str, Any] | None:
+        _ = user_id
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
+            session = dict(status.get("session") or {})
             current = self._normalize_active_task(session.get("active_task"))
             if current is None:
                 return None
@@ -1113,35 +810,33 @@ class HeartbeatStore:
                     current[key] = fields[key]
             current["updated_at"] = _now_iso()
             terminal_statuses = {"done", "failed", "cancelled", "timed_out"}
-            current_status = str(current.get("status", "")).strip().lower()
-            should_clear = (
-                bool(fields.get("clear_active")) or current_status in terminal_statuses
+            should_clear = bool(fields.get("clear_active")) or (
+                str(current.get("status", "")).strip().lower() in terminal_statuses
             )
-            if should_clear:
-                session["active_task"] = None
-            else:
-                session["active_task"] = self._normalize_active_task(current)
+            session["active_task"] = None if should_clear else self._normalize_active_task(current)
             status["session"] = session
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
             return self._normalize_active_task(session.get("active_task"))
 
     async def clear_session_active_task(self, user_id: str) -> None:
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
-            session = status.get("session") or {}
+        _ = user_id
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
+            session = dict(status.get("session") or {})
             session["active_task"] = None
             status["session"] = session
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
 
     async def append_session_event(self, user_id: str, message: str) -> None:
+        _ = user_id
         note = _truncate(message.replace("\r", " ").replace("\n", " ").strip(), 800)
         if not note:
             return
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
-            session = status.get("session") or {}
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
+            session = dict(status.get("session") or {})
             events = session.get("events")
             if not isinstance(events, list):
                 events = []
@@ -1151,7 +846,7 @@ class HeartbeatStore:
             session["last_event"] = stamped
             status["session"] = session
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
 
     async def get_active_worker_id(self, user_id: str) -> str:
         state = await self.get_state(user_id)
@@ -1160,31 +855,34 @@ class HeartbeatStore:
         return worker_id or "worker-main"
 
     async def set_active_worker_id(self, user_id: str, worker_id: str) -> str:
+        _ = user_id
         safe = _truncate(worker_id, 80) or "worker-main"
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
-            session = status.get("session") or {}
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
+            session = dict(status.get("session") or {})
             session["active_worker_id"] = safe
             status["session"] = session
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
             return safe
 
     async def pulse(self, user_id: str, note: str = "") -> None:
+        _ = user_id
         if note:
-            await self.append_session_event(user_id, f"pulse: {note}")
-        else:
-            async with self._user_lock(user_id):
-                _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
-                status["last_update"] = _now_iso()
-                self._write_status_unlocked(user_id, status)
+            await self.append_session_event(self.scope, f"pulse: {note}")
+            return
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
+            status["last_update"] = _now_iso()
+            self._write_status_unlocked(status)
 
     async def claim_lock(
         self, user_id: str, owner: str, ttl_sec: int | None = None
     ) -> bool:
+        _ = user_id
         lock_ttl = max(1, int(ttl_sec or self.lock_timeout_sec))
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
             current_owner = str(status.get("locked_by", "")).strip()
             expires = _parse_iso(str(status.get("lock_expires_at", "")).strip())
             now = _now_local()
@@ -1196,47 +894,50 @@ class HeartbeatStore:
                 timespec="seconds"
             )
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
             return True
 
     async def refresh_lock(
         self, user_id: str, owner: str, ttl_sec: int | None = None
     ) -> bool:
+        _ = user_id
         lock_ttl = max(1, int(ttl_sec or self.lock_timeout_sec))
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
             if str(status.get("locked_by", "")).strip() != str(owner):
                 return False
             status["lock_expires_at"] = (
                 _now_local() + timedelta(seconds=lock_ttl)
             ).isoformat(timespec="seconds")
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
             return True
 
     async def release_lock(self, user_id: str, owner: str | None = None) -> bool:
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
+        _ = user_id
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
             current_owner = str(status.get("locked_by", "")).strip()
             if owner and current_owner and current_owner != str(owner):
                 return False
             status["locked_by"] = ""
             status["lock_expires_at"] = ""
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
             return True
 
     async def set_last_error(self, user_id: str, error: str) -> None:
-        async with self._user_lock(user_id):
-            _spec, _checklist, status = self._ensure_user_files_unlocked(user_id)
+        _ = user_id
+        async with self._scope_lock():
+            _spec, _checklist, status = self._ensure_canonical_unlocked()
             status["last_error"] = _truncate(error, 1000)
             status["last_update"] = _now_iso()
-            self._write_status_unlocked(user_id, status)
+            self._write_status_unlocked(status)
 
     async def clear_last_error(self, user_id: str) -> None:
         await self.set_last_error(user_id, "")
 
-    def _resolve_now_for_spec(self, spec: Dict[str, Any]) -> datetime:
+    def _resolve_now_for_spec(self, spec: dict[str, Any]) -> datetime:
         tz_name = self.default_timezone
         if ZoneInfo and tz_name:
             try:
@@ -1245,17 +946,17 @@ class HeartbeatStore:
                 return _now_local()
         return _now_local()
 
-    def _is_in_active_hours(self, spec: Dict[str, Any], now_dt: datetime) -> bool:
+    def _is_in_active_hours(self, spec: dict[str, Any], now_dt: datetime) -> bool:
         active = spec.get("active_hours") or {}
         start_t = _parse_hhmm(
             str(active.get("start", self.default_active_start)),
             self.default_active_start,
         )
         end_t = _parse_hhmm(
-            str(active.get("end", self.default_active_end)), self.default_active_end
+            str(active.get("end", self.default_active_end)),
+            self.default_active_end,
         )
         now_t = now_dt.time()
-
         if start_t <= end_t:
             return start_t <= now_t <= end_t
         return now_t >= start_t or now_t <= end_t
@@ -1264,18 +965,15 @@ class HeartbeatStore:
         state = await self.get_state(user_id)
         spec = state["spec"]
         status = state["status"]
-
         if force:
             return True
         if bool(spec.get("paused", False)):
             return False
-
         now_dt = self._resolve_now_for_spec(spec)
         if not self._is_in_active_hours(spec, now_dt):
             return False
-
         every_sec = _parse_every_seconds(spec.get("every", self.default_every))
-        last_run_at = ((status.get("heartbeat") or {}).get("last_run_at", "")).strip()
+        last_run_at = str((status.get("heartbeat") or {}).get("last_run_at", "")).strip()
         last_run = _parse_iso(last_run_at)
         if last_run is None:
             return True

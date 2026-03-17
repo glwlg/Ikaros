@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -343,8 +344,8 @@ async def test_try_handle_waiting_confirmation_treats_text_as_adjustment(monkeyp
 def test_build_runtime_phrase_pools_uses_static_indicator_frames():
     received, loading = ai_handlers._build_runtime_phrase_pools("u-1")
 
-    assert received == ["..."]
-    assert loading == [".", "..", "...", ".."]
+    assert received == ["⏳ 正在处理"]
+    assert loading == ["⏳ 正在处理"]
 
 
 class _DummyOutgoingMessage:
@@ -375,6 +376,8 @@ class _DummyChatContext:
         self.photos: list[tuple[object, object, dict]] = []
         self.documents: list[tuple[object, object, object, dict]] = []
         self.actions: list[tuple[str, dict]] = []
+        self.reactions: list[str] = []
+        self.fail_reaction = False
 
     async def reply(self, payload, **kwargs):
         self.replies.append((payload, dict(kwargs)))
@@ -386,6 +389,13 @@ class _DummyChatContext:
 
     async def send_chat_action(self, action, **kwargs):
         self.actions.append((action, dict(kwargs)))
+        return True
+
+    async def set_message_reaction(self, emoji, **kwargs):
+        _ = kwargs
+        if self.fail_reaction:
+            raise RuntimeError("reaction failed")
+        self.reactions.append(str(emoji))
         return True
 
     async def reply_photo(self, photo, caption=None, **kwargs):
@@ -494,6 +504,86 @@ async def test_handle_ai_chat_does_not_attach_plain_path_from_final_text(
 
 
 @pytest.mark.asyncio
+async def test_handle_ai_chat_slow_manager_path_does_not_send_dot_placeholder(
+    monkeypatch,
+):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+    from handlers import message_utils
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _fake_process_reply_message(_ctx):
+        return False, "", None, ""
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    original_sleep = asyncio.sleep
+    clock = {"now": 1000.0}
+
+    async def _fast_sleep(delay, result=None):
+        clock["now"] += float(delay or 0.0)
+        await original_sleep(0)
+        return result
+
+    async def _fake_handle_message(_ctx, _message_history):
+        await original_sleep(0)
+        await original_sleep(0)
+        yield "最终结果"
+
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(
+        heartbeat_module.heartbeat_store,
+        "set_delivery_target",
+        _noop,
+    )
+    monkeypatch.setattr(ai_handlers, "add_message", _noop)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(
+        message_utils, "process_reply_message", _fake_process_reply_message
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "is_cancelled", lambda _uid: False
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "unregister_task", lambda _uid: None
+    )
+    monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(ai_handlers.time, "time", lambda: clock["now"])
+
+    ctx = _DummyChatContext()
+
+    await ai_handlers.handle_ai_chat(ctx)
+
+    reply_texts = [payload.get("text") if isinstance(payload, dict) else payload for payload, _ in ctx.replies]
+    assert "..." not in reply_texts
+    assert "." not in reply_texts
+    assert ".." not in reply_texts
+    assert reply_texts == ["最终结果"]
+
+
+@pytest.mark.asyncio
 async def test_handle_ai_chat_injects_recent_followup_context(monkeypatch):
     import core.config as config_module
     import core.heartbeat_store as heartbeat_module
@@ -583,3 +673,64 @@ async def test_handle_ai_chat_injects_recent_followup_context(monkeypatch):
 
     assert "任务续接上下文" in captured["last_user_text"]
     assert "当前用户补充：需要" in captured["last_user_text"]
+
+
+@pytest.mark.asyncio
+async def test_handle_ai_chat_reacts_and_skips_immediate_placeholder(monkeypatch):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+    from handlers import message_utils
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _fake_process_reply_message(_ctx):
+        return False, "", None, ""
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    async def _fake_handle_message(_ctx, _message_history):
+        yield "好的，已处理。"
+
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(heartbeat_module.heartbeat_store, "set_delivery_target", _noop)
+    monkeypatch.setattr(ai_handlers, "add_message", _noop)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(
+        message_utils, "process_reply_message", _fake_process_reply_message
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "is_cancelled", lambda _uid: False
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "unregister_task", lambda _uid: None
+    )
+
+    ctx = _DummyChatContext()
+
+    await ai_handlers.handle_ai_chat(ctx)
+
+    assert ctx.reactions == ["👀"]
+    assert ctx.replies
+    assert ctx.replies[0][0] != "..."
+    assert [payload for payload, _kwargs in ctx.replies] == [{"text": "好的，已处理。"}]

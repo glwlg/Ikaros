@@ -42,6 +42,13 @@ class _FakeWorkerTaskStore:
         return dict(kwargs)
 
 
+def _configure_dispatch_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "MANAGER_DISPATCH_ROOT",
+        str((tmp_path / "system" / "dispatch").resolve()),
+    )
+
+
 @pytest.mark.asyncio
 async def test_program_loader_loads_program(tmp_path, monkeypatch):
     programs_root = (tmp_path / "programs").resolve()
@@ -68,6 +75,7 @@ async def test_program_loader_loads_program(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_worker_kernel_executes_task_and_writes_result(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _configure_dispatch_root(tmp_path, monkeypatch)
     monkeypatch.setenv("WORKER_KERNEL_ID", "worker-main")
     monkeypatch.setenv("WORKER_DEFAULT_PROGRAM_ID", "default-worker")
     monkeypatch.setenv("WORKER_DEFAULT_PROGRAM_VERSION", "v1")
@@ -126,6 +134,7 @@ async def test_worker_kernel_executes_task_and_writes_result(tmp_path, monkeypat
 @pytest.mark.asyncio
 async def test_worker_kernel_marks_failed_on_program_error(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _configure_dispatch_root(tmp_path, monkeypatch)
     monkeypatch.setenv("WORKER_KERNEL_ID", "worker-main")
     monkeypatch.setenv("WORKER_DEFAULT_PROGRAM_ID", "default-worker")
     monkeypatch.setenv("WORKER_DEFAULT_PROGRAM_VERSION", "v1")
@@ -177,6 +186,7 @@ async def test_worker_kernel_marks_failed_on_program_error(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_worker_kernel_stops_running_task_after_queue_cancel(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _configure_dispatch_root(tmp_path, monkeypatch)
     monkeypatch.setenv("WORKER_KERNEL_ID", "worker-main")
     monkeypatch.setenv("WORKER_DEFAULT_PROGRAM_ID", "default-worker")
     monkeypatch.setenv("WORKER_DEFAULT_PROGRAM_VERSION", "v1")

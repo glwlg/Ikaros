@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 
 _CONTINUE_CUES = {"继续", "继续执行", "继续重部署", "resume", "continue"}
 _STOP_CUES = {"停止", "取消", "停止任务", "stop", "cancel"}
+_FINAL_DELIVERY_BLOCK_MARKERS = (
+    "不具备直接向用户交付",
+    "不能直接交付给最终用户",
+    "尚未达到可直接交付",
+    "尚未形成用户可读交付",
+    "可交付：当前验证结论",
+    "不可交付：正式版",
+    "如果需要继续",
+    "需重新检索",
+    "回到检索阶段",
+)
 
 
 def _safe_text(value: Any, *, limit: int = 4000) -> str:
@@ -152,6 +163,18 @@ def _blocking_reason(
     if failure_mode == "fatal":
         return diagnostic or f"在“{stage_title or '当前阶段'}”阶段，执行助手遇到不可继续的问题。"
     return diagnostic or f"在“{stage_title or '当前阶段'}”阶段，执行助手暂时没有完成当前目标。"
+
+
+def _final_stage_contradicts_completion(result: Dict[str, Any]) -> bool:
+    text = "\n".join(
+        [
+            _safe_text(_result_text(result), limit=6000),
+            _safe_text(result.get("summary"), limit=2000),
+        ]
+    ).strip()
+    if not text:
+        return False
+    return any(marker in text for marker in _FINAL_DELIVERY_BLOCK_MARKERS)
 
 
 def _closure_cache(metadata: Dict[str, Any]) -> list[dict[str, Any]]:
@@ -441,9 +464,38 @@ class ManagerClosureService:
             limit=200,
         )
         attempt_index = max(1, int(metadata.get("attempt_index") or 1))
+        stage_index, stage_total = get_stage_position(stage_plan, stage_id)
         stage_plan = merge_collected_files(stage_plan, files=_result_files(result))
 
         if bool(result.get("ok")) and _current_attempt_outcome(result) == "done":
+            if (
+                stage_total > 0
+                and stage_index == stage_total
+                and _final_stage_contradicts_completion(result)
+            ):
+                stage_plan = mark_stage_blocked(
+                    stage_plan,
+                    stage_id=stage_id,
+                    summary=_diagnostic_summary(
+                        result=result,
+                        default="最后阶段未产出可直接交付的结果。",
+                    ),
+                    error=_safe_text(_result_text(result), limit=1000),
+                )
+                return await self._set_waiting_user(
+                    user_id=user_id,
+                    session_task_id=session_task_id,
+                    task_inbox_id=task_inbox_id,
+                    task_goal=task_goal,
+                    original_user_request=original_user_request,
+                    stage_plan=stage_plan,
+                    stage_id=stage_id,
+                    stage_title=stage_title,
+                    attempt_index=attempt_index,
+                    result=result,
+                    session_meta=session_meta,
+                    attempt_task_id=task.task_id,
+                )
             summary = _diagnostic_summary(
                 result=result,
                 default="当前阶段已完成。",

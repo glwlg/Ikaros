@@ -4,9 +4,17 @@ from shared.contracts.dispatch import TaskResult
 from shared.queue.dispatch_queue import DispatchQueue
 
 
+def _configure_dispatch_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "MANAGER_DISPATCH_ROOT",
+        str((tmp_path / "system" / "dispatch").resolve()),
+    )
+
+
 @pytest.mark.asyncio
 async def test_dispatch_queue_roundtrip_for_worker_tasks(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _configure_dispatch_root(tmp_path, monkeypatch)
     queue = DispatchQueue()
 
     submitted = await queue.submit_task(
@@ -55,6 +63,7 @@ async def test_dispatch_queue_cancel_for_user_handles_pending_and_running(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _configure_dispatch_root(tmp_path, monkeypatch)
     queue = DispatchQueue()
 
     running_task = await queue.submit_task(

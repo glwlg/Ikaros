@@ -36,10 +36,16 @@ class RuntimeToolAssembler:
         runtime_user_id: str,
         platform_name: str,
         runtime_tool_allowed: RuntimeToolAllowed,
+        allowed_skill_names: Set[str] | None = None,
     ):
         self.runtime_user_id = str(runtime_user_id or "")
         self.platform_name = str(platform_name or "")
         self.runtime_tool_allowed = runtime_tool_allowed
+        self.allowed_skill_names = (
+            {str(item or "").strip() for item in list(allowed_skill_names or []) if str(item or "").strip()}
+            if allowed_skill_names is not None
+            else None
+        )
 
     @staticmethod
     def _tool_name(item: Any) -> str:
@@ -85,7 +91,8 @@ class RuntimeToolAssembler:
     async def assemble(self) -> List[Any]:
         merged_tools: List[Any] = []
         merged_tools.extend(tool_registry.get_core_tools())
-        merged_tools.append(tool_registry.get_load_skill_tool())
+        if self.allowed_skill_names is None or self.allowed_skill_names:
+            merged_tools.append(tool_registry.get_load_skill_tool())
         merged_tools.extend(
             tool_registry.get_skill_tools(runtime_role=self._runtime_role())
         )
@@ -109,6 +116,7 @@ class ToolCallDispatcher:
     append_session_event: AppendSessionEvent
     on_worker_dispatched: OnWorkerDispatched | None = None
     available_tool_names: Set[str] = field(default_factory=set)
+    allowed_skill_names: Set[str] | None = None
 
     def _runtime_only_allowed_tool_names(self) -> Set[str]:
         allowed: Set[str] = set()
@@ -518,6 +526,16 @@ class ToolCallDispatcher:
 
             skill_info = skill_loader.get_skill(skill_name) or {}
             resolved_skill_name = str(skill_info.get("name") or skill_name).strip()
+            if self.allowed_skill_names is not None and resolved_skill_name not in self.allowed_skill_names:
+                return {
+                    "ok": False,
+                    "error_code": "skill_not_in_scope",
+                    "message": (
+                        f"Skill '{resolved_skill_name or skill_name}' is not available "
+                        "for this turn."
+                    ),
+                    "failure_mode": "recoverable",
+                }
             canonical_tool_name = (
                 f"ext_{resolved_skill_name.replace('-', '_')}"
                 if resolved_skill_name

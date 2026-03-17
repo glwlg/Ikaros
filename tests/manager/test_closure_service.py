@@ -288,6 +288,104 @@ async def test_resolve_attempt_success_dispatches_next_stage(monkeypatch, _isola
 
 
 @pytest.mark.asyncio
+async def test_resolve_attempt_final_stage_non_deliverable_text_becomes_waiting_user(
+    _isolated_state,
+):
+    plan = normalize_stage_plan(None, original_request="帮我整理最新 AI 简报")
+    plan["stages"] = [
+        {
+            "id": "stage-1",
+            "title": "验证结果并整理交付",
+            "goal": "整理最终简报",
+            "success_signal": "结果已验证，并具备最终交付所需的摘要或附件。",
+            "executor": "worker",
+            "status": "running",
+            "attempt_count": 1,
+            "last_summary": "",
+            "last_output": "",
+            "last_error": "",
+        }
+    ]
+    plan["current_stage_id"] = "stage-1"
+
+    session = await task_inbox.submit(
+        source="user_chat",
+        goal="帮我整理最新 AI 简报",
+        user_id="u-final",
+        metadata={
+            "original_user_request": "帮我整理最新 AI 简报",
+            "stage_plan": plan,
+        },
+    )
+    await heartbeat_store.set_session_active_task(
+        "u-final",
+        {
+            "id": "mgr-final",
+            "session_task_id": session.task_id,
+            "task_inbox_id": session.task_id,
+            "goal": session.goal,
+            "status": "running",
+            "source": "user_chat",
+            "stage_index": 1,
+            "stage_total": 1,
+            "stage_id": "stage-1",
+            "stage_title": "验证结果并整理交付",
+            "attempt_index": 1,
+            "needs_confirmation": False,
+            "confirmation_deadline": "",
+        },
+    )
+
+    task = TaskEnvelope(
+        task_id="attempt-final-1",
+        worker_id="worker-main",
+        instruction=session.goal,
+        source="manager_dispatch",
+        metadata={
+            "user_id": "u-final",
+            "platform": "telegram",
+            "chat_id": "chat-final",
+            "task_inbox_id": session.task_id,
+            "session_task_id": session.task_id,
+            "staged_session": True,
+            "stage_id": "stage-1",
+            "stage_title": "验证结果并整理交付",
+            "stage_index": 1,
+            "stage_total": 1,
+            "attempt_index": 1,
+            "original_user_request": "帮我整理最新 AI 简报",
+        },
+    )
+    result = {
+        "ok": True,
+        "summary": "当前不具备直接向用户交付“最新 AI 简报”正文的条件。",
+        "payload": {
+            "text": (
+                "## 最终结果\n"
+                "当前不具备直接向用户交付“最新 AI 简报”正文的条件。\n\n"
+                "如果需要继续，我下一步应先重新检索并校验，再产出最终可发给用户的中文简报。"
+            ),
+            "attempt_outcome": "done",
+            "diagnostic_summary": "最后阶段没有形成最终正文。",
+        },
+    }
+
+    decision = await closure_module.manager_closure_service.resolve_attempt(
+        task=task,
+        result=result,
+        platform="telegram",
+        chat_id="chat-final",
+    )
+
+    assert decision["kind"] == "waiting_user"
+    assert "回复“继续”" in decision["text"]
+
+    stored = await task_inbox.get(session.task_id)
+    assert stored is not None
+    assert stored.status == "waiting_user"
+
+
+@pytest.mark.asyncio
 async def test_resolve_attempt_final_completes_session(monkeypatch, _isolated_state, tmp_path):
     report = (tmp_path / "report.md").resolve()
     report.write_text("done", encoding="utf-8")

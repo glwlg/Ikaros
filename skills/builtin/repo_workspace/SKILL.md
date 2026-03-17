@@ -65,3 +65,9 @@ entrypoint: scripts/execute.py
 # Repo Workspace
 
 Manager 用这个技能准备隔离的仓库开发 worktree，避免直接在脏工作区里切分支或覆盖改动。
+
+## CLI
+
+可直接在技能目录执行：
+
+`python scripts/execute.py --action inspect --workspace-id <workspace_id>`

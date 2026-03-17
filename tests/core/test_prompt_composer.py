@@ -178,6 +178,37 @@ def test_prompt_composer_hides_manager_only_roles_from_worker(monkeypatch):
     assert "skill_manager" not in text
 
 
+def test_prompt_composer_filters_skill_catalog_by_allowed_skill_names(monkeypatch):
+    monkeypatch.setattr(
+        "core.skill_loader.skill_loader.get_skills_summary",
+        lambda: [
+            {
+                "name": "stock_watch",
+                "description": "行情查询",
+                "allowed_roles": [],
+            },
+            {
+                "name": "web_search",
+                "description": "网页检索",
+                "allowed_roles": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "core.tool_access_store.tool_access_store.is_tool_allowed",
+        lambda **_kwargs: (True, {}),
+    )
+
+    text = prompt_composer._build_skill_catalog(
+        runtime_user_id="u-1",
+        platform="telegram",
+        allowed_skill_names=["web_search"],
+    )
+
+    assert "web_search" in text
+    assert "stock_watch" not in text
+
+
 def test_prompt_composer_builds_manager_tool_guidance_from_skill_metadata(
     monkeypatch,
 ):
@@ -282,3 +313,38 @@ def test_prompt_composer_mentions_waiting_external_and_task_tracker(monkeypatch)
     assert "waiting_external" in text
     assert "task_tracker" in text
     assert "events.jsonl" in text
+
+
+def test_prompt_composer_manager_contract_blocks_default_memory_file_reads(monkeypatch):
+    monkeypatch.setattr(
+        prompt_composer,
+        "_load_manager_agents_doc",
+        lambda: "旧说明：先读 `data/user/MEMORY.md`。",
+    )
+    monkeypatch.setattr(
+        "core.prompt_composer.soul_store.resolve_for_runtime_user",
+        lambda _user_id: SoulPayload(
+            agent_kind="core-manager",
+            agent_id="core-manager",
+            path="/tmp/SOUL.MD",
+            content="# Core Manager SOUL\n- tone: warm",
+            updated_at="2026-03-17T00:00:00+08:00",
+            latest_version_id="",
+        ),
+    )
+    monkeypatch.setattr(prompt_composer, "_build_skill_catalog", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        prompt_composer,
+        "_build_manager_tool_guidance",
+        lambda **_kwargs: "- 用当前工具完成任务。",
+    )
+
+    text = prompt_composer.compose_base(
+        runtime_user_id="u-1",
+        platform="telegram",
+        mode="manager",
+    )
+
+    assert "【当前会话上下文约束】" in text
+    assert "默认不要再调用 `read` 读取 `data/user/MEMORY.md`" in text
+    assert "本块优先级高于旧文档里任何“先读 MEMORY.md”" in text

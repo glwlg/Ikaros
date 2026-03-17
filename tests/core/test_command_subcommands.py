@@ -40,7 +40,7 @@ def test_heartbeat_and_worker_default_subcommands():
     assert parse_worker_subcommand("/worker help") == ("help", "")
 
 
-def test_stock_rss_schedule_remind_deploy_subcommand_parsers():
+def test_stock_rss_schedule_deploy_subcommand_parsers():
     stock = _load_module(
         "skills/builtin/stock_watch/scripts/execute.py", "stock_watch_subcmd_test"
     )
@@ -50,9 +50,6 @@ def test_stock_rss_schedule_remind_deploy_subcommand_parsers():
     schedule = _load_module(
         "skills/builtin/scheduler_manager/scripts/execute.py",
         "schedule_subcmd_test",
-    )
-    remind = _load_module(
-        "skills/builtin/reminder/scripts/execute.py", "remind_subcmd_test"
     )
     deploy = _load_module(
         "skills/builtin/deployment_manager/scripts/execute.py", "deploy_subcmd_test"
@@ -76,14 +73,6 @@ def test_stock_rss_schedule_remind_deploy_subcommand_parsers():
     )
     assert schedule._parse_schedule_subcommand("/schedule x") == ("help", "")
 
-    assert remind._parse_remind_command("/remind") == ("help", "", "")
-    assert remind._parse_remind_command("/remind help") == ("help", "", "")
-    assert remind._parse_remind_command("/remind 10m 喝水") == (
-        "set",
-        "10m",
-        "喝水",
-    )
-
     assert deploy._parse_deploy_request("/deploy") == ("help", "")
     assert deploy._parse_deploy_request("/deploy help") == ("help", "")
     assert deploy._parse_deploy_request("/deploy run n8n") == ("run", "n8n")
@@ -100,9 +89,6 @@ def test_skill_command_registration_is_converged():
     schedule = _load_module(
         "skills/builtin/scheduler_manager/scripts/execute.py", "schedule_register_test"
     )
-    remind = _load_module(
-        "skills/builtin/reminder/scripts/execute.py", "remind_register_test"
-    )
     deploy = _load_module(
         "skills/builtin/deployment_manager/scripts/execute.py", "deploy_register_test"
     )
@@ -118,10 +104,6 @@ def test_skill_command_registration_is_converged():
     schedule_manager = _FakeAdapterManager()
     schedule.register_handlers(schedule_manager)
     assert schedule_manager.commands == ["schedule"]
-
-    remind_manager = _FakeAdapterManager()
-    remind.register_handlers(remind_manager)
-    assert remind_manager.commands == ["remind"]
 
     deploy_manager = _FakeAdapterManager()
     deploy.register_handlers(deploy_manager)

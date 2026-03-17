@@ -24,6 +24,7 @@ from core.task_manager import task_manager
 from core.tool_access_store import tool_access_store
 from core.tool_broker import ToolBroker
 from services.ai_service import AiService
+from services.skill_router import skill_router
 
 logger = logging.getLogger(__name__)
 
@@ -138,27 +139,26 @@ class AgentOrchestrator:
             "Extension routing text (trimmed): %s",
             routing_text.replace("\n", " | ")[:300],
         )
-        raw_extension_candidates = self.extension_router.route(
-            routing_text, max_candidates=24
-        )
-        extension_candidates = self._apply_extension_candidate_policy(
+        (
             raw_extension_candidates,
-            intent_text=routing_text or last_user_text,
+            extension_candidates,
+            skill_route,
+        ) = await self._resolve_extension_candidates(
+            message_history=message_history,
+            routing_text=routing_text,
+            last_user_text=last_user_text,
+            runtime_user_id=user_id_str,
+            platform_name=platform_name,
         )
-        extension_candidates = [
-            candidate
-            for candidate in extension_candidates
-            if self._runtime_tool_allowed(
-                runtime_user_id=user_id_str,
-                platform=platform_name,
-                tool_name=candidate.tool_name,
-                kind="tool",
-            )
-        ]
+        allowed_skill_names = {candidate.name for candidate in extension_candidates}
         logger.info(
-            "Extension candidates selected: raw=%s filtered=%s",
+            "Extension candidates selected: raw=%s filtered=%s routed=%s route_ok=%s confidence=%.2f reason=%s",
             [candidate.name for candidate in raw_extension_candidates] or "none",
             [candidate.name for candidate in extension_candidates] or "none",
+            skill_route.candidate_skills or "none",
+            skill_route.ok,
+            float(skill_route.confidence),
+            skill_route.reason,
         )
         if extension_candidates:
             candidate_text = ", ".join(
@@ -183,6 +183,7 @@ class AgentOrchestrator:
             runtime_user_id=user_id_str,
             platform_name=platform_name,
             runtime_tool_allowed=self._runtime_tool_allowed,
+            allowed_skill_names=allowed_skill_names,
         )
         tools = await tooling_assembler.assemble()
 
@@ -209,6 +210,7 @@ class AgentOrchestrator:
             todo_mark_step=todo_session.mark_step,
             append_session_event=append_session_event,
             on_worker_dispatched=on_worker_dispatched,
+            allowed_skill_names=allowed_skill_names,
         )
         tool_dispatcher.set_available_tool_names(tooling_assembler.tool_names(tools))
 
@@ -462,23 +464,31 @@ class AgentOrchestrator:
 
             if evolve_ok:
                 # Re-route after evolution and run one more loop automatically.
-                reroute_candidates = self.extension_router.route(
-                    routing_text, max_candidates=24
-                )
-                extension_candidates = self._apply_extension_candidate_policy(
+                (
                     reroute_candidates,
-                    intent_text=routing_text or last_user_text,
+                    extension_candidates,
+                    skill_route,
+                ) = await self._resolve_extension_candidates(
+                    message_history=message_history,
+                    routing_text=routing_text,
+                    last_user_text=last_user_text,
+                    runtime_user_id=user_id_str,
+                    platform_name=platform_name,
                 )
-                extension_candidates = [
-                    candidate
-                    for candidate in extension_candidates
-                    if self._runtime_tool_allowed(
-                        runtime_user_id=user_id_str,
-                        platform=platform_name,
-                        tool_name=candidate.tool_name,
-                        kind="tool",
-                    )
-                ]
+                allowed_skill_names = {
+                    candidate.name for candidate in extension_candidates
+                }
+                logger.info(
+                    "Extension candidates after evolution: raw=%s filtered=%s routed=%s route_ok=%s confidence=%.2f reason=%s",
+                    [candidate.name for candidate in reroute_candidates] or "none",
+                    [candidate.name for candidate in extension_candidates] or "none",
+                    skill_route.candidate_skills or "none",
+                    skill_route.ok,
+                    float(skill_route.confidence),
+                    skill_route.reason,
+                )
+                tooling_assembler.allowed_skill_names = set(allowed_skill_names)
+                tool_dispatcher.allowed_skill_names = set(allowed_skill_names)
                 tools = await tooling_assembler.assemble()
                 tool_dispatcher.set_available_tool_names(
                     tooling_assembler.tool_names(tools)
@@ -622,18 +632,23 @@ class AgentOrchestrator:
         runtime_policy_ctx: Dict[str, Any] | None = None,
         tools: List[Dict[str, Any]] | None = None,
     ) -> str:
-        del extension_candidates
         del intent_text
         agent_kind = (
             str((runtime_policy_ctx or {}).get("agent_kind") or "").strip().lower()
         )
         mode = "worker" if agent_kind == "worker" else "manager"
+        allowed_skill_names = [
+            str(getattr(item, "name", "") or "").strip()
+            for item in list(extension_candidates or [])
+            if str(getattr(item, "name", "") or "").strip()
+        ]
         return prompt_composer.compose_base(
             runtime_user_id=runtime_user_id,
             platform="worker_kernel" if agent_kind == "worker" else "",
             tools=tools or [],
             runtime_policy_ctx=runtime_policy_ctx or {},
             mode=mode,
+            allowed_skill_names=allowed_skill_names,
         )
 
     def _resolve_task_workspace_root(
@@ -687,6 +702,50 @@ class AgentOrchestrator:
             deduped.append(candidate)
             seen_names.add(name)
         return deduped
+
+    async def _resolve_extension_candidates(
+        self,
+        *,
+        message_history: list,
+        routing_text: str,
+        last_user_text: str,
+        runtime_user_id: str,
+        platform_name: str,
+    ) -> tuple[list[ExtensionCandidate], list[ExtensionCandidate], Any]:
+        raw_extension_candidates = self.extension_router.route(
+            routing_text, max_candidates=24
+        )
+        extension_candidates = self._apply_extension_candidate_policy(
+            raw_extension_candidates,
+            intent_text=routing_text or last_user_text,
+        )
+        extension_candidates = [
+            candidate
+            for candidate in extension_candidates
+            if self._runtime_tool_allowed(
+                runtime_user_id=runtime_user_id,
+                platform=platform_name,
+                tool_name=candidate.tool_name,
+                kind="tool",
+            )
+        ]
+
+        skill_route = await skill_router.route(
+            dialog_messages=self._extract_recent_dialog_messages(
+                message_history,
+                max_messages=10,
+            ),
+            candidates=extension_candidates,
+            max_candidates=5,
+        )
+        if skill_route.ok:
+            selected = set(skill_route.candidate_skills)
+            extension_candidates = [
+                candidate
+                for candidate in extension_candidates
+                if candidate.name in selected
+            ]
+        return raw_extension_candidates, extension_candidates, skill_route
 
     def _runtime_tool_allowed(
         self,
@@ -849,6 +908,50 @@ class AgentOrchestrator:
         if len(merged) > max_chars:
             merged = merged[-max_chars:]
         return merged
+
+    def _extract_recent_dialog_messages(
+        self,
+        message_history: list,
+        *,
+        max_messages: int = 10,
+    ) -> list[dict[str, str]]:
+        if max_messages < 1:
+            max_messages = 1
+
+        collected: list[dict[str, str]] = []
+        for msg in reversed(message_history):
+            if isinstance(msg, dict):
+                role = str(msg.get("role") or "").strip().lower()
+                parts = msg.get("parts", [])
+            else:
+                role = str(getattr(msg, "role", "") or "").strip().lower()
+                parts = getattr(msg, "parts", [])
+
+            if role not in {"user", "assistant", "model"}:
+                continue
+
+            texts: List[str] = []
+            for part in parts:
+                if isinstance(part, dict) and part.get("text"):
+                    texts.append(str(part["text"]))
+                else:
+                    part_text = getattr(part, "text", None)
+                    if part_text:
+                        texts.append(str(part_text))
+            merged = "\n".join([item for item in texts if item]).strip()
+            if not merged:
+                continue
+            collected.append(
+                {
+                    "role": "assistant" if role == "model" else role,
+                    "content": merged,
+                }
+            )
+            if len(collected) >= max_messages:
+                break
+
+        collected.reverse()
+        return collected
 
 
 agent_orchestrator = AgentOrchestrator()

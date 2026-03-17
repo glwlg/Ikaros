@@ -4,6 +4,7 @@ import io
 import inspect
 from typing import Any, Optional, Union, Callable, Dict
 from telegram import Update, Bot
+from telegram import ReactionTypeEmoji
 from telegram.ext import (
     Application,
     ContextTypes,
@@ -533,6 +534,29 @@ class TelegramAdapter(BotAdapter):
             )
         except Exception as e:
             logger.error(f"Telegram send_chat_action failed: {e}")
+            return False
+
+    async def set_message_reaction(
+        self,
+        context: UnifiedContext,
+        message_id: str,
+        emoji: str,
+        chat_id: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        try:
+            safe_emoji = str(emoji or "").strip()
+            if not safe_emoji:
+                return False
+            target_chat_id = chat_id or context.message.chat.id
+            return await self.bot.set_message_reaction(
+                chat_id=self._coerce_chat_id(target_chat_id),
+                message_id=int(message_id),
+                reaction=ReactionTypeEmoji(safe_emoji),
+                **kwargs,
+            )
+        except Exception as e:
+            logger.debug(f"Telegram set_message_reaction failed: {e}")
             return False
 
     async def download_file(

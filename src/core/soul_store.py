@@ -16,7 +16,7 @@ DEFAULT_CORE_SOUL = """# Core Manager SOUL
 - **Name**: 伊卡洛斯 (Icarus)
 - **Identity**: 全能生活与工作助手 / 温柔贴心小管家
 - **Core Responsibility**:
-    1. **Context Master**: 在行动前主动加载用户背景。
+    1. **Context Master**: 优先利用当前会话里已注入的背景、记忆种子和摘要，而不是每轮重复翻读记忆文件。
     2. **Orchestrator**: 规划任务并将执行派发给 Worker。
     3. **State Manager**: 维护记忆与配置。
 
@@ -62,6 +62,7 @@ class SoulStore:
     def __init__(self):
         self.kernel_root = (Path(DATA_DIR) / "kernel" / "core-manager").resolve()
         self.userland_root = (Path(DATA_DIR) / "userland" / "workers").resolve()
+        self._payload_cache: Dict[str, tuple[int, SoulPayload]] = {}
         self.kernel_root.mkdir(parents=True, exist_ok=True)
         self.userland_root.mkdir(parents=True, exist_ok=True)
 
@@ -101,11 +102,29 @@ class SoulStore:
     def load_core(self) -> SoulPayload:
         path = self._core_path()
         self._ensure_file(path, DEFAULT_CORE_SOUL, legacy_path=self._legacy_core_path())
-        content = path.read_text(encoding="utf-8")
-        stat = path.stat()
-        return SoulPayload(
+        return self._load_payload(
+            path=path,
             agent_kind="core-manager",
             agent_id="core-manager",
+        )
+
+    def _load_payload(
+        self,
+        *,
+        path: Path,
+        agent_kind: str,
+        agent_id: str,
+    ) -> SoulPayload:
+        stat = path.stat()
+        cache_key = str(path.resolve())
+        mtime_ns = int(stat.st_mtime_ns)
+        cached = self._payload_cache.get(cache_key)
+        if cached and cached[0] == mtime_ns:
+            return cached[1]
+        content = path.read_text(encoding="utf-8")
+        payload = SoulPayload(
+            agent_kind=agent_kind,
+            agent_id=agent_id,
             path=str(path),
             content=content,
             updated_at=datetime.fromtimestamp(stat.st_mtime)
@@ -113,23 +132,21 @@ class SoulStore:
             .isoformat(timespec="seconds"),
             latest_version_id=self._latest_version(path),
         )
+        self._payload_cache[cache_key] = (mtime_ns, payload)
+        return payload
 
     def load_worker(self, worker_id: str) -> SoulPayload:
         safe_id = str(worker_id or "worker-main").strip() or "worker-main"
         path = self._worker_path(safe_id)
         self._ensure_file(path, DEFAULT_WORKER_SOUL)
-        content = path.read_text(encoding="utf-8")
-        stat = path.stat()
-        return SoulPayload(
+        return self._load_payload(
+            path=path,
             agent_kind="worker",
             agent_id=safe_id,
-            path=str(path),
-            content=content,
-            updated_at=datetime.fromtimestamp(stat.st_mtime)
-            .astimezone()
-            .isoformat(timespec="seconds"),
-            latest_version_id=self._latest_version(path),
         )
+
+    def _invalidate_cache(self, path: Path) -> None:
+        self._payload_cache.pop(str(path.resolve()), None)
 
     def update_core(
         self,
@@ -147,6 +164,7 @@ class SoulStore:
             reason=reason,
             category="soul",
         )
+        self._invalidate_cache(path)
         return {
             "path": str(path),
             "previous_version_id": str(result.get("previous_version_id", "")),
@@ -169,28 +187,36 @@ class SoulStore:
             reason=reason,
             category="soul",
         )
+        self._invalidate_cache(path)
         return {
             "path": str(path),
             "previous_version_id": str(result.get("previous_version_id", "")),
         }
 
     def rollback_core(self, version_id: str, *, actor: str = "system") -> bool:
-        return audit_store.rollback(
+        ok = audit_store.rollback(
             self._core_path(),
             version_id,
             actor=actor,
             reason="rollback_core_soul",
         )
+        if ok:
+            self._invalidate_cache(self._core_path())
+        return ok
 
     def rollback_worker(
         self, worker_id: str, version_id: str, *, actor: str = "system"
     ) -> bool:
-        return audit_store.rollback(
-            self._worker_path(worker_id),
+        path = self._worker_path(worker_id)
+        ok = audit_store.rollback(
+            path,
             version_id,
             actor=actor,
             reason="rollback_worker_soul",
         )
+        if ok:
+            self._invalidate_cache(path)
+        return ok
 
     def list_versions(
         self, *, agent_kind: str, worker_id: Optional[str] = None, limit: int = 10

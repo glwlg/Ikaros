@@ -263,6 +263,29 @@ class UnifiedContext:
         """
         return await self._adapter.send_chat_action(self, action, chat_id, **kwargs)
 
+    async def set_message_reaction(
+        self,
+        emoji: str,
+        *,
+        message_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        """
+        React to a message when the platform supports it.
+        Defaults to the current incoming message.
+        """
+        target_message_id = str(message_id or self.message.id or "").strip()
+        if not target_message_id:
+            return False
+        return await self._adapter.set_message_reaction(
+            self,
+            target_message_id,
+            str(emoji or "").strip(),
+            chat_id,
+            **kwargs,
+        )
+
     async def download_file(self, file_id: str, **kwargs) -> bytes:
         """
         Download a file by ID and return bytes.

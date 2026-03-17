@@ -44,6 +44,7 @@ from handlers import (
     handle_feature_input,
     save_feature_command,
     chatlog_command,
+    compact_command,
     stop_command,
     heartbeat_command,
     task_command,
@@ -209,6 +210,7 @@ async def main():
     adapter_manager.on_command("new", handle_new_command, description="开启新对话")
     adapter_manager.on_command("help", help_command, description="使用帮助")
     adapter_manager.on_command("chatlog", chatlog_command, description="检索对话记录")
+    adapter_manager.on_command("compact", compact_command, description="压缩当前对话")
     adapter_manager.on_command("skills", skills_command, description="查看可用技能")
     adapter_manager.on_command(
         "reload_skills", reload_skills_command, description="重载技能"

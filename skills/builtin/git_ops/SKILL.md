@@ -69,3 +69,9 @@ entrypoint: scripts/execute.py
 # Git Ops
 
 Manager 用这个技能直接处理工作区内的 git 读写操作。它默认对 fork 场景友好，适合作为 `repo_workspace` 和 `gh_cli` 之间的代码提交桥梁。
+
+## CLI
+
+可直接在技能目录执行：
+
+`python scripts/execute.py --action status --workspace-id <workspace_id>`

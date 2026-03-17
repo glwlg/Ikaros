@@ -13,6 +13,7 @@ from core.platform.exceptions import MediaProcessingError
 from services.openai_adapter import generate_text
 from user_context import add_message
 from core.platform.models import UnifiedContext, MessageType
+from .ai_handlers import _acknowledge_received
 from .media_utils import extract_media_input
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ async def handle_document(ctx: UnifiedContext) -> None:
     # 检查用户权限
     if not await is_user_allowed(user_id):
         return
+
+    await _acknowledge_received(ctx)
 
     # 检查消息类型
     if ctx.message.type != MessageType.DOCUMENT:

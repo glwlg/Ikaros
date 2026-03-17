@@ -3,6 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
+def _compact_followup_summary(text: str, *, limit: int = 260) -> str:
+    raw = " ".join(str(text or "").split())
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit].rstrip() + "..."
+
+
 def build_session_brief_lines(
     *,
     session_task_id: str = "",
@@ -88,7 +95,9 @@ def format_followup_context(snapshot: Any) -> str:
     session_task_id = str(getattr(snapshot, "session_task_id", "") or "").strip()
     status = str(getattr(snapshot, "status", "") or "").strip() or "completed"
     original_request = str(getattr(snapshot, "original_user_request", "") or "").strip()
-    summary = str(getattr(snapshot, "last_user_visible_summary", "") or "").strip()
+    summary = _compact_followup_summary(
+        str(getattr(snapshot, "last_user_visible_summary", "") or "").strip()
+    )
     stage_index = max(0, int(getattr(snapshot, "stage_index", 0) or 0))
     stage_total = max(0, int(getattr(snapshot, "stage_total", 0) or 0))
     stage_title = str(getattr(snapshot, "stage_title", "") or "").strip()

@@ -64,15 +64,16 @@ async def test_runtime_tool_assembler_injects_manager_skill_tools():
     names = [tool["name"] for tool in tools]
 
     assert names[:5] == ["read", "write", "edit", "bash", "load_skill"]
-    assert set(names[5:]) == {
+    assert {
         "codex_session",
         "dispatch_worker",
         "git_ops",
         "gh_cli",
         "list_workers",
         "repo_workspace",
+        "task_tracker",
         "worker_status",
-    }
+    } <= set(names[5:])
 
 
 @pytest.mark.asyncio

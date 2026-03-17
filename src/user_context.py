@@ -10,7 +10,14 @@ from typing import Any, Literal, TYPE_CHECKING
 from core.state_store import (
     save_message,
     get_session_messages,
+    get_session_entries,
     get_latest_session_id,
+)
+from core.markdown_memory_store import markdown_memory_store
+from services.session_compaction_service import (
+    SESSION_MEMORY_PREFIX,
+    SESSION_SUMMARY_PREFIX,
+    session_compaction_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,7 +54,12 @@ async def get_or_create_session_id(
 
 
 async def get_user_context(
-    context: TelegramContext | UnifiedContext, user_id: int | str
+    context: TelegramContext | UnifiedContext,
+    user_id: int | str,
+    *,
+    limit: int = 100,
+    include_hidden_system: bool = True,
+    auto_compact: bool = True,
 ) -> list[dict]:
     """
     获取用户的对话上下文 (Async)
@@ -56,8 +68,22 @@ async def get_user_context(
         对话历史列表，格式符合当前对话模型输入要求
     """
     session_id = await get_or_create_session_id(context, user_id)
-    # 限制最近 20 条，避免 token 过长
-    return await get_session_messages(user_id, session_id, limit=20)
+    if include_hidden_system:
+        await _ensure_session_memory_seed(context, user_id, session_id)
+    if auto_compact:
+        await session_compaction_service.compact_session(
+            user_id=str(user_id),
+            session_id=session_id,
+            force=False,
+        )
+    return await get_session_messages(
+        user_id,
+        session_id,
+        limit=limit,
+        include_system=include_hidden_system,
+        preserve_system_prefixes=(SESSION_MEMORY_PREFIX, SESSION_SUMMARY_PREFIX),
+        preserve_system_limit=2,
+    )
 
 
 async def add_message(
@@ -71,6 +97,35 @@ async def add_message(
     """
     session_id = await get_or_create_session_id(context, user_id)
     await save_message(user_id, role, content, session_id)
+
+
+async def get_recent_dialog_messages(
+    context: TelegramContext | UnifiedContext,
+    user_id: int | str,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    session_id = await get_or_create_session_id(context, user_id)
+    return await get_session_messages(
+        user_id,
+        session_id,
+        limit=limit,
+        include_system=False,
+    )
+
+
+async def compact_current_session(
+    context: TelegramContext | UnifiedContext,
+    user_id: int | str,
+    *,
+    force: bool = True,
+) -> dict[str, Any]:
+    session_id = await get_or_create_session_id(context, user_id)
+    return await session_compaction_service.compact_session(
+        user_id=str(user_id),
+        session_id=session_id,
+        force=force,
+    )
 
 
 def clear_context(context: TelegramContext | UnifiedContext) -> None:
@@ -91,5 +146,51 @@ async def get_context_length(
     context: TelegramContext | UnifiedContext, user_id: int | str
 ) -> int:
     """获取用户当前上下文的消息数量"""
-    history = await get_user_context(context, user_id)
+    history = await get_user_context(
+        context,
+        user_id,
+        auto_compact=False,
+    )
     return len(history)
+
+
+def _is_private_session_context(context: TelegramContext | UnifiedContext) -> bool:
+    message = getattr(context, "message", None)
+    chat = getattr(message, "chat", None)
+    chat_type = str(getattr(chat, "type", "") or "").strip().lower()
+    if chat_type in {"private", "group", "supergroup", "channel"}:
+        return chat_type == "private"
+    return True
+
+
+async def _ensure_session_memory_seed(
+    context: TelegramContext | UnifiedContext,
+    user_id: int | str,
+    session_id: str,
+) -> None:
+    if not _is_private_session_context(context):
+        return
+    existing_rows = await get_session_entries(user_id, session_id)
+    if any(
+        str(item.get("role") or "").strip().lower() == "system"
+        and str(item.get("content") or "").startswith(SESSION_MEMORY_PREFIX)
+        for item in existing_rows
+    ):
+        return
+    try:
+        memory_snapshot = markdown_memory_store.load_snapshot(
+            str(user_id),
+            include_daily=True,
+            max_chars=2400,
+        )
+    except Exception:
+        memory_snapshot = ""
+    if not str(memory_snapshot or "").strip():
+        return
+    memory_seed = (
+        f"{SESSION_MEMORY_PREFIX}\n"
+        "以下内容仅在本会话开始时加载一次。"
+        "回答用户本人相关问题时优先参考这些事实；如果其中没有答案，请明确说明未知。\n\n"
+        f"{str(memory_snapshot).strip()}"
+    )
+    await save_message(user_id, "system", memory_seed, session_id)

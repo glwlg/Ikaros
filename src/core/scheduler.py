@@ -18,6 +18,7 @@ from core.heartbeat_store import heartbeat_store
 from core.platform.registry import adapter_manager
 from core.platform.models import UnifiedContext
 from core.proactive_delivery import resolve_proactive_target
+from core.state_paths import SINGLE_USER_SCOPE
 from shared.contracts.proactive_delivery_target import normalize_proactive_platform
 
 from core.state_store import (
@@ -265,7 +266,7 @@ async def load_jobs_from_db():
                 run_date=run_time,
                 args=[
                     reminder_id,
-                    row["user_id"],
+                    SINGLE_USER_SCOPE,
                     row["chat_id"],
                     row["message"],
                     platform,
@@ -484,7 +485,7 @@ async def _fetch_feed_updates(
                         else "暂无摘要"
                     )
 
-                    uid = str(sub.get("user_id") or "")
+                    uid = SINGLE_USER_SCOPE
                     plat = str(sub.get("platform") or "telegram")
                     key = (plat, uid)
                     user_updates.setdefault(key, []).append(
@@ -541,17 +542,15 @@ async def _fetch_feed_updates(
 
 
 async def _mark_feed_updates_as_read(pending_updates: list[dict[str, object]]) -> None:
-    seen: set[tuple[str, int]] = set()
+    seen: set[int] = set()
     for update in pending_updates:
-        uid = str(update.get("user_id") or "").strip()
         sub_id = int(update.get("subscription_id") or 0)
-        key = (uid, sub_id)
-        if not uid or sub_id <= 0 or key in seen:
+        if sub_id <= 0 or sub_id in seen:
             continue
-        seen.add(key)
+        seen.add(sub_id)
         try:
             await update_feed_subscription_state(
-                uid,
+                SINGLE_USER_SCOPE,
                 sub_id,
                 last_entry_hash=str(update.get("last_entry_hash") or ""),
                 last_etag=str(update.get("last_etag") or ""),
@@ -559,7 +558,7 @@ async def _mark_feed_updates_as_read(pending_updates: list[dict[str, object]]) -
             )
         except Exception as e:
             logger.error(
-                "Failed to update feed subscription state for %s/%s: %s", uid, sub_id, e
+                "Failed to update feed subscription state for %s: %s", sub_id, e
             )
 
 
@@ -973,7 +972,7 @@ async def reload_scheduler_jobs():
         task_id = task["id"]
         crontab = task["crontab"]
         instruction = task["instruction"]
-        user_id = task.get("user_id", 0)
+        user_id = SINGLE_USER_SCOPE
         platform = task.get("platform", "telegram")
         # SQLite stores boolean as 0/1 usually, ensures compat
         need_push = bool(task.get("need_push", True))

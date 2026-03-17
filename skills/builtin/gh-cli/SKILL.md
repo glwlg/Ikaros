@@ -62,6 +62,12 @@ Comprehensive reference for GitHub CLI (gh) - work seamlessly with GitHub from t
 
 **Version:** 2.85.0 (current as of January 2026)
 
+## Skill CLI
+
+Manager-side direct execution example:
+
+`python scripts/execute.py --action auth_status`
+
 ## Prerequisites
 
 ### Installation

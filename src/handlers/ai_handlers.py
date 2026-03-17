@@ -35,15 +35,14 @@ logger = logging.getLogger(__name__)
 LONG_RESPONSE_FILE_THRESHOLD = 9000
 
 DEFAULT_RECEIVED_PHRASES = [
-    "...",
+    "⏳ 正在处理",
 ]
 
 DEFAULT_LOADING_PHRASES = [
-    ".",
-    "..",
-    "...",
-    "..",
+    "⏳ 正在处理",
 ]
+
+ACK_REACTION_EMOJI = "👀"
 
 
 def _env_int(name: str, default: int, minimum: int) -> int:
@@ -88,6 +87,17 @@ def _stream_cut_index(text: str, max_chars: int) -> int:
     if best >= int(max_chars * 0.35):
         return best
     return max_chars
+
+
+def _message_id_of(message: Any) -> Any:
+    return getattr(message, "message_id", getattr(message, "id", None))
+
+
+async def _acknowledge_received(ctx: UnifiedContext, emoji: str = ACK_REACTION_EMOJI) -> None:
+    try:
+        await ctx.set_message_reaction(emoji)
+    except Exception:
+        logger.debug("Failed to set acknowledgement reaction.", exc_info=True)
 
 
 def _extract_history_text(item: Any) -> tuple[str, str]:
@@ -515,7 +525,12 @@ async def _collect_recent_dialog_context(
     max_chars: int = 1200,
 ) -> str:
     try:
-        history = await get_user_context(ctx, user_id)
+        history = await get_user_context(
+            ctx,
+            user_id,
+            include_hidden_system=False,
+            auto_compact=False,
+        )
     except Exception:
         return ""
     if not history:
@@ -746,7 +761,6 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
     支持引用（回复）包含图片或视频的消息
     """
     user_message = ctx.message.text
-    # Legacy fallbacks
     context = ctx.platform_ctx
 
     chat_id = ctx.message.chat.id
@@ -756,14 +770,14 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
     if not user_message:
         return
 
-    # 检查用户权限
     from core.config import is_user_allowed
 
     if not await is_user_allowed(user_id):
         logger.info("Ignoring unauthorized AI chat from user_id=%s", user_id)
         return
 
-    # Keep heartbeat proactive delivery target aligned with the latest active chat.
+    await _acknowledge_received(ctx)
+
     try:
         from core.heartbeat_store import heartbeat_store
 
@@ -773,10 +787,6 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
     except Exception:
         logger.debug("Failed to update heartbeat delivery target.", exc_info=True)
 
-    # 0. Save user message immediately to ensure persistence even if we return early
-    # Note: We save the raw user message here.
-    # If using history later, we might want to avoid saving duplicates if we constructed a complex prmopt.
-    # But for "chat record", raw input is best.
     await add_message(ctx, user_id, "user", user_message)
 
     if await _try_handle_waiting_confirmation(ctx, user_message):
@@ -785,18 +795,14 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
     if await _try_handle_memory_commands(ctx, user_message):
         return
 
-    # 0.5 Fast-track: Detected video URL -> Show Options (Download vs Summarize)
     from utils import extract_video_url
 
     video_url = extract_video_url(user_message)
     if video_url:
         logger.info(f"Detected video URL: {video_url}, presenting options")
-
-        # Save URL to context for callback access
         if context:
             ctx.user_data["pending_video_url"] = video_url
             logger.info(f"[AIHandler] Set pending_video_url for {user_id}: {video_url}")
-
         await ctx.reply(
             {
                 "text": "🔗 **已识别视频链接**\n\n您可以选择以下操作：",
@@ -818,69 +824,49 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
         )
         return
 
-    memory_snapshot = ""
-
-    # --- Agent Orchestration ---
     from core.agent_orchestrator import agent_orchestrator
-
-    # 1. 检查是否引用了消息 (Reply Context)
     from .message_utils import process_reply_message
 
     extra_context = ""
     has_media, reply_extra_context, media_data, mime_type = await process_reply_message(
         ctx
     )
-
     if reply_extra_context:
         extra_context += reply_extra_context
 
-    # Check if we should abort (e.g. file too big)
     if ctx.message.reply_to_message:
-        r = ctx.message.reply_to_message
-        is_media = r.type in [MessageType.VIDEO, MessageType.AUDIO, MessageType.VOICE]
+        replied = ctx.message.reply_to_message
+        is_media = replied.type in [
+            MessageType.VIDEO,
+            MessageType.AUDIO,
+            MessageType.VOICE,
+        ]
         if is_media and not has_media:
             return
 
     followup_context = await _maybe_bind_recent_followup_context(ctx, user_message)
-
-    # URL 逻辑已移交给 Agent (skill: web_browser, download_video)
-    # 不再进行硬编码预加载或弹窗
-
     received_phrases, loading_phrases = _build_runtime_phrase_pools(str(user_id))
+    default_thinking_text = (
+        "🤔 让我看看引用具体内容..." if has_media else received_phrases[0]
+    )
+    thinking_msg = None
 
-    if not has_media:
-        thinking_msg = await ctx.reply(received_phrases[0])
-    else:
-        thinking_msg = await ctx.reply("🤔 让我看看引用具体内容...")
-
-    # 3. 构建消息上下文 (History)
     final_user_message = user_message
     if extra_context:
         final_user_message = extra_context + "用户请求：" + user_message
-    if memory_snapshot:
-        final_user_message = (
-            "【已检索到用户记忆】\n"
-            f"{memory_snapshot}\n\n"
-            "请先基于上述记忆回答用户本人相关问题；如果记忆中没有对应信息，再明确说明未知。\n"
-            "回答时优先使用已检索到的事实，不要编造未给出的信息。\n\n"
-            f"用户请求：{user_message}"
-        )
     if followup_context:
         final_user_message = (
             f"{followup_context}\n\n当前用户补充：{final_user_message}"
         ).strip()
 
-    # User message already saved at start of function.
-    # await add_message(context, user_id, "user", final_user_message)
-
-    # 发送"正在输入"状态
     await ctx.send_chat_action(action="typing")
 
-    # 共享状态
     state = {
+        "request_started_at": time.time(),
         "last_update_time": time.time(),
         "final_text": "",
         "running": True,
+        "response_visible": False,
         "manager_progress_text": "",
         "manager_progress_task_id": "",
         "manager_progress_draft_id": 0,
@@ -909,43 +895,6 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
             with contextlib.suppress(Exception):
                 manager_progress_thread_id = int(thread_candidate)
 
-    async def loading_animation():
-        """
-        后台动画任务：如果迟迟没有首个可见结果，用省略号做轻量占位。
-        """
-        while state["running"]:
-            await asyncio.sleep(1.2)
-            if not state["running"]:
-                break
-
-            now = time.time()
-            if now - state["last_update_time"] > 2.5:
-                manager_progress_text = str(
-                    state.get("manager_progress_text") or ""
-                ).strip()
-                if manager_progress_text and not state["final_text"]:
-                    try:
-                        await _push_manager_progress_update(force=False)
-                    except Exception as e:
-                        logger.debug(f"Manager progress update failed: {e}")
-                    continue
-
-                if state["final_text"]:
-                    continue
-
-                frame_index = int(state.get("loading_frame_index") or 0)
-                display_text = loading_phrases[frame_index % len(loading_phrases)]
-                state["loading_frame_index"] = frame_index + 1
-
-                try:
-                    msg_id = getattr(
-                        thinking_msg, "message_id", getattr(thinking_msg, "id", None)
-                    )
-                    await ctx.edit_message(msg_id, display_text)
-                except Exception as e:
-                    logger.debug(f"Animation edit failed: {e}")
-
-    # Default to True for backward compatibility or if adapter missing
     can_update = getattr(ctx._adapter, "can_update_message", True)
     stream_segment_enabled = (
         os.getenv("AI_SEGMENT_STREAM_ENABLED", "true").lower() == "true"
@@ -961,6 +910,18 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
     stream_last_sent_ts = 0.0
     stream_locked = False
     thinking_deleted = False
+
+    async def _ensure_thinking_message(initial_text: str | None = None) -> Any:
+        nonlocal thinking_msg
+        if thinking_msg is not None:
+            return thinking_msg
+        if thinking_deleted or state["response_visible"]:
+            return None
+        if time.time() - float(state.get("request_started_at") or 0.0) < 1.0:
+            return None
+        text = str(initial_text or default_thinking_text or "⏳ 正在处理").strip() or "⏳ 正在处理"
+        thinking_msg = await ctx.reply(text)
+        return thinking_msg
 
     async def _push_manager_progress_update(*, force: bool) -> None:
         progress_text = str(state.get("manager_progress_text") or "").strip()
@@ -983,9 +944,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
             task_id = str(state.get("manager_progress_task_id") or "").strip()
             draft_id = int(state.get("manager_progress_draft_id") or 0)
             if not draft_id:
-                seed = (
-                    task_id or f"{chat_id}:{user_id}:{getattr(thinking_msg, 'id', '')}"
-                )
+                seed = task_id or f"{chat_id}:{user_id}:{ctx.message.id or 'incoming'}"
                 draft_id = max(1, zlib.crc32(seed.encode("utf-8")) & 0x7FFFFFFF)
                 state["manager_progress_draft_id"] = draft_id
             await send_draft(
@@ -999,10 +958,11 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
             state["manager_progress_last_sent_at"] = now
             return
 
-        if can_update and not thinking_deleted:
-            msg_id = getattr(
-                thinking_msg, "message_id", getattr(thinking_msg, "id", None)
-            )
+        if can_update and not thinking_deleted and not state["response_visible"]:
+            target = await _ensure_thinking_message(progress_text)
+            msg_id = _message_id_of(target)
+            if msg_id is None:
+                return
             await ctx.edit_message(msg_id, progress_text)
             state["manager_progress_last_rendered"] = progress_text
             state["manager_progress_last_sent_at"] = now
@@ -1099,15 +1059,37 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
         if event_name in manager_progress_event_names:
             await _push_manager_progress_update(force=True)
 
+    async def loading_animation() -> None:
+        while state["running"]:
+            await asyncio.sleep(1.2)
+            if not state["running"]:
+                break
+            if state["response_visible"]:
+                continue
+
+            now = time.time()
+            if now - state["last_update_time"] <= 2.5:
+                continue
+
+            manager_progress_text = str(state.get("manager_progress_text") or "").strip()
+            if manager_progress_text and not state["final_text"]:
+                try:
+                    await _push_manager_progress_update(force=False)
+                except Exception as exc:
+                    logger.debug("Manager progress update failed: %s", exc)
+                continue
+
+            if state["final_text"]:
+                continue
+
+            try:
+                await ctx.send_chat_action(action="typing")
+            except Exception as exc:
+                logger.debug("Typing refresh failed: %s", exc)
+
     async def _flush_stream_buffer(*, force: bool = False) -> None:
-        nonlocal \
-            stream_buffer, \
-            stream_chunks_sent, \
-            stream_last_sent_ts, \
-            thinking_deleted
-        if not stream_segment_enabled or stream_locked:
-            return
-        if not stream_buffer:
+        nonlocal stream_buffer, stream_chunks_sent, stream_last_sent_ts, thinking_deleted
+        if not stream_segment_enabled or stream_locked or not stream_buffer:
             return
         now = time.time()
         if not force and now - stream_last_sent_ts < stream_flush_sec:
@@ -1128,9 +1110,10 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
             if not segment:
                 continue
             await ctx.reply(segment)
+            state["response_visible"] = True
             stream_chunks_sent += 1
             stream_last_sent_ts = time.time()
-            if can_update and not thinking_deleted:
+            if can_update and thinking_msg is not None and not thinking_deleted:
                 try:
                     await thinking_msg.delete()
                     thinking_deleted = True
@@ -1139,12 +1122,8 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
             if not force:
                 return
 
-    # 启动动画任务 (仅当支持消息更新时，也就是非 DingTalk)
-    animation_task = None
-    if can_update:
-        animation_task = asyncio.create_task(loading_animation())
+    animation_task = asyncio.create_task(loading_animation()) if can_update else None
 
-    # --- Task Registration ---
     from core.task_manager import task_manager
 
     current_task = asyncio.current_task()
@@ -1153,11 +1132,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
 
     try:
         message_history = []
-
-        # 构建当前消息
-        current_msg_parts = []
-        current_msg_parts.append({"text": final_user_message})
-
+        current_msg_parts = [{"text": final_user_message}]
         if has_media and media_data:
             current_msg_parts.append(
                 {
@@ -1168,32 +1143,19 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                 }
             )
 
-        # 获取历史上下文
-        # HACK: Because 'add_message' only saves TEXT to DB, we lose the media info if we just fetch from DB.
-        # So we need to:
-        # 1. Fetch history from DB (which now includes the latest text-only message)
-        # 2. POP the last message from history (which is our text-only version)
-        # 3. Append our rich 'current_msg_parts' (with Text + Media)
-
-        history = await get_user_context(ctx, user_id)  # Returns list of dicts
-
-        if history and len(history) > 0 and history[-1]["role"] == "user":
-            # Check if the last DB message matches our current text (sanity check)
+        history = await get_user_context(ctx, user_id)
+        if history and history[-1]["role"] == "user":
             last_db_text = history[-1]["parts"][0]["text"]
             if last_db_text in {user_message, final_user_message}:
-                # Remove it, so we can replace it with the Rich version
                 history.pop()
 
-        # 拼接: History + Current Rich Message
         message_history.extend(history)
         message_history.append({"role": "user", "parts": current_msg_parts})
 
-        # B. 调用 Agent Orchestrator
         final_text_response = ""
-        last_stream_update = 0
+        last_stream_update = 0.0
 
         async for chunk_text in agent_orchestrator.handle_message(ctx, message_history):
-            # 检查任务是否被取消（虽然 await 会抛出 CancelledError，但主动检查更安全）
             if task_manager.is_cancelled(user_id):
                 logger.info(f"Task cancelled check hit for user {user_id}")
                 raise asyncio.CancelledError()
@@ -1212,28 +1174,26 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                     if stream_chunks_seen >= 2:
                         await _flush_stream_buffer(force=False)
 
-            # Update UI (Standard Stream) - ONLY if supported
             if can_update and (stream_chunks_sent == 0 or stream_locked):
                 now = time.time()
-                if now - last_stream_update > 1.0:  # Reduce frequency slightly
-                    msg_id = getattr(
-                        thinking_msg, "message_id", getattr(thinking_msg, "id", None)
-                    )
+                if now - last_stream_update > 1.0:
+                    target = thinking_msg
+                    if target is None:
+                        target = await _ensure_thinking_message(final_text_response)
+                    msg_id = _message_id_of(target)
+                    if msg_id is None:
+                        continue
                     try:
                         await ctx.edit_message(msg_id, final_text_response)
                     except MessageSendError as edit_err:
-                        # Long stream content is handled by preview-truncation in UnifiedContext;
-                        # if platform still rejects, just skip this tick and continue.
                         if not _is_message_too_long_error(edit_err):
                             raise
                     last_stream_update = now
 
-        # 停止动画
         state["running"] = False
         if animation_task:
-            animation_task.cancel()  # Ensure it stops immediately
+            animation_task.cancel()
 
-        # 5. 发送最终回复并入库
         if final_text_response:
             ui_payload = _pop_pending_ui_payload(ctx.user_data)
             pending_result_files = merge_file_rows(
@@ -1252,7 +1212,8 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                 tail = stream_buffer.strip()
                 if tail:
                     await ctx.reply(tail)
-                if can_update and not thinking_deleted:
+                    state["response_visible"] = True
+                if can_update and thinking_msg is not None and not thinking_deleted:
                     try:
                         await thinking_msg.delete()
                     except Exception as del_e:
@@ -1261,6 +1222,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                 rendered_response = await process_and_send_code_files(
                     ctx, final_text_response
                 )
+                sent_msg = None
 
                 try:
                     if len(final_text_response) > LONG_RESPONSE_FILE_THRESHOLD:
@@ -1270,49 +1232,63 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                                 preview_text[:1200].rstrip()
                                 + "\n\n...（内容较长，完整结果见附件）"
                             )
-                        sent_msg = None
                         if preview_text:
                             payload = {"text": preview_text}
                             if ui_payload:
                                 payload["ui"] = ui_payload
                             sent_msg = await ctx.reply(payload)
-                        await ctx.reply(
-                            "📝 内容较长，完整结果已转为 Markdown 文件发送。"
-                        )
+                            state["response_visible"] = True
+                        await ctx.reply("📝 内容较长，完整结果已转为 Markdown 文件发送。")
+                        state["response_visible"] = True
                         sent_msg = await _send_response_as_markdown_file(
                             ctx, final_text_response
                         )
+                        state["response_visible"] = True
                     else:
                         payload = {"text": rendered_response}
                         if ui_payload:
                             payload["ui"] = ui_payload
-                        sent_msg = await ctx.reply(payload)
+                        if (
+                            can_update
+                            and thinking_msg is not None
+                            and not thinking_deleted
+                            and not ui_payload
+                        ):
+                            msg_id = _message_id_of(thinking_msg)
+                            if msg_id is not None:
+                                await ctx.edit_message(msg_id, rendered_response)
+                                sent_msg = thinking_msg
+                            else:
+                                sent_msg = await ctx.reply(payload)
+                        else:
+                            sent_msg = await ctx.reply(payload)
+                        state["response_visible"] = True
                 except MessageSendError as send_err:
                     if not _is_message_too_long_error(send_err):
                         raise
                     await ctx.reply("⚠️ 文本过长，正在转换为文件发送...")
+                    state["response_visible"] = True
                     sent_msg = await _send_response_as_markdown_file(
                         ctx, final_text_response
                     )
+                    state["response_visible"] = True
 
-                if sent_msg and can_update:
+                if (
+                    sent_msg
+                    and sent_msg is not thinking_msg
+                    and can_update
+                    and thinking_msg is not None
+                    and not thinking_deleted
+                ):
                     try:
                         await thinking_msg.delete()
                     except Exception as del_e:
                         logger.warning(f"Failed to delete thinking_msg: {del_e}")
-                elif not sent_msg and can_update:
-                    msg_id = getattr(
-                        thinking_msg, "message_id", getattr(thinking_msg, "id", None)
-                    )
-                    sent_msg = await ctx.edit_message(msg_id, rendered_response)
 
             if pending_result_files:
                 await _send_result_files(ctx, pending_result_files)
 
-            # 记录模型回复到上下文 (Explicitly save final response)
             await add_message(ctx, user_id, "model", final_text_response)
-
-            # 记录统计
             await increment_stat(user_id, "ai_chats")
 
     except asyncio.CancelledError:
@@ -1320,7 +1296,6 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
         state["running"] = False
         if animation_task:
             animation_task.cancel()
-        # 不发送错误消息，因为 /stop 已经回复了
         raise
 
     except Exception as e:
@@ -1329,15 +1304,13 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
             animation_task.cancel()
         logger.error(f"Agent error: {e}", exc_info=True)
 
-        if str(e) == "Message is not modified":
-            pass
-        else:
-            msg_id = getattr(
-                thinking_msg, "message_id", getattr(thinking_msg, "id", None)
-            )
-            await ctx.edit_message(
-                msg_id, f"❌ Agent 运行出错：{e}\n\n请尝试 /new 重置对话。"
-            )
+        if str(e) != "Message is not modified":
+            error_text = f"❌ Agent 运行出错：{e}\n\n请尝试 /new 重置对话。"
+            msg_id = _message_id_of(thinking_msg)
+            if msg_id is not None and not thinking_deleted:
+                await ctx.edit_message(msg_id, error_text)
+            else:
+                await ctx.reply(error_text)
     finally:
         pop_runtime_callback(ctx, "manager_progress_callback")
         task_manager.unregister_task(user_id)
@@ -1355,6 +1328,8 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
     if not await is_user_allowed(user_id):
         logger.info("Ignoring unauthorized image message from user_id=%s", user_id)
         return
+
+    await _acknowledge_received(ctx)
 
     try:
         media = await extract_media_input(
@@ -1527,6 +1502,8 @@ async def handle_ai_video(ctx: UnifiedContext) -> None:
         logger.info("Ignoring unauthorized video message from user_id=%s", user_id)
         return
 
+    await _acknowledge_received(ctx)
+
     try:
         media = await extract_media_input(
             ctx,
@@ -1650,6 +1627,8 @@ async def handle_sticker_message(ctx: UnifiedContext) -> None:
     if not await is_user_allowed(user_id):
         logger.info("Ignoring unauthorized sticker message from user_id=%s", user_id)
         return  # Silent ignore for stickers if unauthorized? Or reply?
+
+    await _acknowledge_received(ctx)
 
     try:
         media = await extract_media_input(

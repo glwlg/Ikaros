@@ -3,45 +3,6 @@ Services 模块单元测试
 """
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-
-
-class TestStockService:
-    """测试股票服务"""
-
-    def test_format_stock_message_empty(self):
-        """测试格式化空股票列表"""
-        from services.stock_service import format_stock_message
-
-        result = format_stock_message([])
-        assert "暂无" in result or result == ""
-
-    def test_format_stock_message_with_data(self, sample_stock_data):
-        """测试格式化股票消息"""
-        from services.stock_service import format_stock_message
-
-        # 模拟完整的股票数据（使用实际字段名）
-        quotes = [
-            {
-                "code": "sh601006",
-                "name": "大秦铁路",
-                "price": 7.50,
-                "change": 0.15,
-                "percent": 2.04,
-            },
-            {
-                "code": "sz000001",
-                "name": "平安银行",
-                "price": 12.30,
-                "change": -0.20,
-                "percent": -1.60,
-            },
-        ]
-
-        result = format_stock_message(quotes)
-
-        assert "大秦铁路" in result
-        assert "平安银行" in result
 
 
 class TestIntentRouter:
@@ -71,6 +32,118 @@ class TestIntentRouter:
         assert chat_decision.intent == "chat"
         assert chat_decision.confidence == 0.7
         assert chat_decision.reason == "chat"
+
+
+class TestSkillRouter:
+    @pytest.mark.asyncio
+    async def test_skill_router_filters_to_known_top5(self, monkeypatch):
+        from core.extension_router import ExtensionCandidate
+        from services.skill_router import skill_router
+
+        async def _fake_generate_text(**kwargs):
+            _ = kwargs
+            return (
+                '{"candidate_skills":["web_search","unknown","download_video",'
+                '"rss_subscribe","web_search","news_digest","skill_manager"],'
+                '"reason":"matched","confidence":0.82}'
+            )
+
+        monkeypatch.setattr(
+            "services.skill_router.generate_text",
+            _fake_generate_text,
+        )
+        monkeypatch.setattr(
+            "services.skill_router.get_client_for_model",
+            lambda *_args, **_kwargs: object(),
+        )
+        monkeypatch.setattr(
+            "services.skill_router.get_routing_model",
+            lambda: "routing/test",
+        )
+
+        decision = await skill_router.route(
+            dialog_messages=[
+                {"role": "user", "content": "帮我查新闻并顺手看看这个视频"}
+            ],
+            candidates=[
+                ExtensionCandidate(
+                    name="web_search",
+                    description="网页搜索",
+                    tool_name="ext_web_search",
+                ),
+                ExtensionCandidate(
+                    name="download_video",
+                    description="下载视频",
+                    tool_name="ext_download_video",
+                ),
+                ExtensionCandidate(
+                    name="rss_subscribe",
+                    description="RSS 订阅",
+                    tool_name="ext_rss_subscribe",
+                ),
+                ExtensionCandidate(
+                    name="news_digest",
+                    description="新闻摘要",
+                    tool_name="ext_news_digest",
+                ),
+                ExtensionCandidate(
+                    name="skill_manager",
+                    description="技能管理",
+                    tool_name="ext_skill_manager",
+                ),
+                ExtensionCandidate(
+                    name="extra_skill",
+                    description="额外技能",
+                    tool_name="ext_extra_skill",
+                ),
+            ],
+        )
+
+        assert decision.ok is True
+        assert decision.candidate_skills == [
+            "web_search",
+            "download_video",
+            "rss_subscribe",
+            "news_digest",
+            "skill_manager",
+        ]
+        assert decision.confidence == 0.82
+
+    @pytest.mark.asyncio
+    async def test_skill_router_returns_failure_on_invalid_json(self, monkeypatch):
+        from core.extension_router import ExtensionCandidate
+        from services.skill_router import skill_router
+
+        async def _fake_generate_text(**kwargs):
+            _ = kwargs
+            return "not-json"
+
+        monkeypatch.setattr(
+            "services.skill_router.generate_text",
+            _fake_generate_text,
+        )
+        monkeypatch.setattr(
+            "services.skill_router.get_client_for_model",
+            lambda *_args, **_kwargs: object(),
+        )
+        monkeypatch.setattr(
+            "services.skill_router.get_routing_model",
+            lambda: "routing/test",
+        )
+
+        decision = await skill_router.route(
+            dialog_messages=[{"role": "user", "content": "你好"}],
+            candidates=[
+                ExtensionCandidate(
+                    name="web_search",
+                    description="网页搜索",
+                    tool_name="ext_web_search",
+                )
+            ],
+        )
+
+        assert decision.ok is False
+        assert decision.candidate_skills == []
 
 
 class TestWebSummaryService:
@@ -157,22 +230,3 @@ class TestWebSummaryService:
         assert "HTTP 原始页面内容" in content
         assert "fallback" in content
 
-
-class TestDownloadService:
-    """测试下载服务"""
-
-    def test_download_result_dataclass(self):
-        """测试下载结果数据类"""
-        from services.download_service import DownloadResult
-
-        result = DownloadResult(
-            success=True,
-            file_path="/tmp/video.mp4",
-            is_too_large=False,
-            file_size_mb=25.5,
-        )
-
-        assert result.success is True
-        assert result.file_path == "/tmp/video.mp4"
-        assert result.is_too_large is False
-        assert result.file_size_mb == 25.5

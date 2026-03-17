@@ -9,6 +9,7 @@ import logging
 from core.state_store import search_messages
 from .base_handlers import check_permission_unified
 from core.platform.models import UnifiedContext
+from user_context import compact_current_session
 
 # 从子模块导入
 
@@ -47,9 +48,40 @@ async def chatlog_command(ctx: UnifiedContext) -> None:
     await ctx.reply("\n".join(lines))
 
 
+async def compact_command(ctx: UnifiedContext) -> None:
+    """处理 /compact，对当前会话执行手动压缩。"""
+    if not await check_permission_unified(ctx):
+        return
+
+    user_id = str(ctx.message.user.id)
+    result = await compact_current_session(ctx, user_id, force=True)
+    if not bool(result.get("ok")):
+        await ctx.reply("⚠️ 当前会话压缩失败，请稍后重试。")
+        return
+
+    if not bool(result.get("compacted")):
+        reason = str(result.get("reason") or "").strip().lower()
+        if reason == "nothing_to_compact":
+            await ctx.reply("ℹ️ 当前会话没有可压缩的更早历史。")
+            return
+        dialog_count = int(result.get("dialog_count") or 0)
+        await ctx.reply(
+            f"ℹ️ 当前会话共 {dialog_count} 条原始消息，暂未达到需要压缩的程度。"
+        )
+        return
+
+    await ctx.reply(
+        "🗜️ 已压缩 "
+        f"{int(result.get('compressed_count') or 0)} 条历史，"
+        "保留最近 "
+        f"{int(result.get('kept_recent') or 0)} 条原始消息。"
+    )
+
+
 # 导出所有函数
 __all__ = [
     "chatlog_command",
+    "compact_command",
     # Reminder
     # Feature
     "feature_command",

@@ -82,7 +82,7 @@ def _prepare_stage_dispatch(
     session_task_id = _session_task_id_from_metadata(meta)
     stage_plan = normalize_stage_plan(
         meta.get("stage_plan") if isinstance(meta.get("stage_plan"), dict) else None,
-        original_request=resolved_task_goal,
+        original_request=original_request,
     )
     current_stage = get_current_stage(stage_plan)
     if current_stage is None:
@@ -97,6 +97,7 @@ def _prepare_stage_dispatch(
         original_request=resolved_task_goal,
         plan=stage_plan,
         stage=current_stage,
+        resolved_task_goal=resolved_task_goal,
         previous_summary=_safe_text(stage_plan.get("last_stage_summary"), limit=1200),
         previous_output=_safe_text(stage_plan.get("last_stage_output"), limit=2400),
         last_blocking_reason=_safe_text(meta.get("last_blocking_reason"), limit=1200),

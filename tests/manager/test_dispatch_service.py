@@ -124,6 +124,32 @@ class _FakeHeartbeatStore:
         return dict(kwargs)
 
 
+def test_prepare_stage_dispatch_prefers_original_user_request_for_complexity():
+    instruction = (
+        "请整理一份“最新AI简报”，面向普通用户，重点覆盖最近值得关注的 AI 动态、"
+        "产品发布、模型进展、行业趋势与实际影响。要求：1）基于联网检索获取尽量新的信息；"
+        "2）筛选 5-8 条最重要内容；3）每条包含标题、发生了什么、为什么重要、影响；"
+        "4）最后补一段本周重点关注方向。"
+    )
+
+    prepared, metadata = service_module._prepare_stage_dispatch(
+        instruction=instruction,
+        metadata={
+            "session_task_id": "tsk-session-1",
+            "original_user_request": "帮我整理最新的AI简报",
+        },
+    )
+
+    plan = dict(metadata.get("stage_plan") or {})
+    stages = list(plan.get("stages") or [])
+
+    assert len(stages) == 1
+    assert metadata["stage_total"] == 1
+    assert metadata["stage_title"] == "执行任务"
+    assert "阶段 1/1" in prepared
+    assert "给出可直接交付的结果" in prepared
+
+
 @pytest.mark.asyncio
 async def test_manager_dispatch_service_dispatches_async_task(monkeypatch):
     monkeypatch.setattr(service_module, "worker_registry", _FakeRegistry())

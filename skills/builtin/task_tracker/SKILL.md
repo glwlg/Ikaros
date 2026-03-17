@@ -82,7 +82,6 @@ permissions:
   filesystem: workspace
   shell: false
   network: limited
-entrypoint: scripts/execute.py
 ---
 
 # Task Tracker

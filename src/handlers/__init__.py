@@ -7,7 +7,7 @@ from .start_handlers import (
 )
 from .base_handlers import check_permission_unified, cancel
 
-from .service_handlers import chatlog_command
+from .service_handlers import chatlog_command, compact_command
 from .feature_handlers import (
     feature_command,
     handle_feature_input,

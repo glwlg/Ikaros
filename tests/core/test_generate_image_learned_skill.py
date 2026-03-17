@@ -84,7 +84,7 @@ def test_skill_cli_default_output_dir_uses_data_user_skill_path(tmp_path, monkey
     output_dir = _resolve_output_dir(args, execute_fn=generate_image_module.execute)
 
     assert Path(output_dir) == (
-        tmp_path / "data" / "users" / "u-42" / "skills" / "generate_image" / "outputs"
+        tmp_path / "data" / "user" / "skills" / "generate_image" / "outputs"
     ).resolve()
     assert _infer_skill_name(generate_image_module.execute) == "generate_image"
 

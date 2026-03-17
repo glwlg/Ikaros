@@ -1,30 +1,10 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.platform.models import MessageType
 from handlers import ai_handlers
-
-
-class _FakeOpenAICompletions:
-    async def create(self, **kwargs):
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="分析结果", tool_calls=[]),
-                )
-            ]
-        )
-
-
-class _FakeOpenAIChat:
-    def __init__(self):
-        self.completions = _FakeOpenAICompletions()
-
-
-class _FakeOpenAIClient:
-    def __init__(self):
-        self.chat = _FakeOpenAIChat()
 
 
 class _DummyOutgoingMessage:
@@ -46,6 +26,7 @@ class _DummyContext:
         self.edits = []
         self.actions = []
         self.download_calls = []
+        self.reactions = []
 
     async def reply(self, text, **kwargs):
         self.replies.append((text, kwargs))
@@ -57,6 +38,10 @@ class _DummyContext:
 
     async def send_chat_action(self, action, **kwargs):
         self.actions.append((action, kwargs))
+        return True
+
+    async def set_message_reaction(self, emoji, **kwargs):
+        self.reactions.append((emoji, kwargs))
         return True
 
     async def download_file(self, file_id, **kwargs):
@@ -93,13 +78,31 @@ async def test_handle_ai_photo_works_for_discord_without_telegram_update(monkeyp
     async def _allow_user(_user_id):
         return True
 
-    async def _noop(*_args, **_kwargs):
-        return None
+    async def _fake_handle_message(_ctx, _history):
+        yield "分析结果"
 
     monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
-    monkeypatch.setattr(ai_handlers, "add_message", _noop)
-    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
-    monkeypatch.setattr(ai_handlers, "openai_async_client", _FakeOpenAIClient())
+    monkeypatch.setattr(ai_handlers, "add_message", AsyncMock())
+    monkeypatch.setattr(ai_handlers, "increment_stat", AsyncMock())
+    monkeypatch.setattr(ai_handlers, "get_user_context", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        ai_handlers,
+        "process_and_send_code_files",
+        AsyncMock(return_value="分析结果"),
+    )
+    monkeypatch.setattr(
+        "core.agent_orchestrator.agent_orchestrator.handle_message",
+        _fake_handle_message,
+    )
+    monkeypatch.setattr(
+        "core.task_manager.task_manager.register_task",
+        AsyncMock(),
+    )
+    monkeypatch.setattr("core.task_manager.task_manager.is_cancelled", lambda _user_id: False)
+    monkeypatch.setattr(
+        "core.task_manager.task_manager.unregister_task",
+        lambda _user_id: None,
+    )
 
     message = _build_discord_message(MessageType.IMAGE, "image/png")
     platform_event = SimpleNamespace(
@@ -110,6 +113,7 @@ async def test_handle_ai_photo_works_for_discord_without_telegram_update(monkeyp
     await ai_handlers.handle_ai_photo(ctx)
 
     assert ctx.download_calls
+    assert ctx.reactions == [("👀", {})]
     assert any("分析结果" in text for _, text, _ in ctx.edits)
 
 
@@ -120,13 +124,14 @@ async def test_handle_ai_video_works_for_discord_without_telegram_update(monkeyp
     async def _allow_user(_user_id):
         return True
 
-    async def _noop(*_args, **_kwargs):
-        return None
-
     monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
-    monkeypatch.setattr(ai_handlers, "add_message", _noop)
-    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
-    monkeypatch.setattr(ai_handlers, "openai_async_client", _FakeOpenAIClient())
+    monkeypatch.setattr(ai_handlers, "add_message", AsyncMock())
+    monkeypatch.setattr(ai_handlers, "increment_stat", AsyncMock())
+    monkeypatch.setattr(ai_handlers, "get_vision_model", lambda: "vision-model")
+    monkeypatch.setattr(ai_handlers, "get_current_model", lambda: "fallback-model")
+    monkeypatch.setattr(ai_handlers, "get_client_for_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(ai_handlers, "generate_text", AsyncMock(return_value="分析结果"))
+    monkeypatch.setattr(ai_handlers.prompt_composer, "compose_base", lambda **_kwargs: "system prompt")
 
     message = _build_discord_message(MessageType.VIDEO, "video/mp4")
     platform_event = SimpleNamespace(
@@ -137,4 +142,5 @@ async def test_handle_ai_video_works_for_discord_without_telegram_update(monkeyp
     await ai_handlers.handle_ai_video(ctx)
 
     assert ctx.download_calls
+    assert ctx.reactions == [("👀", {})]
     assert any("分析结果" in text for _, text, _ in ctx.edits)
