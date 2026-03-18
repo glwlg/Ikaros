@@ -2,7 +2,6 @@ import importlib.util
 from pathlib import Path
 
 from handlers.heartbeat_handlers import _parse_subcommand as parse_heartbeat_subcommand
-from handlers.worker_handlers import _parse_subcommand as parse_worker_subcommand
 
 
 def _load_module(relative_path: str, module_name: str):
@@ -33,11 +32,9 @@ class _FakeAdapterManager:
         raise ValueError("adapter not available in test")
 
 
-def test_heartbeat_and_worker_default_subcommands():
+def test_heartbeat_default_subcommands():
     assert parse_heartbeat_subcommand("/heartbeat") == ("list", "")
     assert parse_heartbeat_subcommand("/heartbeat help") == ("help", "")
-    assert parse_worker_subcommand("/worker") == ("list", "")
-    assert parse_worker_subcommand("/worker help") == ("help", "")
 
 
 def test_stock_rss_schedule_deploy_subcommand_parsers():

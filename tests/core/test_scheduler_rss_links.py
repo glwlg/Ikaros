@@ -59,7 +59,7 @@ async def test_resolve_proactive_delivery_target_prefers_saved_target(monkeypatc
 
     target = await scheduler_module._resolve_proactive_delivery_target(
         "user",
-        "worker_runtime",
+        "telegram",
     )
 
     assert target == ("telegram", "257675041")
@@ -78,10 +78,10 @@ async def test_resolve_proactive_delivery_target_prefers_explicit_metadata(monke
 
     target = await scheduler_module._resolve_proactive_delivery_target(
         "257675041",
-        "worker_runtime",
+        "telegram",
         metadata={
             "proactive_delivery_target": {
-                "platform": "worker_runtime",
+                "platform": "telegram",
                 "chat_id": "257675041",
                 "user_id": "257675041",
             }

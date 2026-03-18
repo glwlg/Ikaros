@@ -71,7 +71,7 @@ async def stop_command(ctx: UnifiedContext) -> None:
 
     from core.task_manager import task_manager
     from core.heartbeat_store import heartbeat_store
-    from shared.queue.dispatch_queue import dispatch_queue
+    from core.subagent_supervisor import subagent_supervisor
 
     active_info = task_manager.get_task_info(user_id)
     todo_path = active_info.get("todo_path") if isinstance(active_info, dict) else None
@@ -92,19 +92,16 @@ async def stop_command(ctx: UnifiedContext) -> None:
 
     # 尝试取消任务
     cancelled_desc = await task_manager.cancel_task(user_id)
-    worker_cancel = {"pending_cancelled": 0, "running_signaled": 0, "job_ids": []}
+    subagent_cancel = {"cancelled": 0, "task_ids": []}
     try:
-        worker_cancel = await dispatch_queue.cancel_for_user(
+        subagent_cancel = await subagent_supervisor.cancel_for_user(
             user_id=str(user_id),
             reason="cancelled_by_stop_command",
-            include_running=True,
         )
     except Exception as exc:
-        logger.warning("stop command worker cancel failed: %s", exc)
+        logger.warning("stop command subagent cancel failed: %s", exc)
 
-    worker_pending_cancelled = int(worker_cancel.get("pending_cancelled") or 0)
-    worker_running_signaled = int(worker_cancel.get("running_signaled") or 0)
-    worker_cancelled_total = worker_pending_cancelled + worker_running_signaled
+    subagent_cancelled_total = int(subagent_cancel.get("cancelled") or 0)
 
     if active_task_id:
         await heartbeat_store.update_session_active_task(
@@ -120,8 +117,8 @@ async def stop_command(ctx: UnifiedContext) -> None:
             str(user_id), f"user_cancelled:{active_task_id}"
         )
 
-    if cancelled_desc or active_task_id or worker_cancelled_total > 0:
-        task_type_text = cancelled_desc or "worker_dispatch"
+    if cancelled_desc or active_task_id or subagent_cancelled_total > 0:
+        task_type_text = cancelled_desc or "subagent_background"
         lines = ["🛑 **已中断任务**", ""]
         if session_snapshot is not None:
             lines.extend(
@@ -136,11 +133,10 @@ async def stop_command(ctx: UnifiedContext) -> None:
         elif active_task_id:
             lines.append(f"任务：`{str(active_task_id).strip()}`")
         lines.append(f"任务类型：{task_type_text}")
-        if worker_cancelled_total > 0:
+        if subagent_cancelled_total > 0:
             lines.append(
-                "🧰 Worker 任务: "
-                f"取消排队 {worker_pending_cancelled} 个，"
-                f"中断运行 {worker_running_signaled} 个"
+                "🧩 Subagent 任务: "
+                f"已取消 {subagent_cancelled_total} 个后台子任务"
             )
         if heartbeat_path:
             lines.append(f"💓 心跳文件：`{heartbeat_path}`")
@@ -185,7 +181,7 @@ async def help_command(ctx: UnifiedContext) -> None:
         "• **手动教学**：/teach - 强制触发学习模式\n"
         "• /skills - 查看已安装技能\n\n"
         "**常用命令：**\n"
-        "/start 主菜单 | /new 新对话 | /compact 压缩 | /chatlog 检索 | /heartbeat 心跳 | /task 任务 | /worker Worker"
+        "/start 主菜单 | /new 新对话 | /compact 压缩 | /chatlog 检索 | /heartbeat 心跳 | /task 任务"
     )
 
 
@@ -294,7 +290,7 @@ async def button_callback(ctx: UnifiedContext) -> int:
                 "• /teach - 教我学会新技能 (自定义代码)\n"
                 "• /skills - 查看已安装技能\n\n"
                 "**常用命令：**\n"
-                "/start 主菜单 | /new 新对话 | /chatlog 检索 | /heartbeat 心跳 | /task 任务 | /worker Worker",
+                "/start 主菜单 | /new 新对话 | /chatlog 检索 | /heartbeat 心跳 | /task 任务",
                 reply_markup=reply_markup,
             )
             return CONVERSATION_END

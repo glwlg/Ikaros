@@ -255,21 +255,21 @@ class AiService:
             ) -> str:
                 compact: list[str] = []
                 for row in dispatch_rows[:3]:
-                    worker_name = str(row.get("worker_name") or "").strip()
+                    executor_name = str(row.get("executor_name") or "").strip()
                     task_id = str(row.get("task_id") or "").strip()
-                    if worker_name and task_id:
-                        compact.append(f"{worker_name}（任务 {task_id}）")
+                    if executor_name and task_id:
+                        compact.append(f"{executor_name}（任务 {task_id}）")
                     elif task_id:
                         compact.append(f"任务 {task_id}")
-                    elif worker_name:
-                        compact.append(worker_name)
+                    elif executor_name:
+                        compact.append(executor_name)
 
                 guidance = (
-                    "系统提示：你刚刚通过工具成功派发了异步执行任务。"
+                    "系统提示：你刚刚通过工具成功启动了后台子任务。"
                     "现在请只向用户回复任务已开始处理的进度说明（1-2句中文）。"
-                    "必须提到任务编号；若有执行助手名称也请提到。"
+                    "必须提到任务编号；若有子任务名称也请提到。"
                     "不要输出任务最终结论，不要编造天气/数据结果，不要假装任务已完成。"
-                    "派发信息：" + ("；".join(compact) if compact else "已派发")
+                    "启动信息：" + ("；".join(compact) if compact else "已启动")
                 )
                 synth_history = list(current_history)
                 synth_history.append({"role": "user", "content": guidance})
@@ -290,15 +290,15 @@ class AiService:
                 dispatch_rows: list[dict[str, str]],
             ) -> str:
                 first = dispatch_rows[0] if dispatch_rows else {}
-                worker_name = str(first.get("worker_name") or "执行助手").strip()
+                executor_name = str(first.get("executor_name") or "后台子任务").strip()
                 task_id = str(first.get("task_id") or "").strip()
                 if task_id:
                     return (
-                        f"已派发给 {worker_name} 处理（任务 {task_id}），"
+                        f"已启动 {executor_name}（任务 {task_id}），"
                         "正在处理中，完成后会自动把结果发给你。"
                     )
                 return (
-                    f"已派发给 {worker_name} 处理，"
+                    f"已启动 {executor_name}，"
                     "正在处理中，完成后会自动把结果发给你。"
                 )
 
@@ -719,8 +719,10 @@ class AiService:
                                     async_dispatch_rows.append(
                                         {
                                             "tool_name": tool_name,
-                                            "worker_name": str(
-                                                tool_result.get("worker_name") or ""
+                                            "executor_name": str(
+                                                tool_result.get("executor_name")
+                                                or tool_result.get("subagent_id")
+                                                or ""
                                             ).strip(),
                                             "task_id": str(
                                                 tool_result.get("task_id") or ""

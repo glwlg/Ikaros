@@ -34,11 +34,8 @@ manager-runtime = [
     "discord-py>=2.6.4",
     "dingtalk-stream>=0.24.3",
 ]
-worker-runtime = [
-    { include-group = "bot-runtime" },
-]
 # Heavy or currently-unused skill packs stay opt-in so the default
-# manager/worker images remain lean. Install `optional-skill-runtime`
+# manager image remains lean. Install `optional-skill-runtime`
 # when you need a full capability image.
 skill-web-optional = [
     "googlenewsdecoder>=0.1.5",
@@ -75,9 +72,6 @@ optional-skill-runtime = [
 manager = [
     { include-group = "manager-runtime" },
 ]
-worker = [
-    { include-group = "worker-runtime" },
-]
 api = [
     { include-group = "shared-runtime" },
     "fastapi>=0.109.0",
@@ -105,6 +99,5 @@ packages = ["src"]
 default-groups = [
     "dev",
     "manager",
-    "worker",
     "api",
 ]

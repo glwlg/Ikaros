@@ -2515,32 +2515,6 @@ skill-web-optional = [
     { name = "beautifulsoup4" },
     { name = "googlenewsdecoder" },
 ]
-worker = [
-    { name = "aiosqlite" },
-    { name = "ddgs" },
-    { name = "exa-py" },
-    { name = "feedparser" },
-    { name = "httpx" },
-    { name = "openai" },
-    { name = "pyotp" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "yt-dlp" },
-]
-worker-runtime = [
-    { name = "aiosqlite" },
-    { name = "ddgs" },
-    { name = "exa-py" },
-    { name = "feedparser" },
-    { name = "httpx" },
-    { name = "openai" },
-    { name = "pyotp" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "yt-dlp" },
-]
 
 [package.metadata]
 
@@ -2661,32 +2635,6 @@ skill-web-optional = [
     { name = "aiohttp", specifier = ">=3.11.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "googlenewsdecoder", specifier = ">=0.1.5" },
-]
-worker = [
-    { name = "aiosqlite", specifier = ">=0.20.0" },
-    { name = "ddgs", specifier = ">=9.10.0" },
-    { name = "exa-py", specifier = ">=2.4.0" },
-    { name = "feedparser", specifier = ">=6.0.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "openai", specifier = ">=2.0.0" },
-    { name = "pyotp", specifier = ">=2.9.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0,<2.1.0" },
-    { name = "yt-dlp", specifier = ">=2024.0.0" },
-]
-worker-runtime = [
-    { name = "aiosqlite", specifier = ">=0.20.0" },
-    { name = "ddgs", specifier = ">=9.10.0" },
-    { name = "exa-py", specifier = ">=2.4.0" },
-    { name = "feedparser", specifier = ">=6.0.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "openai", specifier = ">=2.0.0" },
-    { name = "pyotp", specifier = ">=2.9.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0,<2.1.0" },
-    { name = "yt-dlp", specifier = ">=2024.0.0" },
 ]
 
 [[package]]

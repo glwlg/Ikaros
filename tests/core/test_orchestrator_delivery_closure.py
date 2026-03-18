@@ -519,11 +519,11 @@ async def test_manager_progress_callback_receives_tool_events(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_worker_progress_callback_receives_terminal_payload(
+async def test_subagent_progress_callback_receives_terminal_payload(
     monkeypatch, tmp_path
 ):
     orchestrator = AgentOrchestrator()
-    user_id = "u_worker_progress_terminal_payload"
+    user_id = "u_subagent_progress_terminal_payload"
 
     runtime_root = (tmp_path / "runtime_tasks").resolve()
     runtime_root.mkdir(parents=True, exist_ok=True)
@@ -571,12 +571,12 @@ async def test_worker_progress_callback_receives_terminal_payload(
     )
 
     ctx = DummyContext(user_id=user_id)
-    worker_events: list[dict[str, object]] = []
+    subagent_events: list[dict[str, object]] = []
 
     async def _progress_callback(snapshot):
-        worker_events.append(dict(snapshot or {}))
+        subagent_events.append(dict(snapshot or {}))
 
-    ctx.user_data["worker_progress_callback"] = _progress_callback
+    ctx.user_data["subagent_progress_callback"] = _progress_callback
     message_history = [{"role": "user", "parts": [{"text": "请画图"}]}]
 
     chunks = [
@@ -589,7 +589,7 @@ async def test_worker_progress_callback_receives_terminal_payload(
         and event.get("terminal") is True
         and isinstance(event.get("terminal_payload"), dict)
         and event["terminal_payload"]["files"][0]["filename"] == "demo.png"
-        for event in worker_events
+        for event in subagent_events
     )
 
 

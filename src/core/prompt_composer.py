@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -8,13 +7,12 @@ from core.config import DATA_DIR
 from core.prompts import (
     DEFAULT_SYSTEM_PROMPT,
     MANAGER_CORE_PROMPT,
+    SUBAGENT_CORE_PROMPT,
 )
 from core.markdown_memory_store import markdown_memory_store
 from core.soul_store import soul_store
 from core.tool_registry import tool_registry
 import logging
-from datetime import datetime
-
 logger = logging.getLogger(__name__)
 
 
@@ -141,17 +139,17 @@ class PromptComposer:
             manager_memory = self._load_manager_memory_snapshot(max_chars=1200)
             if manager_memory:
                 parts.append("【MANAGER 经验记忆】\n" + manager_memory)
-            worker_pool_info = self._get_worker_pool_info()
             management_tool_guidance = self._build_manager_tool_guidance(
                 runtime_user_id=runtime_user_id,
                 platform=platform,
             )
             manager_prompt = MANAGER_CORE_PROMPT.format(
-                worker_pool_info=worker_pool_info,
                 management_tool_guidance=management_tool_guidance,
             )
             logger.debug("Manager Prompt: \n" + manager_prompt)
             parts.append("\n" + manager_prompt)
+        elif str(mode or "").strip().lower() == "subagent":
+            parts.append("\n" + SUBAGENT_CORE_PROMPT)
         elif str(mode or "").strip().lower() == "media_image":
             parts.append(
                 "\n【当前任务要求】\n这是一次图片分析请求。你需要保持你的角色语气，结合图片与用户指令完成任务。\n如果用户明确要求记账/入账，请优先调用 `quick_accounting` 完成真实入账；其他场景优先直接给出分析结论，避免无关工具调用。"
@@ -186,8 +184,8 @@ class PromptComposer:
     def _runtime_role(runtime_user_id: str, platform: str) -> str:
         uid = str(runtime_user_id or "").strip().lower()
         platform_name = str(platform or "").strip().lower()
-        if uid.startswith("worker::") or platform_name == "worker_kernel":
-            return "worker"
+        if uid.startswith("subagent::") or platform_name == "subagent_kernel":
+            return "subagent"
         return "manager"
 
     def _build_skill_catalog(
@@ -225,7 +223,12 @@ class PromptComposer:
                 if allowed_name_set is not None and name not in allowed_name_set:
                     continue
                 allowed_roles = _normalize_text_list(item.get("allowed_roles"))
-                if allowed_roles and runtime_role not in allowed_roles:
+                allowed_runtime_roles = {runtime_role} if runtime_role else set()
+                if (
+                    allowed_roles
+                    and allowed_runtime_roles
+                    and not allowed_runtime_roles.intersection(allowed_roles)
+                ):
                     continue
                 allowed, _detail = tool_access_store.is_tool_allowed(
                     runtime_user_id=runtime_user_id,
@@ -263,7 +266,10 @@ class PromptComposer:
             from core.skill_loader import skill_loader
             from core.tool_access_store import tool_access_store
 
-            lines: List[str] = []
+            lines: List[str] = [
+                "- 需要并发分解或隔离高风险执行时，直接调用 `spawn_subagent`，并把 `allowed_tools` / `allowed_skills` 收紧到完成子任务所需的最小集合。",
+                "- 需要汇总已启动的子任务结果时，调用 `await_subagents`；subagent 失败后先由你决定重试、降级或改方案，不要直接把原始失败暴露给用户。",
+            ]
             for tool in tool_registry.get_skill_tools(runtime_role="manager"):
                 tool_name = str(tool.get("name") or "").strip()
                 if not tool_name:
@@ -290,97 +296,6 @@ class PromptComposer:
             return "\n".join(lines)
         except Exception:
             return "优先使用当前可见的 manager 直连工具，不要自行猜测隐藏能力。"
-
-    def _get_worker_pool_info(self) -> str:
-        """获取 Worker 池信息，供 Manager 决策派发"""
-        try:
-            from core.worker_store import worker_registry
-
-            workers: list
-            read_unlocked = getattr(worker_registry, "_read_unlocked", None)
-            if callable(read_unlocked):
-                raw = read_unlocked()
-                workers = (
-                    list((raw.get("workers") or {}).values())
-                    if isinstance(raw, dict)
-                    else []
-                )
-            else:
-                path = worker_registry.meta_path
-                if not path.exists():
-                    return "当前没有可用 Worker"
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                workers = (
-                    list((raw.get("workers") or {}).values())
-                    if isinstance(raw, dict)
-                    else []
-                )
-            return self._format_worker_list(workers)
-        except Exception as e:
-            return f"获取 Worker 池信息失败: {e}"
-
-    def _format_worker_list(self, workers: list) -> str:
-        if not workers:
-            return "当前没有可用 Worker"
-        worker_list = []
-        for w in workers:
-            worker_id = str(w.get("id") or "unknown").strip() or "unknown"
-            name = str(w.get("name") or worker_id).strip() or worker_id
-            status = str(w.get("status") or "unknown").strip() or "unknown"
-            backend = str(w.get("backend") or "unknown").strip() or "unknown"
-            summary = str(w.get("summary") or "").strip()
-            capabilities = _normalize_text_list(w.get("capabilities"))
-            allowed_skills = self._infer_worker_extension_skills(worker_id)
-            capability_hint = "、".join(capabilities[:4])
-            skill_hint = "、".join(allowed_skills[:4])
-
-            if not summary:
-                if allowed_skills:
-                    summary = f"可执行 {len(allowed_skills)} 个技能，示例：{skill_hint}"
-                elif capabilities:
-                    summary = f"擅长：{capability_hint}"
-                else:
-                    summary = "通用执行助手，可处理跨工具任务"
-
-            ability_parts: List[str] = []
-            if capability_hint:
-                ability_parts.append(f"capabilities={capability_hint}")
-            if skill_hint:
-                ability_parts.append(f"skills={skill_hint}")
-            abilities = ", ".join(ability_parts) if ability_parts else "skills=auto"
-            worker_list.append(
-                f"- {name} (worker_id={worker_id}): "
-                f"状态={status}, 后端={backend}, 简介={summary}, {abilities}"
-            )
-        return "\n".join(worker_list)
-
-    def _infer_worker_extension_skills(self, worker_id: str) -> List[str]:
-        safe_worker_id = str(worker_id or "").strip()
-        if not safe_worker_id:
-            return []
-
-        try:
-            from core.skill_loader import skill_loader
-            from core.tool_access_store import tool_access_store
-
-            runtime_user_id = f"worker::{safe_worker_id}::prompt"
-            allowed_skills: List[str] = []
-            for item in skill_loader.get_skills_summary():
-                skill_name = str(item.get("name") or "").strip()
-                if not skill_name:
-                    continue
-                tool_name = f"ext_{skill_name.replace('-', '_')}"
-                allowed, _detail = tool_access_store.is_tool_allowed(
-                    runtime_user_id=runtime_user_id,
-                    platform="worker_kernel",
-                    tool_name=tool_name,
-                    kind="tool",
-                )
-                if allowed:
-                    allowed_skills.append(skill_name)
-            return allowed_skills
-        except Exception:
-            return []
 
 
 prompt_composer = PromptComposer()

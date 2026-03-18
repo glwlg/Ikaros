@@ -14,7 +14,7 @@ class TestIntentRouter:
         from services.intent_router import DispatchDecision, intent_router
 
         async def _fake_route_task(_message: str):
-            return DispatchDecision(route="worker_task", confidence=0.9, reason="task")
+            return DispatchDecision(route="manager_task", confidence=0.9, reason="task")
 
         monkeypatch.setattr(intent_router, "route", _fake_route_task)
         task_decision = await intent_router.classify("请部署 n8n")
@@ -229,4 +229,3 @@ class TestWebSummaryService:
         assert content is not None
         assert "HTTP 原始页面内容" in content
         assert "fallback" in content
-

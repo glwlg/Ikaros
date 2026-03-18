@@ -17,7 +17,7 @@ DEFAULT_CORE_SOUL = """# Core Manager SOUL
 - **Identity**: 全能生活与工作助手 / 温柔贴心小管家
 - **Core Responsibility**:
     1. **Context Master**: 优先利用当前会话里已注入的背景、记忆种子和摘要，而不是每轮重复翻读记忆文件。
-    2. **Orchestrator**: 规划任务并将执行派发给 Worker。
+    2. **Orchestrator**: 规划任务，并在需要并发或隔离时启动受控 subagent。
     3. **State Manager**: 维护记忆与配置。
 
 ## 2. Personality & Tone
@@ -33,18 +33,18 @@ DEFAULT_CORE_SOUL = """# Core Manager SOUL
 """
 
 
-DEFAULT_WORKER_SOUL = """# Worker SOUL
+DEFAULT_SUBAGENT_SOUL = """# Subagent SOUL
 - Name: Atlas
 - Persona: 通用型人才
-- Role: 面向任务交付的多面执行者
+- Role: 面向子任务执行的多面执行者
 - Style:
   - 能在开发、运维、测试、检索、文档整理间快速切换
   - 先执行后汇报，尽量减少无效提问
   - 输出结构化、可复用、可验证
 - Guardrails:
   - 不修改 Core Manager 内核策略
-  - 不越权管理其他 Worker
-  - 优先完成任务闭环：执行 -> 验证 -> 回执
+  - 不越权启动或管理其他 subagent
+  - 优先完成当前子任务闭环：执行 -> 验证 -> 回报给 Manager
 """
 
 
@@ -61,7 +61,7 @@ class SoulPayload:
 class SoulStore:
     def __init__(self):
         self.kernel_root = (Path(DATA_DIR) / "kernel" / "core-manager").resolve()
-        self.userland_root = (Path(DATA_DIR) / "userland" / "workers").resolve()
+        self.userland_root = (Path(DATA_DIR) / "userland" / "subagents").resolve()
         self._payload_cache: Dict[str, tuple[int, SoulPayload]] = {}
         self.kernel_root.mkdir(parents=True, exist_ok=True)
         self.userland_root.mkdir(parents=True, exist_ok=True)
@@ -77,8 +77,8 @@ class SoulStore:
     def _legacy_core_path(self) -> Path:
         return (self.kernel_root / "SOUL.MD").resolve()
 
-    def _worker_path(self, worker_id: str) -> Path:
-        safe_id = str(worker_id or "worker-main").strip() or "worker-main"
+    def _subagent_path(self, subagent_id: str) -> Path:
+        safe_id = str(subagent_id or "subagent-main").strip() or "subagent-main"
         return (self.userland_root / safe_id / "SOUL.MD").resolve()
 
     @staticmethod
@@ -135,13 +135,13 @@ class SoulStore:
         self._payload_cache[cache_key] = (mtime_ns, payload)
         return payload
 
-    def load_worker(self, worker_id: str) -> SoulPayload:
-        safe_id = str(worker_id or "worker-main").strip() or "worker-main"
-        path = self._worker_path(safe_id)
-        self._ensure_file(path, DEFAULT_WORKER_SOUL)
+    def load_subagent(self, subagent_id: str) -> SoulPayload:
+        safe_id = str(subagent_id or "subagent-main").strip() or "subagent-main"
+        path = self._subagent_path(safe_id)
+        self._ensure_file(path, DEFAULT_SUBAGENT_SOUL)
         return self._load_payload(
             path=path,
-            agent_kind="worker",
+            agent_kind="subagent",
             agent_id=safe_id,
         )
 
@@ -170,16 +170,16 @@ class SoulStore:
             "previous_version_id": str(result.get("previous_version_id", "")),
         }
 
-    def update_worker(
+    def update_subagent(
         self,
-        worker_id: str,
+        subagent_id: str,
         content: str,
         *,
         actor: str = "system",
-        reason: str = "update_worker_soul",
+        reason: str = "update_subagent_soul",
     ) -> Dict[str, str]:
-        path = self._worker_path(worker_id)
-        self._ensure_file(path, DEFAULT_WORKER_SOUL)
+        path = self._subagent_path(subagent_id)
+        self._ensure_file(path, DEFAULT_SUBAGENT_SOUL)
         result = audit_store.write_versioned(
             path,
             content.strip() + "\n",
@@ -204,44 +204,44 @@ class SoulStore:
             self._invalidate_cache(self._core_path())
         return ok
 
-    def rollback_worker(
-        self, worker_id: str, version_id: str, *, actor: str = "system"
+    def rollback_subagent(
+        self, subagent_id: str, version_id: str, *, actor: str = "system"
     ) -> bool:
-        path = self._worker_path(worker_id)
+        path = self._subagent_path(subagent_id)
         ok = audit_store.rollback(
             path,
             version_id,
             actor=actor,
-            reason="rollback_worker_soul",
+            reason="rollback_subagent_soul",
         )
         if ok:
             self._invalidate_cache(path)
         return ok
 
     def list_versions(
-        self, *, agent_kind: str, worker_id: Optional[str] = None, limit: int = 10
+        self, *, agent_kind: str, agent_id: Optional[str] = None, limit: int = 10
     ):
         if agent_kind == "core-manager":
             return audit_store.list_versions(self._core_path(), limit=limit)
         return audit_store.list_versions(
-            self._worker_path(worker_id or "worker-main"), limit=limit
+            self._subagent_path(agent_id or "subagent-main"), limit=limit
         )
 
     @staticmethod
-    def extract_worker_id_from_user_id(user_id: str) -> Optional[str]:
+    def extract_subagent_id_from_user_id(user_id: str) -> Optional[str]:
         text = str(user_id or "").strip()
-        if not text.startswith("worker::"):
+        if not text.startswith("subagent::"):
             return None
         parts = text.split("::")
         if len(parts) < 2:
             return None
-        worker_id = str(parts[1]).strip()
-        return worker_id or None
+        subagent_id = str(parts[1]).strip()
+        return subagent_id or None
 
     def resolve_for_runtime_user(self, user_id: str) -> SoulPayload:
-        worker_id = self.extract_worker_id_from_user_id(user_id)
-        if worker_id:
-            return self.load_worker(worker_id)
+        subagent_id = self.extract_subagent_id_from_user_id(user_id)
+        if subagent_id:
+            return self.load_subagent(subagent_id)
         return self.load_core()
 
 

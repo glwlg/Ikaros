@@ -34,9 +34,9 @@ async def test_task_inbox_submit_assign_complete(tmp_path):
     assert task.task_id
     assert task.status == "pending"
 
-    ok = await inbox.assign_worker(
+    ok = await inbox.assign_executor(
         task.task_id,
-        worker_id="worker-main",
+        executor_id="subagent-main",
         reason="needs_execution",
     )
     assert ok is True
@@ -44,7 +44,7 @@ async def test_task_inbox_submit_assign_complete(tmp_path):
     updated = await inbox.get(task.task_id)
     assert updated is not None
     assert updated.status == "running"
-    assert updated.assigned_worker_id == "worker-main"
+    assert updated.executor_id == "subagent-main"
 
     ok = await inbox.complete(
         task.task_id,

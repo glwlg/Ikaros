@@ -203,20 +203,15 @@ def _as_float(value: str, default: float) -> float:
 AUTO_RECOVERY_MAX_ATTEMPTS = int(os.getenv("AUTO_RECOVERY_MAX_ATTEMPTS", "3"))
 
 USERLAND_ROOT = os.getenv(
-    "USERLAND_ROOT", os.path.join(DATA_DIR, "userland", "workers")
+    "USERLAND_ROOT", os.path.join(DATA_DIR, "userland", "subagents")
 )
-WORKER_DEFAULT_BACKEND = os.getenv("WORKER_DEFAULT_BACKEND", "core-agent")
 
-# Core chat dispatch policy:
-# - worker_only: always dispatch to worker, no fallback
-# - worker_preferred: dispatch worker first, fallback to core orchestrator on worker failure
-# - orchestrator: keep current core orchestrator execution path
+# Core chat execution policy:
+# - manager_only: manager handles the request directly
+# - manager_with_subagents: manager may launch internal subagents when needed
 CORE_CHAT_EXECUTION_MODE = (
-    os.getenv("CORE_CHAT_EXECUTION_MODE", "worker_only").strip().lower()
-    or "worker_only"
-)
-CORE_CHAT_WORKER_BACKEND = (
-    os.getenv("CORE_CHAT_WORKER_BACKEND", "core-agent").strip().lower() or "core-agent"
+    os.getenv("CORE_CHAT_EXECUTION_MODE", "manager_with_subagents").strip().lower()
+    or "manager_with_subagents"
 )
 
 # Kernel-protected source roots (comma-separated absolute/relative paths)

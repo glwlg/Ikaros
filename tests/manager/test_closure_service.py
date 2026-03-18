@@ -6,7 +6,7 @@ import pytest
 
 from core.heartbeat_store import heartbeat_store
 from core.task_inbox import task_inbox
-from manager.planning.stage_planner import mark_stage_running, normalize_stage_plan
+from manager.planning.stage_planner import normalize_stage_plan
 import manager.relay.closure_service as closure_module
 from shared.contracts.dispatch import TaskEnvelope
 
@@ -47,7 +47,7 @@ def _two_stage_plan(original_request: str) -> dict:
             "title": "收集信息",
             "goal": "先明确约束并收集执行所需信息。",
             "success_signal": "进入执行阶段所需信息已具备。",
-            "executor": "worker",
+            "executor": "subagent",
             "status": "running",
             "attempt_count": 1,
             "last_summary": "",
@@ -59,7 +59,7 @@ def _two_stage_plan(original_request: str) -> dict:
             "title": "执行主要任务",
             "goal": "完成主体执行并整理输出。",
             "success_signal": "主体执行已经完成。",
-            "executor": "worker",
+            "executor": "subagent",
             "status": "pending",
             "attempt_count": 0,
             "last_summary": "",
@@ -109,9 +109,9 @@ async def test_resolve_attempt_blocked_moves_session_to_waiting_user(
 
     task = TaskEnvelope(
         task_id="attempt-1",
-        worker_id="worker-main",
+        executor_id="subagent-main",
         instruction=session.goal,
-        source="manager_dispatch",
+        source="subagent",
         metadata={
             "user_id": "u-1",
             "platform": "telegram",
@@ -196,54 +196,25 @@ async def test_resolve_attempt_success_dispatches_next_stage(monkeypatch, _isola
 
     calls: list[dict] = []
 
-    async def fake_dispatch_worker(**kwargs):
+    async def fake_spawn(**kwargs):
         calls.append(dict(kwargs))
-        meta = dict(kwargs.get("metadata") or {})
-        plan = normalize_stage_plan(
-            meta.get("stage_plan"),
-            original_request=meta.get("original_user_request") or session.goal,
-        )
-        running_plan = mark_stage_running(plan, stage_id="stage-2")
-        latest = await task_inbox.get(session.task_id)
-        latest_meta = dict((latest.metadata if latest else {}) or {})
-        latest_meta.update(
-            {
-                "stage_plan": running_plan,
-                "session_task_id": session.task_id,
-                "stage_id": "stage-2",
-                "stage_index": 2,
-                "stage_total": 2,
-                "attempt_index": 1,
-                "original_user_request": session.goal,
-            }
-        )
-        await task_inbox.update_status(
-            session.task_id,
-            "running",
-            event="stage_attempt_dispatched",
-            detail="worker=Main Worker; stage=2/2:执行主要任务",
-            metadata=latest_meta,
-        )
         return {
             "ok": True,
-            "worker_id": "worker-main",
-            "worker_name": "Main Worker",
-            "session_task_id": session.task_id,
-            "payload": {"task_id": session.task_id, "stage_index": 2, "stage_total": 2},
-            "selection_reason": "fake",
+            "subagent_id": "subagent-stage-2",
+            "task_id": "tsk-stage-2",
         }
 
     monkeypatch.setattr(
-        closure_module.manager_dispatch_service,
-        "dispatch_worker",
-        fake_dispatch_worker,
+        closure_module.subagent_supervisor,
+        "spawn",
+        fake_spawn,
     )
 
     task = TaskEnvelope(
         task_id="attempt-2",
-        worker_id="worker-main",
+        executor_id="subagent-main",
         instruction=session.goal,
-        source="manager_dispatch",
+        source="subagent",
         metadata={
             "user_id": "u-2",
             "platform": "telegram",
@@ -279,12 +250,15 @@ async def test_resolve_attempt_success_dispatches_next_stage(monkeypatch, _isola
     assert decision["kind"] == "next_stage"
     assert "正在继续" in decision["text"]
     assert len(calls) == 1
+    assert calls[0]["mode"] == "detached"
+    assert calls[0]["task_metadata"]["stage_id"] == "stage-2"
 
     stored = await task_inbox.get(session.task_id)
     assert stored is not None
     assert stored.status == "running"
     stage_plan = dict((stored.metadata or {}).get("stage_plan") or {})
     assert stage_plan["current_stage_id"] == "stage-2"
+    assert stored.metadata["subagent_ids"] == ["subagent-stage-2"]
 
 
 @pytest.mark.asyncio
@@ -298,7 +272,7 @@ async def test_resolve_attempt_final_stage_non_deliverable_text_becomes_waiting_
             "title": "验证结果并整理交付",
             "goal": "整理最终简报",
             "success_signal": "结果已验证，并具备最终交付所需的摘要或附件。",
-            "executor": "worker",
+            "executor": "subagent",
             "status": "running",
             "attempt_count": 1,
             "last_summary": "",
@@ -338,9 +312,9 @@ async def test_resolve_attempt_final_stage_non_deliverable_text_becomes_waiting_
 
     task = TaskEnvelope(
         task_id="attempt-final-1",
-        worker_id="worker-main",
+        executor_id="subagent-main",
         instruction=session.goal,
-        source="manager_dispatch",
+        source="subagent",
         metadata={
             "user_id": "u-final",
             "platform": "telegram",
@@ -420,9 +394,9 @@ async def test_resolve_attempt_final_completes_session(monkeypatch, _isolated_st
 
     task = TaskEnvelope(
         task_id="attempt-3",
-        worker_id="worker-main",
+        executor_id="subagent-main",
         instruction=session.goal,
-        source="manager_dispatch",
+        source="subagent",
         metadata={
             "user_id": "u-3",
             "platform": "telegram",
@@ -514,21 +488,18 @@ async def test_resume_waiting_task_treats_text_as_adjustment(monkeypatch, _isola
 
     calls: list[dict] = []
 
-    async def fake_dispatch_worker(**kwargs):
+    async def fake_spawn(**kwargs):
         calls.append(dict(kwargs))
         return {
             "ok": True,
-            "worker_id": "worker-main",
-            "worker_name": "Main Worker",
-            "session_task_id": session.task_id,
-            "selection_reason": "fake",
-            "payload": {"task_id": session.task_id, "stage_index": 1, "stage_total": 2},
+            "subagent_id": "subagent-resume-1",
+            "task_id": "tsk-resume-1",
         }
 
     monkeypatch.setattr(
-        closure_module.manager_dispatch_service,
-        "dispatch_worker",
-        fake_dispatch_worker,
+        closure_module.subagent_supervisor,
+        "spawn",
+        fake_spawn,
     )
 
     resume = await closure_module.manager_closure_service.resume_waiting_task(
@@ -540,7 +511,7 @@ async def test_resume_waiting_task_treats_text_as_adjustment(monkeypatch, _isola
     assert resume["ok"] is True
     assert "已记录你的补充说明" in resume["message"]
     assert len(calls) == 1
-    metadata = dict(calls[0].get("metadata") or {})
+    metadata = dict(calls[0].get("task_metadata") or {})
     stage_plan = dict(metadata.get("stage_plan") or {})
     adjustments = list(stage_plan.get("adjustments") or [])
     assert adjustments[-1]["message"] == "把范围限制在最近 7 天，并先检查现有容器状态"

@@ -67,14 +67,13 @@ async def test_orchestrator_manager_tool_surface_matches_current_runtime(monkeyp
         "write",
         "edit",
         "bash",
+        "await_subagents",
         "codex_session",
-        "dispatch_worker",
         "git_ops",
         "gh_cli",
-        "list_workers",
         "repo_workspace",
+        "spawn_subagent",
         "task_tracker",
-        "worker_status",
     }
     assert "load_skill" not in captured["tool_names"]
 

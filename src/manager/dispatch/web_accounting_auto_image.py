@@ -271,7 +271,7 @@ async def run_web_accounting_auto_image_task(task: TaskEnvelope) -> TaskResult:
             success_text = "草稿解析成功"
             return TaskResult(
                 task_id=task.task_id,
-                worker_id=task.worker_id,
+                executor_id=task.executor_id,
                 ok=True,
                 summary=success_text,
                 payload={
@@ -305,7 +305,7 @@ async def run_web_accounting_auto_image_task(task: TaskEnvelope) -> TaskResult:
         success_text = "草稿解析成功"
         return TaskResult(
             task_id=task.task_id,
-            worker_id=task.worker_id,
+            executor_id=task.executor_id,
             ok=True,
             summary=success_text,
             payload={
@@ -331,7 +331,7 @@ async def run_web_accounting_auto_image_task(task: TaskEnvelope) -> TaskResult:
     )
     return TaskResult(
         task_id=task.task_id,
-        worker_id=task.worker_id,
+        executor_id=task.executor_id,
         ok=False,
         summary=detail[:200],
         error=detail[:200],

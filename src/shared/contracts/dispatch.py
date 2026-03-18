@@ -19,7 +19,7 @@ def new_task_id(prefix: str = "tsk") -> str:
 @dataclass
 class TaskEnvelope:
     task_id: str
-    worker_id: str
+    executor_id: str
     instruction: str
     source: str
     backend: str = ""
@@ -38,9 +38,9 @@ class TaskEnvelope:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "task_id": str(self.task_id or "").strip(),
-            "worker_id": str(self.worker_id or "").strip(),
+            "executor_id": str(self.executor_id or "").strip(),
             "instruction": str(self.instruction or "").strip(),
-            "source": str(self.source or "manager_dispatch").strip(),
+            "source": str(self.source or "manager").strip(),
             "backend": str(self.backend or "").strip(),
             "priority": int(self.priority or 0),
             "status": str(self.status or "pending").strip().lower(),
@@ -59,9 +59,9 @@ class TaskEnvelope:
     def from_dict(cls, payload: Dict[str, Any]) -> "TaskEnvelope":
         data = dict(payload or {})
         task_id = str(data.get("task_id") or "").strip() or new_task_id()
-        worker_id = str(data.get("worker_id") or "worker-main").strip()
+        executor_id = str(data.get("executor_id") or "subagent").strip()
         instruction = str(data.get("instruction") or "").strip()
-        source = str(data.get("source") or "manager_dispatch").strip()
+        source = str(data.get("source") or "manager").strip()
         backend = str(data.get("backend") or "").strip()
         priority = int(data.get("priority") or 0)
         raw_status = str(data.get("status") or "pending").strip().lower()
@@ -73,7 +73,7 @@ class TaskEnvelope:
         metadata = data.get("metadata")
         return cls(
             task_id=task_id,
-            worker_id=worker_id,
+            executor_id=executor_id,
             instruction=instruction,
             source=source,
             backend=backend,
@@ -94,7 +94,7 @@ class TaskEnvelope:
 @dataclass
 class TaskResult:
     task_id: str
-    worker_id: str
+    executor_id: str
     ok: bool
     summary: str = ""
     error: str = ""
@@ -104,7 +104,7 @@ class TaskResult:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "task_id": str(self.task_id or "").strip(),
-            "worker_id": str(self.worker_id or "").strip(),
+            "executor_id": str(self.executor_id or "").strip(),
             "ok": bool(self.ok),
             "summary": str(self.summary or "").strip(),
             "error": str(self.error or "").strip(),
@@ -118,7 +118,7 @@ class TaskResult:
         raw_payload = data.get("payload")
         return cls(
             task_id=str(data.get("task_id") or "").strip(),
-            worker_id=str(data.get("worker_id") or "").strip(),
+            executor_id=str(data.get("executor_id") or "").strip(),
             ok=bool(data.get("ok")),
             summary=str(data.get("summary") or "").strip(),
             error=str(data.get("error") or "").strip(),

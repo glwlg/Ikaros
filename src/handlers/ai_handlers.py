@@ -192,12 +192,11 @@ def _humanize_manager_tool_name(tool_name: str) -> str:
         "write": "写入文件",
         "edit": "编辑文件",
         "load_skill": "加载技能",
+        "await_subagents": "等待子任务",
         "codex_session": "编程会话",
-        "dispatch_worker": "派发助手",
         "git_ops": "Git 操作",
-        "worker_status": "查询状态",
-        "list_workers": "列出助手",
         "repo_workspace": "仓库工作区",
+        "spawn_subagent": "启动子任务",
         "web_search": "搜索",
         "web_extractor": "网页提取",
     }
@@ -226,23 +225,29 @@ def _summarize_manager_tool_args(
             if skill_name:
                 return "技能", skill_name
 
-    if raw == "dispatch_worker":
-        worker_name = _compact_text(str(args.get("worker_id") or ""), limit=80)
-        instruction = _compact_text(str(args.get("instruction") or ""), limit=160)
-        if worker_name and instruction:
-            return "任务", f"{worker_name}: {instruction}"
-        if instruction:
-            return "任务", instruction
-        if worker_name:
-            return "助手", worker_name
+    if raw == "spawn_subagent":
+        goal = _compact_text(str(args.get("goal") or ""), limit=160)
+        mode = _compact_text(str(args.get("mode") or ""), limit=40)
+        if goal and mode:
+            return "子任务", f"{mode}: {goal}"
+        if goal:
+            return "子任务", goal
+        if mode:
+            return "模式", mode
 
-    if raw == "worker_status":
+    if raw == "await_subagents":
+        subagent_ids = [
+            _compact_text(str(item or ""), limit=60)
+            for item in list(args.get("subagent_ids") or [])
+            if _compact_text(str(item or ""), limit=60)
+        ]
+        if subagent_ids:
+            return "子任务", ", ".join(subagent_ids[:3])
+
+    if raw == "task_tracker":
         task_id = _compact_text(str(args.get("task_id") or ""), limit=120)
-        worker_name = _compact_text(str(args.get("worker_id") or ""), limit=80)
         if task_id:
             return "任务", task_id
-        if worker_name:
-            return "助手", worker_name
 
     if raw == "repo_workspace":
         action = _compact_text(str(args.get("action") or ""), limit=80)
@@ -271,9 +276,10 @@ def _summarize_manager_tool_args(
     preferred_keys = (
         "query",
         "url",
+        "goal",
         "instruction",
         "task_id",
-        "worker_id",
+        "subagent_ids",
         "name",
     )
     for key in preferred_keys:
@@ -561,12 +567,12 @@ async def _collect_recent_dialog_context(
     return joined.strip()
 
 
-async def _build_worker_instruction_with_context(
+async def _build_subagent_instruction_with_context(
     ctx: UnifiedContext,
     *,
     user_id: str,
     user_message: str,
-    worker_has_memory: bool,
+    subagent_has_memory: bool,
 ) -> tuple[str, dict[str, Any]]:
     private_session = _is_private_memory_session(ctx)
     dialog_context = await _collect_recent_dialog_context(
@@ -582,11 +588,11 @@ async def _build_worker_instruction_with_context(
         )
     )
     memory_snapshot = ""
-    if wants_memory_summary and not worker_has_memory:
+    if wants_memory_summary and not subagent_has_memory:
         memory_snapshot = await _fetch_user_memory_snapshot(user_id)
 
     # SIMPLIFIED: Core Manager no longer micromanages the prompt.
-    # The Worker's identity and tools are defined in its SOUL.MD.
+    # The subagent's identity and tools are defined in its SOUL.MD.
     # We only pass the Request and Context.
     sections: list[str] = [
         f"【当前用户请求】\n{str(user_message or '').strip()}",
@@ -605,7 +611,7 @@ async def _build_worker_instruction_with_context(
     if len(instruction) > 6000:
         instruction = instruction[:6000]
     return instruction, {
-        "worker_has_memory": worker_has_memory,
+        "subagent_has_memory": subagent_has_memory,
         "private_session": private_session,
         "dialog_context_included": bool(dialog_context),
         "memory_summary_included": bool(memory_snapshot),

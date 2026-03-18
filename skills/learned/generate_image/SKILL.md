@@ -11,11 +11,11 @@ triggers:
 - draw
 - paint
 - imagine
-runtime_target: worker
+runtime_target: manager
 change_level: learned
 allow_manager_modify: true
 allow_auto_publish: true
-rollout_target: worker
+rollout_target: manager
 preflight_commands:
 - python scripts/execute.py --help
 policy_groups:

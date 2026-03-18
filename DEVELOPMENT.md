@@ -1,19 +1,19 @@
 # X-Bot DEVELOPMENT
 
-更新时间：2026-03-07
+更新时间：2026-03-17  
 状态：`ACTIVE`
 
-本文描述当前仓库已经落地的架构边界、运行时约束和开发入口。它不是愿景文档，默认以现有代码为准。
+本文描述当前仓库已经落地的运行时边界与开发约束，默认以现有代码为准。
 
 ## 1. 当前系统形态
 
-X-Bot 当前是三服务架构：
+X-Bot 当前是两类进程：
 
-- `x-bot`：Core Manager
-- `x-bot-worker`：默认 Worker Kernel
+- `x-bot`：唯一用户可见的 Core Manager
 - `x-bot-api`：FastAPI + SPA
 
-三者通过 `docker-compose.yml` 启动，已经拆成独立镜像 target 和独立 Python 依赖组。
+Manager 运行在宿主机或单容器内，必要时在同进程内启动受控 `subagent` 做并发执行。  
+`subagent` 不是独立部署单元，也不是直接对用户交付结果的 agent。
 
 ## 2. 职责边界
 
@@ -23,13 +23,13 @@ Manager 负责：
 
 - 平台消息入口和命令入口
 - 提示词、SOUL、上下文、工具面组装
-- 按权限注入原语工具与 skill direct tool
-- 普通异步任务派发给 worker
-- manager 侧编码会话、仓库工作区、git/gh 发布与本地 rollout
-- manager 自身执行过程和 worker 结果回传
-- heartbeat、记忆、治理和权限控制
+- 任务治理、heartbeat、记忆、权限控制
+- 直接执行普通任务
+- 在需要并发或隔离风险时启动内部 `subagent`
+- 统一接收 `subagent` 结果并决定继续、降级、重试、等待用户或最终交付
+- 编码会话、仓库工作区、git/gh 发布与本地 rollout
 
-Manager 当前可以直接使用这些基础原语：
+Manager 的基础原语：
 
 - `read`
 - `write`
@@ -37,50 +37,39 @@ Manager 当前可以直接使用这些基础原语：
 - `bash`
 - `load_skill`
 
-另外，声明了 `tool_exports` 且权限允许的 skill tool 会被动态注入。例如当前的：
+Manager 内部控制面工具：
+
+- `spawn_subagent`
+- `await_subagents`
+
+Manager 侧常用 direct tool：
 
 - `repo_workspace`
 - `codex_session`
 - `git_ops`
 - `gh_cli`
 - `task_tracker`
-- `list_workers`
-- `dispatch_worker`
-- `worker_status`
 
 约束：
 
-- 仓库代码路径上的正式开发优先通过 `repo_workspace` + `codex_session` + `git_ops` + `gh_cli`
-- 运行态数据文件仍可用原语直接维护，例如 `data/` 下的用户状态和系统状态
+- 用户最终只和 Manager 对话
+- `subagent` 不能直接向平台发消息
+- `subagent` 只能使用 Manager 显式分配的工具与技能
+- `subagent` 失败后必须先回 Manager 决策，不能直接把原始失败结果当作最终交付
 
-### 2.1.1 AI-Native 闭环原则
+### 2.2 Internal Subagent
 
-Manager 的默认目标应是闭环交付，而不是“完成一轮回复就结束”。
+`subagent` 负责：
 
-- `completed` 表示任务真正完成，不是某个中间动作（例如开了 PR）已经做完
-- 对外部世界仍有后续依赖的任务，应保持未完成状态，例如 `waiting_external`
-- heartbeat 更像 bot 的主动回顾机制：检查还有哪些未完成事项，再决定如何推进；不要优先把这类能力设计成场景专属 cron/runner
-- 核心应硬编码“状态语义、完成条件、复查时机”，不要硬编码一堆场景专属执行流程
-- manager 需要能直接查看和更新任务状态；具体怎么推进任务，优先交给 manager 结合上下文和工具自己判断
-- 若 heartbeat 准备自动推进一个未完成任务，必须先给用户发一条简短说明，不能默默修改
+- 执行一个边界清晰的子任务
+- 在受控工具集内完成局部目标
+- 返回结构化结果、附件和诊断信息
 
-### 2.2 Worker Kernel
+`subagent` 不负责：
 
-Worker 负责：
-
-- 从共享 dispatch queue claim 任务
-- 维持 lease heartbeat
-- 执行默认 program/runtime
-- 写回结果、错误、摘要和进度
-- 镜像运行时尽量保持精简，不再承载平台 SDK
-
-Worker 不负责：
-
-- 平台消息入口
-- Manager 核心治理逻辑
-- 直接向平台发消息
-
-消息进出统一走 Manager，Worker 只写队列和结果。
+- 直接面向用户回复
+- 继续拆分出新的 `subagent`
+- 自己决定任务闭环是否成立
 
 ### 2.3 API Service
 
@@ -90,294 +79,125 @@ Worker 不负责：
 - auth、binding、accounting 等 Web/API 能力
 - 前端静态资源和 SPA fallback
 
-API 与 Manager/Worker 已拆成独立镜像，不再共享全部运行时依赖。
-
 ## 3. 代码结构
 
 ```text
 src/
 ├── api/          # FastAPI + SPA
-├── core/         # 提示词、工具注入、状态访问、运行时策略
+├── core/         # orchestrator、prompt、tool/runtime、state/task/subagent
 ├── handlers/     # 用户命令与消息入口
-├── manager/      # dispatch、relay、workspace/codex/git/gh 工具
+├── manager/      # manager 侧开发/规划/闭环服务
 ├── platforms/    # Telegram / Discord / DingTalk 适配
 ├── services/     # LLM、下载、搜索等外部服务
-├── shared/       # queue contract / jsonl queue / shared models
-└── worker/       # worker kernel + program loader/runtime
+└── shared/       # 通用契约与跨模块共享类型
 ```
 
 关键入口：
 
 - `src/main.py`：Manager 主程序
-- `src/worker_main.py`：Worker 主程序
 - `src/api/main.py`：API 主程序
 - `src/core/agent_orchestrator.py`：LLM function-call 编排
 - `src/core/orchestrator_runtime_tools.py`：工具装配与执行策略
-- `src/manager/dispatch/service.py`：worker 选择与派发
-- `src/manager/relay/result_relay.py`：worker 结果和进度回传
+- `src/core/subagent_supervisor.py`：内部 `subagent` 启动、等待、后台交付
+- `src/manager/relay/closure_service.py`：阶段任务闭环、waiting_user/next_stage/final 决策
 - `src/manager/dev/workspace_session_service.py`：repo workspace / worktree 管理
-- `src/manager/dev/codex_session_service.py`：manager 编码会话
+- `src/manager/dev/codex_session_service.py`：Manager 编码会话
 - `src/manager/dev/git_ops_service.py`：git 状态/提交/push/fork
-- `src/worker/kernel/daemon.py`：worker queue loop
 
 ## 4. 调度模型
 
-### 4.1 队列协议
+### 4.1 Manager-First
 
-共享任务协议位于：
+- 普通请求默认由 Manager 直接处理
+- 当且仅当存在并发收益或风险隔离需求时，Manager 才启动 `subagent`
+- `subagent` 运行在同一进程内，由 `SubagentSupervisor` 托管
 
-- `src/shared/contracts/dispatch.py`
-- `src/shared/queue/dispatch_queue.py`
+### 4.2 Tool Scope
 
-持久化路径默认是：
+- Manager 启动 `subagent` 时必须同时指定 `allowed_tools`
+- 若需要 skill，必须同时指定 `allowed_skills`
+- runtime tool assembler / dispatcher 会在运行时再做一层显式白名单过滤
 
-- `data/system/dispatch/tasks.jsonl`
-- `data/system/dispatch/results.jsonl`
+### 4.3 后台任务
 
-任务状态：
+- 后台任务仍写入 `task_inbox`
+- metadata 使用：
+  - `executor_type=subagent`
+  - `subagent_ids`
+  - `tool_scope`
+- 后台结果先回 Manager 闭环，再由 Manager 统一推送文本和附件
 
-- `pending`
-- `running`
-- `done`
-- `failed`
-- `cancelled`
+## 5. Task/Heartbeat 语义
 
-Worker 在 claim 任务后会续租 lease；如果 `running` 任务长期无心跳，会被恢复或标记失败。
+- `completed`：任务真正完成并可交付
+- `waiting_user`：当前阻塞，需要用户补充或确认
+- `waiting_external`：依赖外部世界变化，不应误判为完成
+- `heartbeat`：主动回顾未闭环任务，决定是否提醒、继续或维持等待
 
-### 4.2 Manager 派发
+约束：
 
-Manager 通过 `src/manager/dispatch/service.py` 做：
+- 不要把某个中间动作完成误写成 `completed`
+- heartbeat 自动推进前必须先通知用户
+- `/task` 是后台任务的统一可见入口
 
-- worker 选择
-- priority 计算
-- load/error-rate/queue-depth 感知
-- 默认 worker 创建
-- 任务入队
+## 6. Skill 系统
 
-当前选择逻辑不是 broker 级调度系统，而是基于文件队列和轻量启发式打分。
-
-### 4.3 结果回传
-
-Worker 完成任务后，result relay 会把结果推回原对话。
-
-当前支持两类过程反馈：
-
-- worker 工具过程
-- manager 自身工具过程
-
-Telegram 平台优先使用 `sendMessageDraft` 单草稿刷新，其他平台走普通消息/编辑路径。
-
-## 5. Skill 系统
-
-Skill 是运行时扩展，放在：
+Skill 仍是运行时扩展，放在：
 
 - `skills/builtin/`
 - `skills/learned/`
 
-每个 skill 至少包含：
-
-- `SKILL.md`
-- 可选 `scripts/execute.py`
-
-### 5.1 默认调用链
-
-默认不是“所有 skill 都变成 tool”。当前的标准调用链是：
+标准调用链：
 
 1. 模型调用 `load_skill`
 2. 读取 `SKILL.md`
 3. 按 SOP 用 `bash` 执行 `python scripts/execute.py ...`
 
-### 5.2 Direct Tool 导出
+若 skill frontmatter 声明 `tool_exports`，则可以被动态注入为 direct tool。  
+Manager 是否给 `subagent` 分配某个 skill，由 `allowed_skills` 决定。
 
-如果 skill frontmatter 声明了 `tool_exports`，该 skill 可以被动态注入为 direct tool。
+## 7. 正式开发链路
 
-相关实现：
-
-- `src/core/skill_loader.py`
-- `src/core/tool_registry.py`
-- `src/core/skill_tool_handlers.py`
-
-这意味着 direct tool 不再应写死在 `tool_registry.py`。
-
-### 5.3 Skill Frontmatter
-
-当前有效的 skill 元数据包括但不限于：
-
-- `entrypoint`
-- `input_schema`
-- `contract`
-- `tool_exports`
-- `policy_groups`
-- `platform_handlers`
-- `prompt_hint`
-
-约束：
-
-- direct tool 能力应优先通过 `tool_exports` 声明
-- skill 权限分组应优先在 skill 元数据中声明，而不是继续把分类硬编码到核心
-- 平台 handler 注册是显式 opt-in，只有声明 `platform_handlers: true` 的 skill 才会在启动时注册平台命令或 callback
-
-## 6. 权限模型
-
-工具权限由 `src/core/tool_access_store.py` 管理，持久化文件是：
-
-- `data/kernel/tool_access.json`
-
-当前默认策略：
-
-- Core Manager 默认允许：`management`、`automation`、`coding`、`primitives`、`skill-admin`
-- Worker 默认拒绝：`coding`、`management`、`automation`
-
-设计目标：
-
-- Manager 负责治理与编码
-- Worker 负责执行
-- Skill direct tool 是否暴露，既受 skill 元数据控制，也受 runtime policy 过滤
-
-## 7. Manager Coding Toolchain
-
-当前的正式开发链路不再使用 `software_delivery`。Manager 应直接组合以下工具：
+仓库开发优先走：
 
 - `repo_workspace`
 - `codex_session`
 - `git_ops`
 - `gh_cli`
 
-对应实现入口：
-
-- `src/manager/dev/workspace_session_service.py`
-- `src/manager/dev/codex_session_service.py`
-- `src/manager/dev/git_ops_service.py`
-- `src/manager/dev/publisher.py`
-- `src/manager/integrations/gh_cli_service.py`
-- `config/deployment_targets.yaml`
-
 约束：
 
-- 仓库开发优先使用独立 worktree，不要在脏工作区里直接切分支
-- Codex 提问时应进入 `waiting_user`，由 Manager 向用户转问并继续同一 coding session
-- 若任务在编码、发布或外部系统交互后仍未真正闭环，Manager 应显式把任务留在未完成状态（例如 `waiting_external`），并记录完成条件与复查线索
-- push 默认先尝试 origin，403 时自动 fallback 到 fork
-- local rollout 目前基于 `docker compose build` + `docker compose up -d`
-- rollout target 不再硬编码在发布器里，而是从 `config/deployment_targets.yaml` 读取
+- 优先独立 worktree，不要在脏工作区里直接切分支
+- 若任务在编码、发布或外部系统交互后仍未闭环，必须保留未完成状态并写清完成条件
 
-## 8. 状态与数据面
+## 8. 部署约束
 
-X-Bot 仍然是 file-system-first 设计。重要状态包括：
+- `docker-compose.yml` 只保留 `x-bot` 与 `x-bot-api`
+- 不再存在独立 `worker` 容器
+- 推荐把主 bot 作为宿主机长进程运行；Docker 主要承载 API 或可选基础设施
 
-- `data/WORKERS.json`：worker 注册表
-- `data/system/dispatch/`：任务与结果队列
-- `data/system/dev_workspaces/` / `data/system/dev_worktrees/`：manager 开发工作区
-- `data/system/codex_sessions/`：编码会话与日志
-- `data/user/`：用户状态、对话、记忆、提醒、订阅等
-- `data/runtime_tasks/`：heartbeat 运行态
+## 9. 反模式
 
-状态访问应优先通过：
+- 不要重新引入独立 worker runtime、dispatch queue 或 result relay 主路径
+- 不要让 `subagent` 直接做用户交付闭环
+- 不要把 `spawn_subagent` 当成默认执行路径
+- 不要绕过 `state_store` / `state_paths` 直接拼运行态文件路径
+- 不要把 direct tool 大量重新写死回核心注册表，优先通过 skill metadata 导出
 
-- `src/core/state_paths.py`
-- `src/core/state_io.py`
-- `src/core/state_store.py`
-
-不要在业务代码里随意拼接 `data/...` 路径读写。
-
-## 9. 平台与消息入口
-
-当前平台入口：
-
-- Telegram
-- Discord
-- DingTalk Stream
-
-Manager 启动时会注册通用命令：
-
-- `/start`
-- `/new`
-- `/help`
-- `/chatlog`
-- `/skills`
-- `/reload_skills`
-- `/stop`
-- `/heartbeat`
-- `/worker`
-- `/acc`
-
-Telegram 还保留：
-
-- `/feature`
-- `/teach`
-
-但 `/teach` 已不再承担旧版“直接生成扩展代码”的职责，当前仅作过渡提示入口。
-
-## 10. 镜像与依赖拆分
-
-当前镜像 target：
-
-- `manager-runtime`
-- `worker-runtime`
-- `api-runtime`
-
-当前 Python 依赖组：
-
-- `manager`
-- `worker`
-- `api`
-- `optional-skill-runtime`
-
-当前边界要求：
-
-- Worker 镜像不再默认携带 Telegram/Discord/DingTalk SDK
-- API 镜像不应带 manager/worker 不需要的重依赖
-- 如果某类 skill 需要额外大包，优先放进可选 dependency group，而不是默认塞进所有运行时
-
-## 11. 开发约束
-
-### 11.1 应该做的
-
-- 用 skill metadata 驱动 tool 暴露和权限分组
-- 让 Manager 对代码类变更优先走 `repo_workspace` + `codex_session` + `git_ops` + `gh_cli`
-- 保持 manager/worker/api 角色边界清晰
-- 用测试保护 orchestrator、dispatch、relay、skill contract
-
-### 11.2 不应该做的
-
-- 不要再把 manager/worker 关键 direct tool 大量硬编码回核心注册表
-- 不要让 Worker 重新承担平台消息职责
-- 不要绕过 `dispatch_queue` 自己发明另一套 manager/worker 任务协议
-- 不要对 `data/` 做散落的 ad-hoc 文件路径读写
-- 不要把“未来想法”写成“当前已实现”放进说明文档
-
-## 12. 常用命令
+## 10. 常用命令
 
 ```bash
 uv sync
 uv run python src/main.py
-uv run python src/worker_main.py
-uv run uvicorn api.main:app --host 0.0.0.0 --port 8764
 uv run pytest
 docker compose up --build -d
 docker compose logs -f x-bot
-docker compose logs -f x-bot-worker
-docker compose logs -f x-bot-api
 ```
 
-## 13. 测试重点
+## 11. 高信号测试
 
-高信号测试位置：
-
-- `tests/core/test_prompt_composer.py`
+- `tests/core/test_orchestrator_single_loop.py`
 - `tests/core/test_runtime_tool_skillization.py`
-- `tests/core/test_orchestrator_runtime_tools.py`
-- `tests/core/test_worker_result_relay.py`
-- `tests/core/test_orchestrator_delivery_closure.py`
-- `tests/manager/test_workspace_session_service.py`
-- `tests/manager/test_codex_session_service.py`
-- `tests/manager/test_git_ops_service.py`
-- `tests/manager/test_deployment_targets.py`
-- `tests/shared/test_dispatch_queue.py`
-
-在修改这些区域时，至少应回归对应测试：
-
-- tool surface / prompt / skill metadata
-- dispatch queue / worker daemon
-- result relay
-- software delivery / rollout
+- `tests/core/test_prompt_composer.py`
+- `tests/manager/test_closure_service.py`
+- `tests/core/test_start_handlers_stop.py`

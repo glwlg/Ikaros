@@ -242,7 +242,7 @@ class ManagerDevPublisher:
             return {
                 "ok": False,
                 "error_code": "invalid_target_service",
-                "message": "target_service must be manager, worker, or api",
+                "message": "target_service must be manager or api",
             }
 
         compose_root = self._compose_root(repo_path)

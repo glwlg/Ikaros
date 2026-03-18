@@ -174,7 +174,7 @@ class HeartbeatStore:
             },
             "session": {
                 "active_task": None,
-                "active_worker_id": "worker-main",
+                "active_executor_id": "",
                 "last_event": "",
                 "events": [],
             },
@@ -273,9 +273,9 @@ class HeartbeatStore:
         session = dict(default["session"])
         session.update(dict((data or {}).get("session") or {}))
         session["active_task"] = self._normalize_active_task(session.get("active_task"))
-        session["active_worker_id"] = (
-            _truncate(session.get("active_worker_id", "worker-main"), 80)
-            or "worker-main"
+        session["active_executor_id"] = _truncate(
+            session.get("active_executor_id", ""),
+            80,
         )
         session["last_event"] = _truncate(session.get("last_event", ""), 800)
         raw_events = session.get("events")
@@ -347,7 +347,7 @@ class HeartbeatStore:
                 if normalized:
                     lines.append(f"- {normalized}")
         else:
-            lines.append("- 检查自己和worker的运行状态是否良好")
+            lines.append("- 检查自己和后台任务的运行状态是否良好")
         body = "\n".join(lines).rstrip() + "\n"
         return f"---\n{header}\n---\n\n{body}"
 
@@ -848,19 +848,18 @@ class HeartbeatStore:
             status["last_update"] = _now_iso()
             self._write_status_unlocked(status)
 
-    async def get_active_worker_id(self, user_id: str) -> str:
+    async def get_active_executor_id(self, user_id: str) -> str:
         state = await self.get_state(user_id)
         session = state["status"].get("session") or {}
-        worker_id = str(session.get("active_worker_id", "worker-main")).strip()
-        return worker_id or "worker-main"
+        return str(session.get("active_executor_id", "")).strip()
 
-    async def set_active_worker_id(self, user_id: str, worker_id: str) -> str:
+    async def set_active_executor_id(self, user_id: str, executor_id: str) -> str:
         _ = user_id
-        safe = _truncate(worker_id, 80) or "worker-main"
+        safe = _truncate(executor_id, 80)
         async with self._scope_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             session = dict(status.get("session") or {})
-            session["active_worker_id"] = safe
+            session["active_executor_id"] = safe
             status["session"] = session
             status["last_update"] = _now_iso()
             self._write_status_unlocked(status)

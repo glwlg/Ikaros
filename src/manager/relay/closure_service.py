@@ -6,9 +6,10 @@ from typing import Any, Dict
 
 from core.file_artifacts import extract_saved_file_rows, merge_file_rows, normalize_file_rows
 from core.heartbeat_store import heartbeat_store
+from core.subagent_supervisor import subagent_supervisor
 from core.task_cards import format_stage_continue_card, format_waiting_user_card
 from core.task_inbox import task_inbox
-from manager.dispatch.service import manager_dispatch_service
+from core.tool_registry import tool_registry
 from manager.planning.stage_planner import (
     add_adjustment,
     build_stage_instruction,
@@ -17,6 +18,7 @@ from manager.planning.stage_planner import (
     get_stage_position,
     mark_stage_blocked,
     mark_stage_completed,
+    mark_stage_running,
     merge_collected_files,
     normalize_stage_plan,
 )
@@ -37,10 +39,24 @@ _FINAL_DELIVERY_BLOCK_MARKERS = (
     "需重新检索",
     "回到检索阶段",
 )
+_DEFAULT_SUBAGENT_TOOL_EXCLUDES = {
+    "await_subagents",
+    "spawn_subagent",
+    "task_tracker",
+}
 
 
 def _safe_text(value: Any, *, limit: int = 4000) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _normalize_tokens(values: Any) -> list[str]:
+    rows: list[str] = []
+    for item in list(values or []):
+        token = str(item or "").strip()
+        if token and token not in rows:
+            rows.append(token)
+    return rows
 
 
 def _now_iso() -> str:
@@ -244,6 +260,47 @@ def _control_intent(text: str) -> str:
     return "adjust"
 
 
+def _resolve_tool_scope(*metadata_sources: Dict[str, Any]) -> tuple[list[str], list[str]]:
+    allowed_tools: list[str] = []
+    allowed_skills: list[str] = []
+    for source in metadata_sources:
+        if not isinstance(source, dict):
+            continue
+        scope = source.get("tool_scope")
+        if isinstance(scope, dict):
+            if not allowed_tools:
+                allowed_tools = _normalize_tokens(scope.get("allowed_tools"))
+            if not allowed_skills:
+                allowed_skills = _normalize_tokens(scope.get("allowed_skills"))
+        if not allowed_tools:
+            allowed_tools = _normalize_tokens(source.get("allowed_tool_names"))
+        if not allowed_skills:
+            allowed_skills = _normalize_tokens(source.get("allowed_skill_names"))
+        if allowed_tools:
+            break
+
+    if not allowed_tools:
+        allowed_tools = [
+            name
+            for name in tool_registry.get_manager_tool_names()
+            if name and name not in _DEFAULT_SUBAGENT_TOOL_EXCLUDES
+        ]
+    return allowed_tools, allowed_skills
+
+
+def _subagent_timeout_sec(*metadata_sources: Dict[str, Any]) -> int:
+    for source in metadata_sources:
+        if not isinstance(source, dict):
+            continue
+        try:
+            timeout = int(source.get("subagent_timeout_sec") or 0)
+        except Exception:
+            timeout = 0
+        if timeout > 0:
+            return max(30, timeout)
+    return 900
+
+
 class ManagerClosureService:
     @staticmethod
     def _waiting_ui() -> Dict[str, Any]:
@@ -307,6 +364,161 @@ class ManagerClosureService:
             detail=detail[:200],
             **fields,
         )
+
+    async def _start_stage_attempt(
+        self,
+        *,
+        user_id: str,
+        platform: str,
+        chat_id: str,
+        task_inbox_id: str,
+        session_task_id: str,
+        task_goal: str,
+        original_user_request: str,
+        stage_plan: Dict[str, Any],
+        session_meta: Dict[str, Any],
+        last_blocking_reason: str = "",
+        source: str,
+    ) -> Dict[str, Any]:
+        current_stage = get_current_stage(stage_plan) or {}
+        stage_id = _safe_text(current_stage.get("id"), limit=80)
+        stage_title = _safe_text(current_stage.get("title"), limit=200)
+        if not stage_id:
+            return {
+                "ok": False,
+                "message": "当前阶段信息缺失，无法继续执行。",
+            }
+
+        prepared_plan = mark_stage_running(stage_plan, stage_id=stage_id)
+        prepared_stage = get_current_stage(prepared_plan) or current_stage
+        stage_index, stage_total = get_stage_position(prepared_plan, stage_id)
+        attempt_index = max(1, int(prepared_stage.get("attempt_count") or 1))
+        prepared_goal = build_stage_instruction(
+            original_request=task_goal,
+            plan=prepared_plan,
+            stage=prepared_stage,
+            resolved_task_goal=task_goal,
+            previous_summary=_safe_text(prepared_plan.get("last_stage_summary"), limit=1200),
+            previous_output=_safe_text(prepared_plan.get("last_stage_output"), limit=2400),
+            last_blocking_reason=last_blocking_reason,
+        )
+        allowed_tools, allowed_skills = _resolve_tool_scope(session_meta)
+        timeout_sec = _subagent_timeout_sec(session_meta)
+        tool_scope = {
+            "allowed_tools": list(allowed_tools),
+            "allowed_skills": list(allowed_skills),
+        }
+        session_metadata = dict(session_meta)
+        session_metadata.update(
+            {
+                "staged_session": True,
+                "session_task_id": session_task_id,
+                "task_inbox_id": task_inbox_id,
+                "task_goal": task_goal,
+                "original_user_request": original_user_request,
+                "stage_plan": prepared_plan,
+                "stage_id": stage_id,
+                "stage_title": stage_title,
+                "stage_index": stage_index,
+                "stage_total": stage_total,
+                "attempt_index": attempt_index,
+                "resume_instruction_preview": _safe_text(prepared_goal, limit=1200),
+                "adjustments_count": count_adjustments(prepared_plan),
+                "tool_scope": tool_scope,
+                "executor_type": "subagent",
+                "last_blocking_reason": "",
+                "delivery_state": "pending",
+            }
+        )
+        spawn_result = await subagent_supervisor.spawn(
+            ctx=None,
+            goal=prepared_goal,
+            allowed_tools=allowed_tools,
+            allowed_skills=allowed_skills,
+            mode="detached",
+            timeout_sec=timeout_sec,
+            parent_task_id=session_task_id,
+            parent_task_inbox_id=task_inbox_id,
+            user_id_override=user_id,
+            platform_override=platform,
+            chat_id_override=chat_id,
+            task_metadata={
+                "staged_session": True,
+                "task_inbox_id": task_inbox_id,
+                "session_task_id": session_task_id,
+                "task_goal": task_goal,
+                "original_user_request": original_user_request,
+                "stage_plan": prepared_plan,
+                "stage_id": stage_id,
+                "stage_title": stage_title,
+                "stage_index": stage_index,
+                "stage_total": stage_total,
+                "attempt_index": attempt_index,
+                "last_blocking_reason": last_blocking_reason,
+                "tool_scope": tool_scope,
+                "source": source,
+                "user_id": user_id,
+                "platform": platform,
+                "chat_id": chat_id,
+            },
+        )
+        if not bool(spawn_result.get("ok")):
+            return {
+                "ok": False,
+                "message": _safe_text(
+                    spawn_result.get("message")
+                    or spawn_result.get("summary")
+                    or "无法启动阶段子任务。",
+                    limit=1000,
+                ),
+                "stage_plan": prepared_plan,
+                "stage_id": stage_id,
+                "stage_title": stage_title,
+            }
+
+        subagent_id = _safe_text(spawn_result.get("subagent_id"), limit=80)
+        detached_task_id = _safe_text(spawn_result.get("task_id"), limit=80)
+        session_metadata["subagent_ids"] = [subagent_id] if subagent_id else []
+        session_metadata["active_subagent_task_id"] = detached_task_id
+        await self._persist_session_metadata(
+            task_inbox_id=task_inbox_id,
+            status="running",
+            event="stage_attempt_started",
+            detail=f"subagent={subagent_id}; stage={stage_index}/{max(1, stage_total)}:{stage_title or stage_id}",
+            metadata=session_metadata,
+        )
+        if user_id:
+            await heartbeat_store.update_session_active_task(
+                user_id,
+                session_task_id=session_task_id,
+                task_inbox_id=task_inbox_id,
+                status="running",
+                goal=task_goal,
+                stage_index=stage_index,
+                stage_total=stage_total,
+                stage_id=stage_id,
+                stage_title=stage_title,
+                attempt_index=attempt_index,
+                result_summary=(
+                    f"正在推进阶段 {stage_index}/{max(1, stage_total)}："
+                    f"{stage_title or stage_id or '执行任务'}"
+                )[:500],
+                needs_confirmation=False,
+                confirmation_deadline="",
+                last_blocking_reason="",
+                resume_instruction_preview=_safe_text(prepared_goal, limit=2000),
+                adjustments_count=count_adjustments(prepared_plan),
+            )
+        return {
+            "ok": True,
+            "subagent_id": subagent_id,
+            "task_id": detached_task_id,
+            "stage_plan": prepared_plan,
+            "stage_id": stage_id,
+            "stage_title": stage_title,
+            "stage_index": stage_index,
+            "stage_total": stage_total,
+        }
 
     async def _set_waiting_user(
         self,
@@ -588,55 +800,55 @@ class ManagerClosureService:
                 detail=f"next={stage_index}/{max(1, stage_total)}:{next_stage_title or next_stage_id}",
                 metadata=merged_metadata,
             )
-            dispatch_metadata = dict(merged_metadata)
-            dispatch_metadata.update(
-                {
-                    "user_id": user_id,
-                    "platform": platform,
-                    "chat_id": chat_id,
-                    "task_inbox_id": task_inbox_id,
-                    "session_task_id": session_task_id,
-                    "last_blocking_reason": "",
-                }
+            start_result = await self._start_stage_attempt(
+                user_id=user_id,
+                platform=platform,
+                chat_id=chat_id,
+                task_inbox_id=task_inbox_id,
+                session_task_id=session_task_id,
+                task_goal=task_goal or task.instruction,
+                original_user_request=original_user_request,
+                stage_plan=stage_plan,
+                session_meta=merged_metadata,
+                last_blocking_reason="",
+                source="stage_continue",
             )
-            dispatch_result = await manager_dispatch_service.dispatch_worker(
-                instruction=task_goal or task.instruction,
-                worker_id=_safe_text(
-                    getattr(session_task, "assigned_worker_id", "") or task.worker_id,
-                    limit=80,
-                ),
-                source="worker_stage_continue",
-                metadata=dispatch_metadata,
-            )
-            if not bool(dispatch_result.get("ok")):
+            if not bool(start_result.get("ok")):
+                blocked_plan = mark_stage_blocked(
+                    stage_plan,
+                    stage_id=next_stage_id,
+                    summary=_safe_text(
+                        start_result.get("message") or "Manager 未能启动下一阶段。",
+                        limit=1000,
+                    ),
+                    error=_safe_text(
+                        start_result.get("message") or "subagent spawn failed",
+                        limit=1000,
+                    ),
+                )
                 fallback_result = {
                     "ok": False,
                     "summary": _safe_text(
-                        dispatch_result.get("summary")
-                        or dispatch_result.get("message")
-                        or "Manager 在推进下一阶段时未能成功派发新的执行尝试。",
+                        start_result.get("message")
+                        or "Manager 在推进下一阶段时未能启动新的子任务。",
                         limit=1000,
                     ),
                     "error": _safe_text(
-                        dispatch_result.get("error")
-                        or dispatch_result.get("message")
-                        or "dispatch failed",
+                        start_result.get("message") or "subagent spawn failed",
                         limit=1000,
                     ),
                     "payload": {
                         "text": _safe_text(
-                            dispatch_result.get("message")
-                            or dispatch_result.get("summary")
-                            or "Manager 在推进下一阶段时未能成功派发新的执行尝试。",
+                            start_result.get("message")
+                            or "Manager 在推进下一阶段时未能启动新的子任务。",
                             limit=1000,
                         ),
                         "attempt_outcome": "blocked",
-                        "closure_reason": "dispatch_failed",
+                        "closure_reason": "spawn_failed",
                         "failure_mode": "recoverable",
                         "diagnostic_summary": _safe_text(
-                            dispatch_result.get("message")
-                            or dispatch_result.get("summary")
-                            or "Manager 在推进下一阶段时未能成功派发新的执行尝试。",
+                            start_result.get("message")
+                            or "Manager 在推进下一阶段时未能启动新的子任务。",
                             limit=1000,
                         ),
                     },
@@ -647,7 +859,7 @@ class ManagerClosureService:
                     task_inbox_id=task_inbox_id,
                     task_goal=task_goal,
                     original_user_request=original_user_request,
-                    stage_plan=stage_plan,
+                    stage_plan=blocked_plan,
                     stage_id=next_stage_id,
                     stage_title=next_stage_title,
                     attempt_index=max(1, stage_index),
@@ -655,24 +867,11 @@ class ManagerClosureService:
                     session_meta=merged_metadata,
                     attempt_task_id=task.task_id,
                 )
-            try:
-                dispatched_worker_id = _safe_text(dispatch_result.get("worker_id"), limit=80)
-                if dispatched_worker_id:
-                    await task_inbox.assign_worker(
-                        task_inbox_id,
-                        worker_id=dispatched_worker_id,
-                        reason=_safe_text(
-                            dispatch_result.get("selection_reason"), limit=120
-                        ),
-                        manager_id="core-manager",
-                    )
-            except Exception:
-                logger.debug("Failed to refresh assigned worker after next stage dispatch", exc_info=True)
 
             text = format_stage_continue_card(
                 session_task_id=session_task_id,
-                stage_index=stage_index,
-                stage_total=stage_total,
+                stage_index=max(0, int(start_result.get("stage_index") or stage_index)),
+                stage_total=max(0, int(start_result.get("stage_total") or stage_total)),
                 stage_title=next_stage_title,
             )
             latest_task = await task_inbox.get(task_inbox_id)
@@ -807,37 +1006,33 @@ class ManagerClosureService:
                 ),
             }
         )
-        dispatch_result = await manager_dispatch_service.dispatch_worker(
-            instruction=task_goal or session_task.goal,
-            worker_id=_safe_text(
-                getattr(session_task, "assigned_worker_id", ""),
+        start_result = await self._start_stage_attempt(
+            user_id=safe_user_id,
+            platform=_safe_text(delivery_target.get("platform"), limit=64),
+            chat_id=_safe_text(delivery_target.get("chat_id"), limit=128),
+            task_inbox_id=task_inbox_id,
+            session_task_id=_safe_text(
+                active_task.get("session_task_id") or task_inbox_id,
                 limit=80,
             ),
+            task_goal=task_goal or session_task.goal,
+            original_user_request=original_user_request,
+            stage_plan=stage_plan,
+            session_meta=dispatch_metadata,
+            last_blocking_reason=_safe_text(
+                active_task.get("last_blocking_reason"), limit=1200
+            ),
             source="waiting_user_resume",
-            metadata=dispatch_metadata,
         )
-        if not bool(dispatch_result.get("ok")):
+        if not bool(start_result.get("ok")):
             return {
                 "ok": False,
                 "message": _safe_text(
-                    dispatch_result.get("message")
-                    or dispatch_result.get("summary")
+                    start_result.get("message")
                     or "重新派发任务失败，请稍后重试。",
                     limit=500,
                 ),
             }
-
-        try:
-            dispatched_worker_id = _safe_text(dispatch_result.get("worker_id"), limit=80)
-            if dispatched_worker_id:
-                await task_inbox.assign_worker(
-                    task_inbox_id,
-                    worker_id=dispatched_worker_id,
-                    reason=_safe_text(dispatch_result.get("selection_reason"), limit=120),
-                    manager_id="core-manager",
-                )
-        except Exception:
-            logger.debug("Failed to sync assigned worker on resume", exc_info=True)
 
         await heartbeat_store.append_session_event(
             safe_user_id,
@@ -847,8 +1042,8 @@ class ManagerClosureService:
                 else f"user_continue_resume:{task_inbox_id}:{stage_id}"
             ),
         )
-        stage_index = max(0, int(dispatch_result.get("payload", {}).get("stage_index") or 0))
-        stage_total = max(0, int(dispatch_result.get("payload", {}).get("stage_total") or 0))
+        stage_index = max(0, int(start_result.get("stage_index") or 0))
+        stage_total = max(0, int(start_result.get("stage_total") or 0))
         stage_hint = (
             f"阶段 {stage_index}/{max(1, stage_total)}"
             if stage_index > 0 and stage_total > 0
@@ -861,11 +1056,7 @@ class ManagerClosureService:
         return {
             "ok": True,
             "message": message,
-            "task_id": _safe_text(
-                dispatch_result.get("session_task_id")
-                or dispatch_result.get("payload", {}).get("task_id"),
-                limit=80,
-            ),
+            "task_id": _safe_text(start_result.get("task_id"), limit=80),
         }
 
 

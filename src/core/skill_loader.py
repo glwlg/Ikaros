@@ -243,14 +243,16 @@ def _build_skill_contract(
     permissions: Dict[str, Any],
 ) -> Dict[str, Any]:
     runtime_target = str(frontmatter.get("runtime_target") or "").strip().lower()
-    if runtime_target not in {"manager", "worker", "worker-kernel"}:
+    if runtime_target not in {"manager", "subagent"}:
         if manager_only or allowed_roles == ["manager"]:
             runtime_target = "manager"
+        elif allowed_roles == ["subagent"]:
+            runtime_target = "subagent"
         else:
-            runtime_target = "worker"
+            runtime_target = "manager"
 
     change_level = str(frontmatter.get("change_level") or "").strip().lower()
-    if change_level not in {"learned", "builtin", "worker-kernel"}:
+    if change_level not in {"learned", "builtin"}:
         change_level = "learned" if source == "learned" else "builtin"
 
     allow_manager_modify = _as_bool(
@@ -262,8 +264,8 @@ def _build_skill_contract(
         default=change_level == "learned",
     )
     rollout_target = str(frontmatter.get("rollout_target") or "").strip().lower()
-    if rollout_target not in {"manager", "worker", "api", "none"}:
-        rollout_target = "worker" if runtime_target.startswith("worker") else "manager"
+    if rollout_target not in {"manager", "subagent", "api", "none"}:
+        rollout_target = runtime_target if runtime_target == "subagent" else "manager"
 
     return {
         "runtime_target": runtime_target,

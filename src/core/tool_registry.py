@@ -119,6 +119,67 @@ CORE_TOOLS: List[Dict[str, Any]] = [
     },
 ]
 
+MANAGER_INTERNAL_TOOLS: List[Dict[str, Any]] = [
+    {
+        "name": "spawn_subagent",
+        "description": (
+            "Start an internal subagent for a bounded subtask with an explicit tool scope."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "Concrete subtask goal for the child agent",
+                },
+                "allowed_tools": {
+                    "type": "array",
+                    "description": "Exact tool names the child agent may use",
+                    "items": {"type": "string"},
+                },
+                "allowed_skills": {
+                    "type": "array",
+                    "description": "Optional skill names the child agent may load",
+                    "items": {"type": "string"},
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["inline", "detached"],
+                    "default": "inline",
+                    "description": "inline waits in the current turn; detached continues in background",
+                },
+                "timeout_sec": {
+                    "type": "integer",
+                    "default": 300,
+                    "description": "Execution timeout for the child agent",
+                },
+            },
+            "required": ["goal", "allowed_tools"],
+        },
+    },
+    {
+        "name": "await_subagents",
+        "description": "Wait for one or more previously started subagents and collect results.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subagent_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Subagent ids returned by spawn_subagent",
+                },
+                "wait_policy": {
+                    "type": "string",
+                    "enum": ["all", "any", "none"],
+                    "default": "all",
+                    "description": "all waits for every child up to the default timeout; any waits for the first completion; none only polls current state",
+                },
+            },
+            "required": ["subagent_ids"],
+        },
+    },
+]
+
 LOAD_SKILL_TOOL: Dict[str, Any] = {
     "name": "load_skill",
     "description": "Load the full Markdown SOP of a specific skill by name.",
@@ -138,14 +199,25 @@ LOAD_SKILL_TOOL: Dict[str, Any] = {
 class ToolRegistry:
     """Build model-visible tool declarations from core primitives and skill metadata."""
 
-    def get_core_tools(self) -> List[Dict[str, Any]]:
-        return deepcopy(CORE_TOOLS)
+    @staticmethod
+    def _runtime_roles(runtime_role: str) -> set[str]:
+        safe_role = str(runtime_role or "").strip().lower()
+        if safe_role:
+            return {safe_role}
+        return set()
+
+    def get_core_tools(self, *, runtime_role: str = "") -> List[Dict[str, Any]]:
+        tools = deepcopy(CORE_TOOLS)
+        if str(runtime_role or "").strip().lower() == "manager":
+            tools.extend(deepcopy(MANAGER_INTERNAL_TOOLS))
+        return tools
 
     def get_load_skill_tool(self) -> Dict[str, Any]:
         return deepcopy(LOAD_SKILL_TOOL)
 
     def get_skill_tools(self, *, runtime_role: str = "") -> List[Dict[str, Any]]:
         safe_role = str(runtime_role or "").strip().lower()
+        allowed_runtime_roles = self._runtime_roles(safe_role)
         tools: List[Dict[str, Any]] = []
         seen: set[str] = set()
         for exported in skill_loader.get_tool_exports():
@@ -157,7 +229,11 @@ class ToolRegistry:
                 for item in list(exported.get("allowed_roles") or [])
                 if str(item or "").strip()
             ]
-            if safe_role and allowed_roles and safe_role not in allowed_roles:
+            if (
+                allowed_runtime_roles
+                and allowed_roles
+                and not allowed_runtime_roles.intersection(allowed_roles)
+            ):
                 continue
             seen.add(name)
             tools.append(
@@ -173,7 +249,9 @@ class ToolRegistry:
         return tools
 
     def get_manager_tools(self) -> List[Dict[str, Any]]:
-        return self.get_skill_tools(runtime_role="manager")
+        return self.get_core_tools(runtime_role="manager") + self.get_skill_tools(
+            runtime_role="manager"
+        )
 
     def get_manager_tool_names(self) -> List[str]:
         return [str(item.get("name") or "").strip() for item in self.get_manager_tools()]
@@ -188,6 +266,7 @@ class ToolRegistry:
         if not safe_name:
             return None
         safe_role = str(runtime_role or "").strip().lower()
+        allowed_runtime_roles = self._runtime_roles(safe_role)
         exported = skill_loader.get_tool_export(safe_name)
         if not exported:
             return None
@@ -196,7 +275,11 @@ class ToolRegistry:
             for item in list(exported.get("allowed_roles") or [])
             if str(item or "").strip()
         ]
-        if safe_role and allowed_roles and safe_role not in allowed_roles:
+        if (
+            allowed_runtime_roles
+            and allowed_roles
+            and not allowed_runtime_roles.intersection(allowed_roles)
+        ):
             return None
         return deepcopy(exported)
 

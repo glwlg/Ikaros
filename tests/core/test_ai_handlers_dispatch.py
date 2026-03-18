@@ -30,7 +30,7 @@ async def test_should_include_memory_summary_for_task_short_request():
 
 
 @pytest.mark.asyncio
-async def test_build_worker_instruction_with_context_uses_manager_memory(monkeypatch):
+async def test_build_subagent_instruction_with_context_uses_manager_memory(monkeypatch):
     async def _fake_collect(
         _ctx, *, user_id, current_user_message, max_messages=6, max_chars=1200
     ):
@@ -49,11 +49,11 @@ async def test_build_worker_instruction_with_context_uses_manager_memory(monkeyp
         ai_handlers, "_should_include_memory_summary_for_task", _fake_need_memory
     )
 
-    instruction, meta = await ai_handlers._build_worker_instruction_with_context(
+    instruction, meta = await ai_handlers._build_subagent_instruction_with_context(
         SimpleNamespace(),
         user_id="u-1",
         user_message="我住哪",
-        worker_has_memory=False,
+        subagent_has_memory=False,
     )
     assert "【用户记忆摘要（由 Manager 提供）】" in instruction
     assert meta["memory_summary_requested"] is True
@@ -61,7 +61,7 @@ async def test_build_worker_instruction_with_context_uses_manager_memory(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_build_worker_instruction_skips_memory_in_group_session(monkeypatch):
+async def test_build_subagent_instruction_skips_memory_in_group_session(monkeypatch):
     async def _fake_collect(
         _ctx, *, user_id, current_user_message, max_messages=6, max_chars=1200
     ):
@@ -81,11 +81,11 @@ async def test_build_worker_instruction_skips_memory_in_group_session(monkeypatc
         ai_handlers, "_should_include_memory_summary_for_task", _fake_need_memory
     )
 
-    instruction, meta = await ai_handlers._build_worker_instruction_with_context(
+    instruction, meta = await ai_handlers._build_subagent_instruction_with_context(
         ctx,
         user_id="u-1",
         user_message="我住哪",
-        worker_has_memory=False,
+        subagent_has_memory=False,
     )
     assert "【用户记忆摘要（由 Manager 提供）】" not in instruction
     assert meta["private_session"] is False
@@ -93,7 +93,7 @@ async def test_build_worker_instruction_skips_memory_in_group_session(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_build_worker_instruction_with_context_skips_memory_when_worker_has_it(
+async def test_build_subagent_instruction_with_context_skips_memory_when_subagent_has_it(
     monkeypatch,
 ):
     async def _fake_collect(
@@ -103,7 +103,7 @@ async def test_build_worker_instruction_with_context_skips_memory_when_worker_ha
         return ""
 
     async def _fake_fetch(_uid: str):
-        raise AssertionError("should not fetch memory when worker_has_memory=True")
+        raise AssertionError("should not fetch memory when subagent_has_memory=True")
 
     async def _fake_need_memory(_msg: str, _ctx: str) -> bool:
         return True
@@ -114,11 +114,11 @@ async def test_build_worker_instruction_with_context_skips_memory_when_worker_ha
         ai_handlers, "_should_include_memory_summary_for_task", _fake_need_memory
     )
 
-    instruction, meta = await ai_handlers._build_worker_instruction_with_context(
+    instruction, meta = await ai_handlers._build_subagent_instruction_with_context(
         SimpleNamespace(),
         user_id="u-2",
         user_message="按我偏好推荐新闻",
-        worker_has_memory=True,
+        subagent_has_memory=True,
     )
     assert "【用户记忆摘要（由 Manager 提供）】" not in instruction
     assert meta["memory_summary_requested"] is True
@@ -126,7 +126,7 @@ async def test_build_worker_instruction_with_context_skips_memory_when_worker_ha
 
 
 @pytest.mark.asyncio
-async def test_build_worker_instruction_with_context_skips_memory_when_not_needed(
+async def test_build_subagent_instruction_with_context_skips_memory_when_not_needed(
     monkeypatch,
 ):
     async def _fake_collect(
@@ -147,11 +147,11 @@ async def test_build_worker_instruction_with_context_skips_memory_when_not_neede
         ai_handlers, "_should_include_memory_summary_for_task", _fake_need_memory
     )
 
-    instruction, meta = await ai_handlers._build_worker_instruction_with_context(
+    instruction, meta = await ai_handlers._build_subagent_instruction_with_context(
         SimpleNamespace(),
         user_id="u-3",
         user_message="部署这个仓库",
-        worker_has_memory=False,
+        subagent_has_memory=False,
     )
     assert "【近期对话上下文】" in instruction
     assert "【用户记忆摘要（由 Manager 提供）】" not in instruction

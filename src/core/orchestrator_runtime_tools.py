@@ -16,7 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RuntimeToolAllowed = Callable[..., Any]
 TodoMarkStep = Callable[[str, str, str], Any]
 AppendSessionEvent = Callable[[str], Awaitable[None]]
-OnWorkerDispatched = Callable[[str, str], None]
 
 
 def _policy_result_allowed(result: Any) -> bool:
@@ -37,6 +36,7 @@ class RuntimeToolAssembler:
         platform_name: str,
         runtime_tool_allowed: RuntimeToolAllowed,
         allowed_skill_names: Set[str] | None = None,
+        allowed_tool_names: Set[str] | None = None,
     ):
         self.runtime_user_id = str(runtime_user_id or "")
         self.platform_name = str(platform_name or "")
@@ -44,6 +44,11 @@ class RuntimeToolAssembler:
         self.allowed_skill_names = (
             {str(item or "").strip() for item in list(allowed_skill_names or []) if str(item or "").strip()}
             if allowed_skill_names is not None
+            else None
+        )
+        self.allowed_tool_names = (
+            {str(item or "").strip() for item in list(allowed_tool_names or []) if str(item or "").strip()}
+            if allowed_tool_names is not None
             else None
         )
 
@@ -83,20 +88,36 @@ class RuntimeToolAssembler:
     def _is_manager_runtime(self) -> bool:
         uid = str(self.runtime_user_id or "").strip().lower()
         platform = str(self.platform_name or "").strip().lower()
-        return not uid.startswith("worker::") and platform != "worker_kernel"
+        return not uid.startswith("subagent::") and platform != "subagent_kernel"
 
     def _runtime_role(self) -> str:
-        return "manager" if self._is_manager_runtime() else "worker"
+        uid = str(self.runtime_user_id or "").strip().lower()
+        platform = str(self.platform_name or "").strip().lower()
+        if uid.startswith("subagent::") or platform == "subagent_kernel":
+            return "subagent"
+        return "manager"
+
+    def _filter_by_explicit_allowed_names(self, tools: List[Any]) -> List[Any]:
+        if self.allowed_tool_names is None:
+            return tools
+        allowed_names = set(self.allowed_tool_names)
+        filtered: List[Any] = []
+        for item in tools or []:
+            name = self._tool_name(item)
+            if name and name in allowed_names:
+                filtered.append(item)
+        return filtered
 
     async def assemble(self) -> List[Any]:
         merged_tools: List[Any] = []
-        merged_tools.extend(tool_registry.get_core_tools())
+        merged_tools.extend(tool_registry.get_core_tools(runtime_role=self._runtime_role()))
         if self.allowed_skill_names is None or self.allowed_skill_names:
             merged_tools.append(tool_registry.get_load_skill_tool())
         merged_tools.extend(
             tool_registry.get_skill_tools(runtime_role=self._runtime_role())
         )
-        return self._filter_by_policy(merged_tools)
+        merged_tools = self._filter_by_policy(merged_tools)
+        return self._filter_by_explicit_allowed_names(merged_tools)
 
 
 @dataclass
@@ -114,12 +135,15 @@ class ToolCallDispatcher:
     runtime_tool_allowed: RuntimeToolAllowed
     todo_mark_step: TodoMarkStep
     append_session_event: AppendSessionEvent
-    on_worker_dispatched: OnWorkerDispatched | None = None
     available_tool_names: Set[str] = field(default_factory=set)
     allowed_skill_names: Set[str] | None = None
+    allowed_tool_names: Set[str] | None = None
 
     def _runtime_only_allowed_tool_names(self) -> Set[str]:
         allowed: Set[str] = set()
+        runtime_role = self._runtime_role()
+        if runtime_role != "manager":
+            return allowed
         for name in tool_registry.get_manager_tool_names():
             if _policy_result_allowed(
                 self.runtime_tool_allowed(
@@ -161,7 +185,7 @@ class ToolCallDispatcher:
 
     def _normalize_runtime_user_for_path(self) -> str:
         runtime_user = str(self.runtime_user_id or "").strip()
-        if runtime_user.startswith("worker::"):
+        if runtime_user.startswith("subagent::"):
             parts = runtime_user.split("::")
             if len(parts) >= 3:
                 candidate = str(parts[2] or "").strip()
@@ -209,10 +233,14 @@ class ToolCallDispatcher:
     def _is_manager_runtime(self) -> bool:
         uid = str(self.runtime_user_id or "").strip().lower()
         platform = str(self.platform_name or "").strip().lower()
-        return not uid.startswith("worker::") and platform != "worker_kernel"
+        return not uid.startswith("subagent::") and platform != "subagent_kernel"
 
     def _runtime_role(self) -> str:
-        return "manager" if self._is_manager_runtime() else "worker"
+        uid = str(self.runtime_user_id or "").strip().lower()
+        platform = str(self.platform_name or "").strip().lower()
+        if uid.startswith("subagent::") or platform == "subagent_kernel":
+            return "subagent"
+        return "manager"
 
     @staticmethod
     def _resolve_repo_path(path: str) -> Path | None:
@@ -258,9 +286,11 @@ class ToolCallDispatcher:
         chat_id = str(getattr(msg_chat, "id", "") or "").strip()
         source_user_id = str(getattr(msg_user, "id", "") or "").strip()
         forced_platform = str(
-            user_data_obj.get("worker_delivery_platform") or ""
+            user_data_obj.get("subagent_delivery_platform") or ""
         ).strip()
-        forced_chat_id = str(user_data_obj.get("worker_delivery_chat_id") or "").strip()
+        forced_chat_id = str(
+            user_data_obj.get("subagent_delivery_chat_id") or ""
+        ).strip()
 
         if forced_platform:
             platform = forced_platform
@@ -513,6 +543,32 @@ class ToolCallDispatcher:
             self.todo_mark_step("act", "in_progress", f"Tool `{tool_name}` finished.")
             return result
 
+        if tool_name in {"spawn_subagent", "await_subagents"}:
+            if self._runtime_role() != "manager":
+                return {
+                    "ok": False,
+                    "error_code": "policy_blocked",
+                    "message": f"Tool policy blocked: {tool_name}",
+                    "failure_mode": "recoverable",
+                }
+            from core.subagent_supervisor import subagent_supervisor
+
+            if tool_name == "spawn_subagent":
+                return await subagent_supervisor.spawn(
+                    ctx=self.ctx,
+                    goal=str(tool_args.get("goal") or ""),
+                    allowed_tools=list(tool_args.get("allowed_tools") or []),
+                    allowed_skills=list(tool_args.get("allowed_skills") or []),
+                    mode=str(tool_args.get("mode") or "inline"),
+                    timeout_sec=int(tool_args.get("timeout_sec") or 300),
+                    parent_task_id=str(self.task_id or ""),
+                    parent_task_inbox_id=str(self.task_inbox_id or ""),
+                )
+            return await subagent_supervisor.await_subagents(
+                subagent_ids=list(tool_args.get("subagent_ids") or []),
+                wait_policy=str(tool_args.get("wait_policy") or "all"),
+            )
+
         if tool_name == "load_skill":
             skill_name = str(args.get("skill_name") or "").strip()
             if not skill_name:
@@ -576,13 +632,13 @@ class ToolCallDispatcher:
                 }
                 return result
 
-            if self._runtime_role() == "worker" and runtime_target == "manager":
+            if self._runtime_role() == "subagent" and runtime_target == "manager":
                 result = {
                     "ok": False,
                     "error_code": "skill_role_blocked",
                     "message": (
                         f"Skill '{resolved_skill_name or skill_name}' is manager-only "
-                        "and cannot be loaded in worker runtime."
+                        "and cannot be loaded in subagent runtime."
                     ),
                     "failure_mode": "recoverable",
                 }

@@ -230,8 +230,12 @@ async def test_ai_service_terminal_payload_uses_result_and_ui(monkeypatch):
     class FakeResponse:
         def __init__(self):
             function_call = SimpleNamespace(
-                name="dispatch_worker",
-                args={"instruction": "检查 RSS"},
+                name="spawn_subagent",
+                args={
+                    "goal": "检查 RSS",
+                    "allowed_tools": ["read", "bash"],
+                    "mode": "inline",
+                },
             )
             self.choices = [
                 SimpleNamespace(
@@ -292,7 +296,7 @@ async def test_ai_service_terminal_payload_uses_result_and_ui(monkeypatch):
         message_history=[{"role": "user", "parts": [{"text": "rss"}]}],
         tools=[
             {
-                "name": "dispatch_worker",
+                "name": "spawn_subagent",
                 "description": "",
                 "parameters": {"type": "object"},
             }
@@ -671,9 +675,13 @@ async def test_ai_service_async_dispatch_emits_progress_notice(monkeypatch):
                                     SimpleNamespace(
                                         id="call-1",
                                         function=SimpleNamespace(
-                                            name="dispatch_worker",
+                                            name="spawn_subagent",
                                             arguments=json.dumps(
-                                                {"instruction": "查询明天天气"},
+                                                {
+                                                    "goal": "查询明天天气",
+                                                    "allowed_tools": ["web_search"],
+                                                    "mode": "detached",
+                                                },
                                                 ensure_ascii=False,
                                             ),
                                         ),
@@ -690,7 +698,7 @@ async def test_ai_service_async_dispatch_emits_progress_notice(monkeypatch):
                     SimpleNamespace(
                         message=SimpleNamespace(
                             content=(
-                                "已派发给阿黑处理（任务 wj-1），"
+                                "已启动 subagent-weather（任务 wj-1），"
                                 "正在处理中，完成后会自动把结果发给你。"
                             ),
                             tool_calls=[],
@@ -718,11 +726,11 @@ async def test_ai_service_async_dispatch_emits_progress_notice(monkeypatch):
         return {
             "ok": True,
             "async_dispatch": True,
-            "worker_name": "阿黑",
+            "executor_name": "subagent-weather",
             "task_id": "wj-1",
             "task_outcome": "partial",
-            "text": "worker dispatch accepted",
-            "summary": "worker job queued",
+            "text": "subagent started",
+            "summary": "subagent job queued",
         }
 
     async def event_callback(event, payload):
@@ -733,7 +741,7 @@ async def test_ai_service_async_dispatch_emits_progress_notice(monkeypatch):
         message_history=[{"role": "user", "parts": [{"text": "查天气"}]}],
         tools=[
             {
-                "name": "dispatch_worker",
+                "name": "spawn_subagent",
                 "description": "",
                 "parameters": {"type": "object"},
             }

@@ -3,9 +3,7 @@ from __future__ import annotations
 import shlex
 from typing import Any, Awaitable, Callable, Dict
 
-from core.task_inbox import task_inbox
 from core.tools.codex_tools import codex_tools
-from core.tools.dispatch_tools import dispatch_tools
 from core.tools.git_tools import git_tools
 from core.tools.gh_tools import gh_tools
 from core.tools.repo_workspace_tools import repo_workspace_tools
@@ -44,53 +42,6 @@ class SkillToolHandlerRegistry:
         return await handler(dispatcher, dict(args or {}))
 
 
-def _dispatch_metadata_from_runtime(
-    dispatcher: Any,
-    tool_args: Dict[str, Any],
-) -> Dict[str, Any]:
-    metadata = tool_args.get("metadata")
-    metadata_obj = dict(metadata) if isinstance(metadata, dict) else {}
-    ctx_user_data = getattr(dispatcher.ctx, "user_data", None)
-    user_data = ctx_user_data if isinstance(ctx_user_data, dict) else {}
-    msg = getattr(dispatcher.ctx, "message", None)
-    msg_user = getattr(msg, "user", None)
-    msg_chat = getattr(msg, "chat", None)
-    if "user_id" not in metadata_obj:
-        metadata_obj["user_id"] = str(getattr(msg_user, "id", "") or "")
-    if "chat_id" not in metadata_obj:
-        metadata_obj["chat_id"] = str(getattr(msg_chat, "id", "") or "")
-    if "platform" not in metadata_obj:
-        metadata_obj["platform"] = str(getattr(msg, "platform", "") or "")
-
-    forced_platform = str(user_data.get("worker_delivery_platform") or "").strip()
-    forced_chat_id = str(user_data.get("worker_delivery_chat_id") or "").strip()
-    if forced_platform:
-        metadata_obj["platform"] = forced_platform
-    if forced_chat_id:
-        metadata_obj["chat_id"] = forced_chat_id
-    if "session_id" not in metadata_obj:
-        metadata_obj["session_id"] = str(dispatcher.task_id or "")
-    if "task_inbox_id" not in metadata_obj:
-        metadata_obj["task_inbox_id"] = str(
-            getattr(dispatcher, "task_inbox_id", "") or ""
-        )
-    if "session_task_id" not in metadata_obj:
-        metadata_obj["session_task_id"] = str(
-            metadata_obj.get("task_inbox_id") or ""
-        ).strip() or str(dispatcher.task_id or "")
-    if "original_user_request" not in metadata_obj:
-        extractor = getattr(dispatcher, "_extract_user_request", None)
-        if callable(extractor):
-            metadata_obj["original_user_request"] = str(extractor() or "")
-    if "task_goal" not in metadata_obj:
-        metadata_obj["task_goal"] = str(
-            tool_args.get("instruction")
-            or metadata_obj.get("original_user_request")
-            or ""
-        )
-    return metadata_obj
-
-
 def _notify_target_from_dispatcher(dispatcher: Any) -> Dict[str, str]:
     ctx_user_data = getattr(dispatcher.ctx, "user_data", None)
     user_data = ctx_user_data if isinstance(ctx_user_data, dict) else {}
@@ -102,8 +53,8 @@ def _notify_target_from_dispatcher(dispatcher: Any) -> Dict[str, str]:
     chat_id = str(getattr(msg_chat, "id", "") or "").strip()
     user_id = str(getattr(msg_user, "id", "") or "").strip()
 
-    forced_platform = str(user_data.get("worker_delivery_platform") or "").strip()
-    forced_chat_id = str(user_data.get("worker_delivery_chat_id") or "").strip()
+    forced_platform = str(user_data.get("subagent_delivery_platform") or "").strip()
+    forced_chat_id = str(user_data.get("subagent_delivery_chat_id") or "").strip()
     if forced_platform:
         platform = forced_platform
     if forced_chat_id:
@@ -127,56 +78,6 @@ def _normalize_cli_argv(value: Any) -> list[str]:
         except Exception:
             return [item.strip() for item in value.split() if item.strip()]
     return []
-
-
-async def _list_workers_handler(
-    dispatcher: Any,
-    tool_args: Dict[str, Any],
-) -> Dict[str, Any]:
-    _ = (dispatcher, tool_args)
-    return await dispatch_tools.list_workers()
-
-
-async def _dispatch_worker_handler(
-    dispatcher: Any,
-    tool_args: Dict[str, Any],
-) -> Dict[str, Any]:
-    result = await dispatch_tools.dispatch_worker(
-        instruction=str(tool_args.get("instruction") or ""),
-        worker_id=str(tool_args.get("worker_id") or ""),
-        backend=str(tool_args.get("backend") or ""),
-        priority=tool_args.get("priority"),
-        metadata=_dispatch_metadata_from_runtime(dispatcher, tool_args),
-    )
-    if dispatcher.task_inbox_id:
-        dispatched_worker_id = str(result.get("worker_id") or "").strip()
-        if dispatched_worker_id:
-            try:
-                await task_inbox.assign_worker(
-                    dispatcher.task_inbox_id,
-                    worker_id=dispatched_worker_id,
-                    reason=str(result.get("selection_reason") or ""),
-                    manager_id="core-manager",
-                )
-            except Exception:
-                pass
-    if dispatcher.on_worker_dispatched is not None:
-        dispatcher.on_worker_dispatched(
-            str(result.get("worker_id") or "").strip(),
-            str(result.get("worker_name") or "").strip(),
-        )
-    return result
-
-
-async def _worker_status_handler(
-    dispatcher: Any,
-    tool_args: Dict[str, Any],
-) -> Dict[str, Any]:
-    _ = dispatcher
-    return await dispatch_tools.worker_status(
-        worker_id=str(tool_args.get("worker_id") or ""),
-        limit=int(tool_args.get("limit", 10) or 10),
-    )
 
 
 async def _gh_cli_handler(
@@ -292,18 +193,6 @@ async def _task_tracker_handler(
 
 
 skill_tool_handler_registry = SkillToolHandlerRegistry()
-skill_tool_handler_registry.register(
-    "manager.worker_management.list",
-    _list_workers_handler,
-)
-skill_tool_handler_registry.register(
-    "manager.worker_management.dispatch",
-    _dispatch_worker_handler,
-)
-skill_tool_handler_registry.register(
-    "manager.worker_management.status",
-    _worker_status_handler,
-)
 skill_tool_handler_registry.register(
     "manager.gh_cli",
     _gh_cli_handler,

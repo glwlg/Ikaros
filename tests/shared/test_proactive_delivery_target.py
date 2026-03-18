@@ -3,10 +3,10 @@ import pytest
 from shared.contracts.proactive_delivery_target import ProactiveDeliveryTarget
 
 
-def test_proactive_delivery_target_normalizes_worker_runtime_alias():
+def test_proactive_delivery_target_accepts_explicit_platform():
     target = ProactiveDeliveryTarget.from_legacy(
         {
-            "platform": "worker_runtime",
+            "platform": "telegram",
             "chat_id": "257675041",
             "user_id": "257675041",
         }
@@ -43,7 +43,7 @@ def test_proactive_delivery_target_loads_nested_metadata_target():
     target = ProactiveDeliveryTarget.maybe_from_metadata(
         {
             "proactive_delivery_target": {
-                "platform": "worker_runtime",
+                "platform": "telegram",
                 "chat_id": "257675041",
                 "user_id": "257675041",
             }

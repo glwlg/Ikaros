@@ -394,7 +394,7 @@ async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
 
 def _resolve_cli_user_id(explicit_user_id: str | None) -> str:
     raw = str(explicit_user_id or os.getenv("X_BOT_RUNTIME_USER_ID") or "").strip()
-    if raw.startswith("worker::"):
+    if raw.startswith("subagent::"):
         parts = raw.split("::")
         if len(parts) >= 3:
             candidate = str(parts[2] or "").strip()
@@ -407,7 +407,7 @@ def _resolve_cli_platform(explicit_platform: str | None) -> str:
     platform = str(
         explicit_platform or os.getenv("X_BOT_RUNTIME_PLATFORM") or ""
     ).strip().lower()
-    if not platform or platform == "worker_kernel":
+    if not platform or platform == "subagent_kernel":
         return "telegram"
     return platform
 

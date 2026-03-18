@@ -16,7 +16,7 @@ def test_soul_store_load_update_and_rollback(tmp_path):
     _redirect_audit_paths(tmp_path)
     store = SoulStore()
     store.kernel_root = (tmp_path / "kernel" / "core-manager").resolve()
-    store.userland_root = (tmp_path / "userland" / "workers").resolve()
+    store.userland_root = (tmp_path / "userland" / "subagents").resolve()
     store.kernel_root.mkdir(parents=True, exist_ok=True)
     store.userland_root.mkdir(parents=True, exist_ok=True)
 
@@ -35,15 +35,15 @@ def test_soul_store_load_update_and_rollback(tmp_path):
     assert version_id
     assert store.rollback_core(version_id, actor="tester") is True
 
-    worker = store.load_worker("worker-main")
-    assert "Worker SOUL" in worker.content
+    subagent = store.load_subagent("subagent-main")
+    assert "Subagent SOUL" in subagent.content
 
 
 def test_soul_store_migrates_legacy_core_soul_to_data_root(tmp_path):
     _redirect_audit_paths(tmp_path)
     store = SoulStore()
     store.kernel_root = (tmp_path / "kernel" / "core-manager").resolve()
-    store.userland_root = (tmp_path / "userland" / "workers").resolve()
+    store.userland_root = (tmp_path / "userland" / "subagents").resolve()
     store.kernel_root.mkdir(parents=True, exist_ok=True)
     store.userland_root.mkdir(parents=True, exist_ok=True)
 

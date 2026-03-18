@@ -3,9 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-PLATFORM_ALIASES = {
-    "worker_runtime": "telegram",
-}
+PLATFORM_ALIASES: dict[str, str] = {}
 
 EXPLICIT_METADATA_KEYS = (
     "proactive_delivery_target",

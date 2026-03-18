@@ -138,11 +138,11 @@ entrypoint: scripts/execute.py
     indexed = loader.scan_skills()
     contract = indexed["demo_contract"]["contract"]
 
-    assert contract["runtime_target"] == "worker"
+    assert contract["runtime_target"] == "manager"
     assert contract["change_level"] == "learned"
     assert contract["allow_manager_modify"] is True
     assert contract["allow_auto_publish"] is True
-    assert contract["rollout_target"] == "worker"
+    assert contract["rollout_target"] == "manager"
 
 
 def test_skill_loader_respects_explicit_contract_fields(tmp_path: Path):
@@ -211,7 +211,7 @@ tool_exports:
     parameters:
       type: object
       properties:
-        worker_id:
+        executor_id:
           type: string
 ---
 
@@ -228,7 +228,7 @@ tool_exports:
     assert exports[0]["name"] == "queue_status"
     assert exports[0]["handler"] == "manager.queue.status"
     assert exports[0]["skill_name"] == "manager_ops"
-    assert exports[0]["parameters"]["properties"]["worker_id"]["type"] == "string"
+    assert exports[0]["parameters"]["properties"]["executor_id"]["type"] == "string"
 
 
 def test_skill_loader_parses_policy_groups_and_platform_handlers(tmp_path: Path):

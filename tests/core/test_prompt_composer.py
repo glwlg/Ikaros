@@ -44,7 +44,7 @@ def test_prompt_composer_includes_manager_agents_before_soul(monkeypatch):
     assert text.index("【AGENTS】") < text.index("【SOUL】")
 
 
-def test_prompt_composer_does_not_inject_manager_agents_for_worker(monkeypatch):
+def test_prompt_composer_does_not_inject_manager_agents_for_subagent(monkeypatch):
     monkeypatch.setattr(
         prompt_composer,
         "_load_manager_agents_doc",
@@ -53,10 +53,10 @@ def test_prompt_composer_does_not_inject_manager_agents_for_worker(monkeypatch):
     monkeypatch.setattr(
         "core.prompt_composer.soul_store.resolve_for_runtime_user",
         lambda _user_id: SoulPayload(
-            agent_kind="worker",
-            agent_id="worker-main",
-            path="/tmp/worker/SOUL.MD",
-            content="# Worker SOUL\n- focused execution",
+            agent_kind="subagent",
+            agent_id="subagent-main",
+            path="/tmp/subagent/SOUL.MD",
+            content="# Subagent SOUL\n- focused execution",
             updated_at="2026-03-13T00:00:00+08:00",
             latest_version_id="",
         ),
@@ -64,38 +64,11 @@ def test_prompt_composer_does_not_inject_manager_agents_for_worker(monkeypatch):
     monkeypatch.setattr(prompt_composer, "_build_skill_catalog", lambda **_kwargs: "")
 
     text = prompt_composer.compose_base(
-        runtime_user_id="worker::worker-main::123",
-        platform="worker_kernel",
+        runtime_user_id="subagent::subagent-main::123",
+        platform="subagent_kernel",
     )
 
     assert "【AGENTS】" not in text
-
-
-def test_prompt_composer_worker_pool_info_contains_summary_and_skill_hints(monkeypatch):
-    monkeypatch.setattr(
-        prompt_composer,
-        "_infer_worker_extension_skills",
-        lambda worker_id: (
-            ["generate_image", "download_video"] if worker_id == "worker-main" else []
-        ),
-    )
-
-    text = prompt_composer._format_worker_list(
-        [
-            {
-                "id": "worker-main",
-                "name": "阿黑",
-                "status": "ready",
-                "backend": "core-agent",
-                "capabilities": ["media", "automation"],
-                "summary": "图像与多媒体执行助手",
-            }
-        ]
-    )
-
-    assert "worker-main" in text
-    assert "图像与多媒体执行助手" in text
-    assert "generate_image" in text
 
 
 def test_prompt_composer_filters_skill_catalog_by_runtime_policy(monkeypatch):
@@ -108,8 +81,8 @@ def test_prompt_composer_filters_skill_catalog_by_runtime_policy(monkeypatch):
                 "allowed_roles": [],
             },
             {
-                "name": "worker_management",
-                "description": "worker 调度",
+                "name": "deployment_manager",
+                "description": "部署管理",
                 "allowed_roles": ["manager"],
             },
             {
@@ -122,7 +95,7 @@ def test_prompt_composer_filters_skill_catalog_by_runtime_policy(monkeypatch):
 
     def fake_allowed(**kwargs):
         return (
-            kwargs["tool_name"] in {"ext_worker_management", "ext_skill_manager"},
+            kwargs["tool_name"] in {"ext_deployment_manager", "ext_skill_manager"},
             {},
         )
 
@@ -136,13 +109,13 @@ def test_prompt_composer_filters_skill_catalog_by_runtime_policy(monkeypatch):
         platform="telegram",
     )
 
-    assert "worker_management" in text
+    assert "deployment_manager" in text
     assert "skill_manager" in text
     assert "stock_watch" not in text
     assert "以 SOP 为准" in text
 
 
-def test_prompt_composer_hides_manager_only_roles_from_worker(monkeypatch):
+def test_prompt_composer_hides_manager_only_roles_from_subagent(monkeypatch):
     monkeypatch.setattr(
         "core.skill_loader.skill_loader.get_skills_summary",
         lambda: [
@@ -152,8 +125,8 @@ def test_prompt_composer_hides_manager_only_roles_from_worker(monkeypatch):
                 "allowed_roles": [],
             },
             {
-                "name": "worker_management",
-                "description": "worker 调度",
+                "name": "deployment_manager",
+                "description": "部署管理",
                 "allowed_roles": ["manager"],
             },
             {
@@ -169,12 +142,12 @@ def test_prompt_composer_hides_manager_only_roles_from_worker(monkeypatch):
     )
 
     text = prompt_composer._build_skill_catalog(
-        runtime_user_id="worker::worker-main::u-1",
-        platform="worker_kernel",
+        runtime_user_id="subagent::subagent-main::u-1",
+        platform="subagent_kernel",
     )
 
     assert "stock_watch" in text
-    assert "worker_management" not in text
+    assert "deployment_manager" not in text
     assert "skill_manager" not in text
 
 

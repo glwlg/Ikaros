@@ -20,7 +20,7 @@ class OrchestratorRuntimeContext:
     user_data: Dict[str, Any]
     runtime_user_id: str
     platform_name: str
-    worker_kernel_user: bool
+    subagent_runtime_user: bool
     heartbeat_runtime_user: bool
     session_state_enabled: bool
     runtime_policy_ctx: Dict[str, Any]
@@ -44,16 +44,24 @@ class OrchestratorRuntimeContext:
 
         runtime_user_id = str(user_data.get("runtime_user_id") or "").strip() or user_id
         platform_name = str(getattr(msg, "platform", "") or "").strip().lower()
-        worker_kernel_user = (
-            platform_name == "worker_kernel" or runtime_user_id.startswith("worker::")
+        subagent_runtime_user = (
+            platform_name == "subagent_kernel"
+            or runtime_user_id.startswith("subagent::")
+            or str(user_data.get("runtime_agent_kind") or "").strip().lower()
+            == "subagent"
         )
         heartbeat_runtime_user = platform_name == "heartbeat_daemon"
         heartbeat_session_state_enabled = bool(
             user_data.get("heartbeat_session_state_enabled")
         )
-        session_state_enabled = not worker_kernel_user and (
+        subagent_session_state_enabled = bool(
+            user_data.get("subagent_session_state_enabled")
+        )
+        session_state_enabled = not subagent_runtime_user and (
             not heartbeat_runtime_user or heartbeat_session_state_enabled
         )
+        if subagent_runtime_user and subagent_session_state_enabled:
+            session_state_enabled = True
 
         runtime_policy_ctx = tool_access_store.resolve_runtime_policy(
             runtime_user_id=runtime_user_id,
@@ -62,7 +70,7 @@ class OrchestratorRuntimeContext:
         runtime_agent_kind = (
             str(runtime_policy_ctx.get("agent_kind") or "").strip().lower()
         )
-        manager_runtime = runtime_agent_kind != "worker"
+        manager_runtime = runtime_agent_kind == "core-manager"
 
         task_info = task_manager.get_task_info(user_id)
         runtime_task_id = str(user_data.get("runtime_task_id") or "").strip()
@@ -78,7 +86,7 @@ class OrchestratorRuntimeContext:
             user_data=user_data,
             runtime_user_id=runtime_user_id,
             platform_name=platform_name,
-            worker_kernel_user=worker_kernel_user,
+            subagent_runtime_user=subagent_runtime_user,
             heartbeat_runtime_user=heartbeat_runtime_user,
             session_state_enabled=session_state_enabled,
             runtime_policy_ctx=runtime_policy_ctx,
@@ -96,8 +104,8 @@ class OrchestratorRuntimeContext:
     def _task_inbox_source(self) -> str:
         if self.heartbeat_runtime_user:
             return "heartbeat"
-        if self.worker_kernel_user:
-            return "worker_kernel"
+        if self.subagent_runtime_user:
+            return "subagent"
         return "user_chat"
 
     async def ensure_task_inbox(self, *, task_goal: str) -> str:

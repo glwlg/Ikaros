@@ -23,13 +23,11 @@ from core.config import (
     LOG_LEVEL,
     WAITING_FOR_FEATURE_INPUT,
     CORE_CHAT_EXECUTION_MODE,
-    CORE_CHAT_WORKER_BACKEND,
     HEARTBEAT_ENABLED,
     HEARTBEAT_MODE,
 )
 from core.heartbeat_worker import heartbeat_worker
-from manager.dispatch.manager_executor import manager_dispatch_executor
-from manager.relay.result_relay import worker_result_relay
+from core.subagent_supervisor import subagent_supervisor
 from handlers import (
     start,
     handle_new_command,
@@ -48,7 +46,6 @@ from handlers import (
     stop_command,
     heartbeat_command,
     task_command,
-    worker_command,
     accounting_command,
 )
 from handlers.skill_handlers import (
@@ -120,7 +117,6 @@ async def init_services() -> None:
         kernel_config_store.snapshot(
             {
                 "core_chat_execution_mode": CORE_CHAT_EXECUTION_MODE,
-                "core_chat_worker_backend": CORE_CHAT_WORKER_BACKEND,
                 "heartbeat_enabled": HEARTBEAT_ENABLED,
                 "heartbeat_mode": HEARTBEAT_MODE,
             },
@@ -218,9 +214,6 @@ async def main():
     adapter_manager.on_command("stop", stop_command, description="停止当前任务")
     adapter_manager.on_command("heartbeat", heartbeat_command, description="管理心跳")
     adapter_manager.on_command("task", task_command, description="查看 Manager 任务")
-    adapter_manager.on_command(
-        "worker", worker_command, description="管理 Worker 执行层"
-    )
     adapter_manager.on_command("acc", accounting_command, description="快捷记账助手")
 
     # ----------------------------------------------
@@ -364,8 +357,7 @@ async def main():
 
     try:
         await adapter_manager.start_all()
-        await worker_result_relay.start()
-        await manager_dispatch_executor.start()
+        await subagent_supervisor.start()
 
         # Keep alive
         logger.info("All adapters started. Press Ctrl+C to stop.")
@@ -375,9 +367,8 @@ async def main():
         logger.error(f"Fatal error: {e}", exc_info=True)
     finally:
         logger.info("Shutting down...")
-        await manager_dispatch_executor.stop()
+        await subagent_supervisor.stop()
         await heartbeat_worker.stop()
-        await worker_result_relay.stop()
         await adapter_manager.stop_all()
 
 

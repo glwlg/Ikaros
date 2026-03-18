@@ -117,17 +117,17 @@ def _resolve_binding_identity(ctx: UnifiedContext) -> tuple[str, str]:
     platform_user_id = str(getattr(ctx.message.user, "id", "") or "").strip()
     user_data = ctx.user_data if isinstance(ctx.user_data, dict) else {}
 
-    if platform == "worker_kernel":
+    if platform == "subagent_kernel":
         source_platform = str(
             user_data.get("source_platform")
-            or user_data.get("worker_delivery_platform")
+            or user_data.get("subagent_delivery_platform")
             or ""
         ).strip()
         source_user_id = str(
             user_data.get("source_user_id")
             or user_data.get("source_chat_id")
-            or user_data.get("worker_delivery_user_id")
-            or user_data.get("worker_delivery_chat_id")
+            or user_data.get("subagent_delivery_user_id")
+            or user_data.get("subagent_delivery_chat_id")
             or ""
         ).strip()
         if source_platform:

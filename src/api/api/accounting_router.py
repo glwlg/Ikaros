@@ -36,7 +36,8 @@ from api.models.accounting import (
     StatsPanel,
     OperationLog,
 )
-from shared.queue.dispatch_queue import dispatch_queue
+from manager.dispatch.web_accounting_auto_image import run_web_accounting_auto_image_task
+from shared.contracts.dispatch import TaskEnvelope
 
 router = APIRouter()
 
@@ -479,78 +480,6 @@ def _store_web_accounting_image(image_bytes: bytes, mime_type: str) -> str:
     return str(path)
 
 
-async def _wait_for_dispatch_result(task_id: str, timeout_sec: float) -> dict:
-    interval = 0.5
-    deadline = asyncio.get_running_loop().time() + max(5.0, timeout_sec)
-    while asyncio.get_running_loop().time() < deadline:
-        result_obj = await dispatch_queue.latest_result(task_id)
-        if result_obj is not None:
-            payload = result_obj.to_dict()
-            raw = payload.get("payload")
-            payload_obj = dict(raw) if isinstance(raw, dict) else {}
-            draft_raw = payload_obj.get("draft") or payload_obj.get("accounting_draft")
-            draft = dict(draft_raw) if isinstance(draft_raw, dict) else None
-            record_id_raw = payload_obj.get("record_id") or payload_obj.get(
-                "accounting_record_id"
-            )
-            book_id_raw = payload_obj.get("book_id")
-            try:
-                record_id = int(record_id_raw)
-            except (TypeError, ValueError):
-                record_id = 0
-            try:
-                book_id = int(book_id_raw)
-            except (TypeError, ValueError):
-                book_id = 0
-
-            message = str(
-                payload_obj.get("message")
-                or payload_obj.get("text")
-                or payload.get("summary")
-                or payload.get("error")
-                or ""
-            ).strip()
-            if draft is not None:
-                return {
-                    "ok": bool(payload.get("ok")),
-                    "message": message[:500],
-                    "draft": draft,
-                    "record_id": 0,
-                    "book_id": book_id,
-                }
-            return {
-                "ok": bool(payload.get("ok")) and record_id > 0,
-                "message": message[:500],
-                "record_id": record_id,
-                "book_id": book_id,
-            }
-
-        task_obj = await dispatch_queue.get_task(task_id)
-        if task_obj is None:
-            return {
-                "ok": False,
-                "message": "记账任务已丢失，请重试。",
-                "record_id": 0,
-                "book_id": 0,
-            }
-        if task_obj.status in {"failed", "cancelled"}:
-            return {
-                "ok": False,
-                "message": str(task_obj.error or "AI 未能完成记账").strip()[:500],
-                "record_id": 0,
-                "book_id": 0,
-            }
-
-        await asyncio.sleep(interval)
-
-    return {
-        "ok": False,
-        "message": "AI 识别超时，请稍后重试。",
-        "record_id": 0,
-        "book_id": 0,
-    }
-
-
 async def _run_web_image_quick_accounting(
     *,
     user: User,
@@ -561,9 +490,6 @@ async def _run_web_image_quick_accounting(
 ) -> dict:
     image_path = _store_web_accounting_image(image_bytes, mime_type)
     timeout_sec = float(os.getenv("WEB_ACCOUNTING_AUTO_TIMEOUT_SEC", "110"))
-    worker_id = str(os.getenv("WEB_ACCOUNTING_MANAGER_ID", "manager-main")).strip()
-    if not worker_id:
-        worker_id = "manager-main"
 
     instruction = (
         "请先识别这张交易图片，再调用 submit_accounting_draft 提交结构化记账草稿。"
@@ -575,24 +501,58 @@ async def _run_web_image_quick_accounting(
         instruction += f"\n\n补充说明：{user_note}"
 
     try:
-        queued = await dispatch_queue.submit_task(
-            worker_id=worker_id,
-            instruction=instruction,
-            source="web_accounting_auto_image",
-            metadata={
-                "execution_mode": "web_accounting_auto_image",
-                "accounting_user_id": int(user.id),
-                "accounting_book_id": int(book_id),
-                "accounting_source": "web_clipboard",
-                "web_accounting_image_path": image_path,
-                "web_accounting_image_mime": mime_type,
-            },
+        result_obj = await asyncio.wait_for(
+            run_web_accounting_auto_image_task(
+                TaskEnvelope(
+                    task_id=f"web-accounting-{uuid4().hex[:8]}",
+                    executor_id="manager-main",
+                    instruction=instruction,
+                    source="web_accounting_auto_image",
+                    metadata={
+                        "execution_mode": "web_accounting_auto_image",
+                        "accounting_user_id": int(user.id),
+                        "accounting_book_id": int(book_id),
+                        "accounting_source": "web_clipboard",
+                        "web_accounting_image_path": image_path,
+                        "web_accounting_image_mime": mime_type,
+                    },
+                )
+            ),
+            timeout=max(5.0, timeout_sec),
         )
-        await dispatch_queue.mark_delivered(queued.task_id)
-        result = await _wait_for_dispatch_result(queued.task_id, timeout_sec)
+        payload = result_obj.to_dict()
+        payload_obj = (
+            dict(payload.get("payload") or {})
+            if isinstance(payload.get("payload"), dict)
+            else {}
+        )
+        draft_raw = payload_obj.get("draft") or payload_obj.get("accounting_draft")
+        draft = dict(draft_raw) if isinstance(draft_raw, dict) else None
+        message = str(
+            payload_obj.get("message")
+            or payload_obj.get("text")
+            or payload.get("summary")
+            or payload.get("error")
+            or ""
+        ).strip()[:500]
+        result = {
+            "ok": bool(payload.get("ok")),
+            "message": message,
+            "record_id": 0,
+            "book_id": int(payload_obj.get("book_id") or book_id or 0),
+        }
+        if draft is not None:
+            result["draft"] = draft
         if result.get("book_id", 0) <= 0:
             result["book_id"] = int(book_id)
         return result
+    except asyncio.TimeoutError:
+        return {
+            "ok": False,
+            "message": "AI 识别超时，请稍后重试。",
+            "record_id": 0,
+            "book_id": int(book_id),
+        }
     finally:
         try:
             Path(image_path).unlink(missing_ok=True)

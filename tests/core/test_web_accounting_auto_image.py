@@ -3,8 +3,7 @@ from types import SimpleNamespace
 
 import api.api.accounting_router as accounting_router_module
 import manager.dispatch.web_accounting_auto_image as web_accounting_module
-from shared.contracts.dispatch import TaskEnvelope, TaskResult
-from shared.queue.dispatch_queue import DispatchQueue
+from shared.contracts.dispatch import TaskEnvelope
 
 
 @pytest.mark.asyncio
@@ -51,7 +50,7 @@ async def test_run_web_accounting_auto_image_task_returns_accounting_draft(
 
     task = TaskEnvelope(
         task_id="tsk-web-1",
-        worker_id="manager-main",
+        executor_id="manager-main",
         instruction="请先识别这张交易图片，再调用 submit_accounting_draft 提交结构化记账草稿。",
         source="web_accounting_auto_image",
         metadata={
@@ -80,33 +79,14 @@ async def test_run_web_image_quick_accounting_marks_task_delivered_for_api_poll(
     tmp_path,
 ):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MANAGER_DISPATCH_ROOT", raising=False)
-
-    queue = DispatchQueue()
-    monkeypatch.setattr(accounting_router_module, "dispatch_queue", queue)
-
     captured: dict[str, str] = {}
 
-    async def fake_wait(task_id: str, timeout_sec: float) -> dict:
-        _ = timeout_sec
-        task = await queue.get_task(task_id)
-        assert task is not None
-        captured["task_id"] = task_id
-        captured["delivered_at_before_finish"] = str(task.delivered_at or "")
-
-        claimed = await queue.claim_next(
-            worker_id="manager-main",
-            claimer="manager-daemon",
-        )
-        assert claimed is not None
-        finished = await queue.finish_task(
-            task_id=task_id,
-            result=TaskResult(
-                task_id=task_id,
-                worker_id="manager-main",
-                ok=True,
-                summary="草稿解析成功",
-                payload={
+    class _FakeResult:
+        def to_dict(self):
+            return {
+                "ok": True,
+                "summary": "草稿解析成功",
+                "payload": {
                     "text": "草稿解析成功",
                     "draft": {
                         "type": "支出",
@@ -116,25 +96,18 @@ async def test_run_web_image_quick_accounting_marks_task_delivered_for_api_poll(
                     },
                     "book_id": 88,
                 },
-            ),
-        )
-        assert finished is not None
-        return {
-            "ok": True,
-            "message": "草稿解析成功",
-            "draft": {
-                "type": "支出",
-                "amount": 12.5,
-                "category_name": "餐饮",
-                "account_name": "支付宝",
-            },
-            "book_id": 88,
-        }
+            }
+
+    async def fake_run(task: TaskEnvelope):
+        captured["task_id"] = task.task_id
+        assert task.source == "web_accounting_auto_image"
+        assert task.metadata["accounting_book_id"] == 88
+        return _FakeResult()
 
     monkeypatch.setattr(
         accounting_router_module,
-        "_wait_for_dispatch_result",
-        fake_wait,
+        "run_web_accounting_auto_image_task",
+        fake_run,
     )
 
     result = await accounting_router_module._run_web_image_quick_accounting(
@@ -147,12 +120,7 @@ async def test_run_web_image_quick_accounting_marks_task_delivered_for_api_poll(
 
     assert result["ok"] is True
     assert result["draft"]["account_name"] == "支付宝"
-    task = await queue.get_task(captured["task_id"])
-    assert task is not None
-    assert captured["delivered_at_before_finish"]
-    assert task.delivered_at
-    undelivered = await queue.list_undelivered(limit=10)
-    assert all(item.task_id != captured["task_id"] for item in undelivered)
+    assert captured["task_id"].startswith("web-accounting-")
 
 
 def test_record_create_from_draft_maps_manager_payload():

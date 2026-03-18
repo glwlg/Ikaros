@@ -62,7 +62,7 @@ def _default_stage(
         "title": title,
         "goal": goal,
         "success_signal": success_signal,
-        "executor": "worker",
+        "executor": "subagent",
         "status": "pending",
         "attempt_count": 0,
         "last_summary": "",
@@ -175,7 +175,8 @@ def normalize_stage_plan(
             )
             or fallback["success_signal"],
         )
-        stage["executor"] = _safe_text(row.get("executor") or "worker", limit=40) or "worker"
+        executor = _safe_text(row.get("executor") or "subagent", limit=40).lower()
+        stage["executor"] = executor or "subagent"
         stage["status"] = _safe_text(row.get("status") or "pending", limit=40).lower() or "pending"
         stage["attempt_count"] = max(0, int(row.get("attempt_count") or 0))
         stage["last_summary"] = _safe_text(row.get("last_summary"), limit=1000)

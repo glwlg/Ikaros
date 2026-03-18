@@ -112,8 +112,8 @@ class TaskEnvelope:
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
     status: str = "pending"
-    assigned_worker_id: str = ""
-    dispatch_reason: str = ""
+    executor_id: str = ""
+    assignment_reason: str = ""
     manager_id: str = "core-manager"
     result: Dict[str, Any] = field(default_factory=dict)
     final_output: str = ""
@@ -410,21 +410,21 @@ class TaskInbox:
             await self._append_log_unlocked(task.task_id, event, detail)
             return True
 
-    async def assign_worker(
+    async def assign_executor(
         self,
         task_id: str,
         *,
-        worker_id: str,
+        executor_id: str,
         reason: str = "",
         manager_id: str = "core-manager",
     ) -> bool:
         return await self.update_status(
             task_id,
             "running",
-            event="worker_assigned",
-            detail=f"worker={worker_id}; reason={reason[:120]}",
-            assigned_worker_id=str(worker_id or "").strip(),
-            dispatch_reason=str(reason or "").strip(),
+            event="executor_assigned",
+            detail=f"executor={executor_id}; reason={reason[:120]}",
+            executor_id=str(executor_id or "").strip(),
+            assignment_reason=str(reason or "").strip(),
             manager_id=str(manager_id or "core-manager").strip() or "core-manager",
         )
 

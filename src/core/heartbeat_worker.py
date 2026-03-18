@@ -295,14 +295,14 @@ class HeartbeatWorker:
         target_platform = str((delivery_target or {}).get("platform") or "").strip()
         target_chat_id = str((delivery_target or {}).get("chat_id") or "").strip()
         if target_platform:
-            ctx.user_data["worker_delivery_platform"] = target_platform
+            ctx.user_data["subagent_delivery_platform"] = target_platform
         if target_chat_id:
-            ctx.user_data["worker_delivery_chat_id"] = target_chat_id
+            ctx.user_data["subagent_delivery_chat_id"] = target_chat_id
         ctx.user_data["heartbeat_session_state_enabled"] = True
         if self.mode == "readonly":
             ctx.user_data["execution_policy"] = "heartbeat_readonly_policy"
         else:
-            ctx.user_data["execution_policy"] = "worker_execution_policy"
+            ctx.user_data["execution_policy"] = "manager_execution_policy"
 
         sections: list[str] = []
         rss_refresh_attempted = False
@@ -349,8 +349,8 @@ class HeartbeatWorker:
             ctx.user_data["runtime_task_id"] = task_id
             ctx.user_data.pop("task_inbox_id", None)
             ctx.user_data.pop("pending_ui", None)
-            ctx.user_data.pop("worker_progress_steps", None)
-            ctx.user_data.pop("worker_progress_final_preview", None)
+            ctx.user_data.pop("subagent_progress_steps", None)
+            ctx.user_data.pop("subagent_progress_final_preview", None)
             prompt = self._build_heartbeat_task_prompt(
                 task_id=task_id,
                 goal=goal,
@@ -470,7 +470,7 @@ class HeartbeatWorker:
         readonly_line = (
             "当前为 readonly 模式：仅允许检查、查询、总结；允许执行用于订阅去重状态的轻量写入。"
             if readonly
-            else "当前为 execute 模式：可以按需派发 worker 完成任务。"
+            else "当前为 execute 模式：可以自行执行，或在需要并发/隔离时启动内部 subagent。"
         )
         return (
             "你正在处理 heartbeat 来源的任务项。\n"
@@ -478,7 +478,7 @@ class HeartbeatWorker:
             "source: heartbeat\n"
             f"goal: {goal}\n"
             f"{readonly_line}\n"
-            "请自行决定：直接执行、调用扩展、或派发给合适 worker。\n"
+            "请自行决定：直接执行、调用扩展、或在必要时启动受控 subagent。\n"
             "如果目标是在回顾未完成任务、继续闭环、检查待办或跟进外部结果，先调用 `task_tracker` 查看 open task，再决定要推进哪一个。\n"
             "如果需要了解某个未完成任务最近发生了什么，优先继续用 `task_tracker` 获取任务级事件，不要直接扫 `data/task_inbox/events.jsonl`。\n"
             "若任务涉及外部事实查询（订阅更新/行情/检索/状态），请先调用至少一个可用工具，再基于工具结果作答。\n"

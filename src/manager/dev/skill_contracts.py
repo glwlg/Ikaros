@@ -77,8 +77,8 @@ def resolve_skill_contract(
             return contract
 
         change_level = "builtin" if "/skills/builtin/" in safe_cwd else "learned"
-        runtime_target = "manager" if change_level == "builtin" else "worker"
-        rollout_target = "manager" if runtime_target == "manager" else "worker"
+        runtime_target = "manager"
+        rollout_target = "manager"
         return {
             "skill_name": safe_skill_name,
             "source": change_level,
@@ -96,11 +96,11 @@ def resolve_skill_contract(
         return {
             "skill_name": sanitize_skill_name(skill_name),
             "source": "learned",
-            "runtime_target": "worker",
+            "runtime_target": "manager",
             "change_level": "learned",
             "allow_manager_modify": True,
             "allow_auto_publish": True,
-            "rollout_target": "worker",
+            "rollout_target": "manager",
             "dependencies": [],
             "preflight_commands": [],
             "permissions": {},

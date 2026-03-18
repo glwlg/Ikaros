@@ -7,7 +7,6 @@ import pytest
 import core.heartbeat_store as heartbeat_store_module
 import core.task_manager as task_manager_module
 import handlers.start_handlers as start_handlers
-import shared.queue.dispatch_queue as dispatch_queue_module
 from core.platform.models import Chat, MessageType, UnifiedMessage, User
 
 
@@ -74,19 +73,18 @@ class _FakeHeartbeatStore:
         self.events.append((str(user_id), str(event)))
 
 
-class _FakeDispatchQueue:
+class _FakeSubagentSupervisor:
     def __init__(self, result):
         self.result = dict(result)
         self.calls: list[dict] = []
 
     async def cancel_for_user(
-        self, *, user_id: str, reason: str, include_running: bool
+        self, *, user_id: str, reason: str
     ):
         self.calls.append(
             {
                 "user_id": str(user_id),
                 "reason": str(reason),
-                "include_running": bool(include_running),
             }
         )
         return dict(self.result)
@@ -104,7 +102,7 @@ class _FakeSessionTaskStore:
 
 
 @pytest.mark.asyncio
-async def test_stop_command_cancels_worker_tasks_and_updates_heartbeat(monkeypatch):
+async def test_stop_command_cancels_subagent_tasks_and_updates_heartbeat(monkeypatch):
     async def _allow(_ctx):
         return True
 
@@ -116,23 +114,21 @@ async def test_stop_command_cancels_worker_tasks_and_updates_heartbeat(monkeypat
             "heartbeat_path": "/tmp/heartbeat.md",
             "active_task_id": "hb-1",
         },
-        cancelled_desc="worker_dispatch",
+        cancelled_desc="subagent_background",
     )
     fake_heartbeat_store = _FakeHeartbeatStore(active_task=None)
-    fake_dispatch_queue = _FakeDispatchQueue(
+    fake_subagent_supervisor = _FakeSubagentSupervisor(
         {
-            "pending_cancelled": 2,
-            "running_signaled": 1,
-            "job_ids": ["j-1", "j-2", "j-3"],
+            "cancelled": 3,
+            "task_ids": ["j-1", "j-2", "j-3"],
         }
     )
 
     monkeypatch.setattr(task_manager_module, "task_manager", fake_task_manager)
     monkeypatch.setattr(heartbeat_store_module, "heartbeat_store", fake_heartbeat_store)
     monkeypatch.setattr(
-        dispatch_queue_module,
-        "dispatch_queue",
-        fake_dispatch_queue,
+        "core.subagent_supervisor.subagent_supervisor",
+        fake_subagent_supervisor,
     )
     monkeypatch.setattr(
         start_handlers,
@@ -144,11 +140,10 @@ async def test_stop_command_cancels_worker_tasks_and_updates_heartbeat(monkeypat
     await start_handlers.stop_command(ctx)
 
     assert fake_task_manager.cancel_calls == ["u-stop"]
-    assert fake_dispatch_queue.calls == [
+    assert fake_subagent_supervisor.calls == [
         {
             "user_id": "u-stop",
             "reason": "cancelled_by_stop_command",
-            "include_running": True,
         }
     ]
     assert fake_heartbeat_store.updated
@@ -158,8 +153,7 @@ async def test_stop_command_cancels_worker_tasks_and_updates_heartbeat(monkeypat
     assert len(ctx.replies) == 2
     final_text = ctx.replies[-1]
     assert "已中断任务" in final_text
-    assert "取消排队 2 个" in final_text
-    assert "中断运行 1 个" in final_text
+    assert "已取消 3 个后台子任务" in final_text
 
 
 @pytest.mark.asyncio
@@ -171,20 +165,18 @@ async def test_stop_command_reports_no_active_task(monkeypatch):
 
     fake_task_manager = _FakeTaskManager(active_info=None, cancelled_desc=None)
     fake_heartbeat_store = _FakeHeartbeatStore(active_task=None)
-    fake_dispatch_queue = _FakeDispatchQueue(
+    fake_subagent_supervisor = _FakeSubagentSupervisor(
         {
-            "pending_cancelled": 0,
-            "running_signaled": 0,
-            "job_ids": [],
+            "cancelled": 0,
+            "task_ids": [],
         }
     )
 
     monkeypatch.setattr(task_manager_module, "task_manager", fake_task_manager)
     monkeypatch.setattr(heartbeat_store_module, "heartbeat_store", fake_heartbeat_store)
     monkeypatch.setattr(
-        dispatch_queue_module,
-        "dispatch_queue",
-        fake_dispatch_queue,
+        "core.subagent_supervisor.subagent_supervisor",
+        fake_subagent_supervisor,
     )
     monkeypatch.setattr(
         start_handlers,
@@ -213,14 +205,13 @@ async def test_stop_command_renders_session_brief_when_available(monkeypatch):
             "heartbeat_path": "/tmp/heartbeat.md",
             "active_task_id": "tsk-session-1",
         },
-        cancelled_desc="worker_dispatch",
+        cancelled_desc="subagent_background",
     )
     fake_heartbeat_store = _FakeHeartbeatStore(active_task=None)
-    fake_dispatch_queue = _FakeDispatchQueue(
+    fake_subagent_supervisor = _FakeSubagentSupervisor(
         {
-            "pending_cancelled": 0,
-            "running_signaled": 1,
-            "job_ids": ["j-1"],
+            "cancelled": 1,
+            "task_ids": ["j-1"],
         }
     )
 
@@ -234,9 +225,8 @@ async def test_stop_command_renders_session_brief_when_available(monkeypatch):
     monkeypatch.setattr(task_manager_module, "task_manager", fake_task_manager)
     monkeypatch.setattr(heartbeat_store_module, "heartbeat_store", fake_heartbeat_store)
     monkeypatch.setattr(
-        dispatch_queue_module,
-        "dispatch_queue",
-        fake_dispatch_queue,
+        "core.subagent_supervisor.subagent_supervisor",
+        fake_subagent_supervisor,
     )
     monkeypatch.setattr(
         start_handlers,

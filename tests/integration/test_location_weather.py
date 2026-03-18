@@ -1,7 +1,7 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from handlers.ai_handlers import _build_worker_instruction_with_context
+from handlers.ai_handlers import _build_subagent_instruction_with_context
 
 
 @pytest.fixture
@@ -32,11 +32,11 @@ class TestLocationWeatherIntegration:
         mock_should_include_memory.return_value = True
         mock_fetch_memory.return_value = "- User lives in Beijing"
 
-        instruction, meta = await _build_worker_instruction_with_context(
+        instruction, meta = await _build_subagent_instruction_with_context(
             ctx=mock_ctx,
             user_id="user_123",
             user_message="How is the weather?",
-            worker_has_memory=False,
+            subagent_has_memory=False,
         )
 
         assert "User lives in Beijing" in instruction
@@ -51,11 +51,11 @@ class TestLocationWeatherIntegration:
 
         mock_should_include_memory.return_value = False
 
-        instruction, meta = await _build_worker_instruction_with_context(
+        instruction, meta = await _build_subagent_instruction_with_context(
             ctx=mock_ctx,
             user_id="user_123",
             user_message="echo hello",
-            worker_has_memory=False,
+            subagent_has_memory=False,
         )
 
         assert "User lives in Beijing" not in instruction

@@ -28,26 +28,6 @@ services:
       - ./skills:/app/skills # 持久化学习到的 Skills
       - /mnt/d/media/dlp:/app/media
       - /var/run/docker.sock:/var/run/docker.sock # MCP: 允许启动 MCP 服务容器
-
-  x-bot-worker:
-    image: x-bot-worker
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: worker-runtime
-    container_name: x-bot-worker
-    env_file:
-      - .env
-    restart: unless-stopped
-    network_mode: "host"
-    command: [ "python", "-m", "worker_main" ]
-    volumes:
-      - ./data:/app/data
-      - ./downloads:/app/downloads
-      - ./skills:/app/skills
-      - ./config:/app/config
-      - /var/run/docker.sock:/var/run/docker.sock
-
   x-bot-api:
     image: x-bot-api
     build:

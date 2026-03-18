@@ -74,7 +74,7 @@ async def test_manager_allows_loaded_skill_cli_bash_when_request_mentions_code()
         ctx=SimpleNamespace(
             message=SimpleNamespace(text="这个技能有问题，帮我看日志并修复代码"),
             user_data={
-                "last_loaded_skill_dir": "/app/skills/builtin/worker_management",
+                "last_loaded_skill_dir": "/app/skills/builtin/deployment_manager",
                 "last_loaded_skill_entrypoint": "scripts/execute.py",
             },
         ),
@@ -92,8 +92,8 @@ async def test_manager_allows_loaded_skill_cli_bash_when_request_mentions_code()
         name="bash",
         args={
             "command": (
-                "cd /app/skills/builtin/worker_management "
-                "&& python scripts/execute.py dispatch hi"
+                "cd /app/skills/builtin/deployment_manager "
+                "&& python scripts/execute.py help"
             )
         },
         execution_policy=None,
@@ -105,7 +105,7 @@ async def test_manager_allows_loaded_skill_cli_bash_when_request_mentions_code()
 
 
 @pytest.mark.asyncio
-async def test_worker_allows_bash_even_when_request_mentions_code(monkeypatch):
+async def test_subagent_allows_bash_even_when_request_mentions_code(monkeypatch):
     async def append_event(_event: str):
         return None
 
@@ -114,8 +114,8 @@ async def test_worker_allows_bash_even_when_request_mentions_code(monkeypatch):
             return {"ok": True, "echo": kwargs}
 
     dispatcher = ToolCallDispatcher(
-        runtime_user_id="worker::worker-main::u-3",
-        platform_name="worker_kernel",
+        runtime_user_id="subagent::subagent-main::u-3",
+        platform_name="subagent_kernel",
         task_id="task-4",
         task_inbox_id="",
         task_workspace_root="/tmp",
@@ -307,7 +307,7 @@ async def test_manager_rewrites_legacy_user1_path_for_read_tool(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_rewrites_legacy_user1_path_to_single_user_root(monkeypatch):
+async def test_subagent_rewrites_legacy_user1_path_to_single_user_root(monkeypatch):
     async def append_event(_event: str):
         return None
 
@@ -319,8 +319,8 @@ async def test_worker_rewrites_legacy_user1_path_to_single_user_root(monkeypatch
             return {"ok": True}
 
     dispatcher = ToolCallDispatcher(
-        runtime_user_id="worker::worker-main::257675041",
-        platform_name="worker_kernel",
+        runtime_user_id="subagent::subagent-main::257675041",
+        platform_name="subagent_kernel",
         task_id="task-10",
         task_inbox_id="",
         task_workspace_root="/tmp",

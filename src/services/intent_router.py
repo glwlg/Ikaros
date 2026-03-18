@@ -39,7 +39,7 @@ class IntentRouter:
     async def classify(self, message: str) -> IntentDecision:
         routed = await self.route(message)
         route = str(routed.route or "").strip().lower()
-        intent = "task" if route == "worker_task" else "chat"
+        intent = "task" if route == "manager_task" else "chat"
         return IntentDecision(
             intent=intent,
             confidence=float(routed.confidence),
@@ -55,11 +55,11 @@ class IntentRouter:
             )
 
         prompt = (
-            "你是任务派发路由器。判断用户消息是否需要派发给 Worker 执行。\n"
-            "- worker_task: 需要执行命令、搜索、研究、多步骤完成的任务\n"
+            "你是任务路由器。判断用户消息是否需要进入执行型任务流程。\n"
+            "- manager_task: 需要执行命令、搜索、研究、多步骤完成的任务\n"
             "- manager_chat: 闲聊、简单问答、问候\n"
-            "如果不确定，默认选择 worker_task。\n"
-            '返回 JSON 格式：{"route": "worker_task" 或 "manager_chat", "confidence": 0-1, "reason": "原因"}\n'
+            "如果不确定，默认选择 manager_task。\n"
+            '返回 JSON 格式：{"route": "manager_task" 或 "manager_chat", "confidence": 0-1, "reason": "原因"}\n'
             f"用户消息: {text}"
         )
         try:
@@ -75,9 +75,9 @@ class IntentRouter:
             content = response.choices[0].message.content if response.choices else ""
             payload = str(content or "").strip()
             parsed = self._parse_json(payload)
-            route = str(parsed.get("route", "worker_task")).strip().lower()
-            if route not in {"worker_task", "manager_chat"}:
-                route = "worker_task"
+            route = str(parsed.get("route", "manager_task")).strip().lower()
+            if route not in {"manager_task", "manager_chat"}:
+                route = "manager_task"
             confidence = parsed.get("confidence", 0.0)
             try:
                 conf = max(0.0, min(1.0, float(confidence)))
@@ -90,7 +90,7 @@ class IntentRouter:
         except Exception as exc:
             logger.debug("IntentRouter classify failed: %s", exc, exc_info=True)
             return DispatchDecision(
-                route="worker_task",
+                route="manager_task",
                 confidence=0.0,
                 reason=f"classifier_error:{exc}",
             )

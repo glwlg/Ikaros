@@ -14,7 +14,6 @@ def _repo_root() -> Path:
 def _default_targets() -> Dict[str, Dict[str, str]]:
     return {
         "manager": {"service": "x-bot", "image": "x-bot-manager"},
-        "worker": {"service": "x-bot-worker", "image": "x-bot-worker"},
         "api": {"service": "x-bot-api", "image": "x-bot-api"},
     }
 

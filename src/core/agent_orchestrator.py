@@ -29,42 +29,42 @@ from services.skill_router import skill_router
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_manager_text(text: str, worker_labels: Dict[str, str]) -> str:
+def _sanitize_manager_text(text: str, subagent_labels: Dict[str, str]) -> str:
     raw = str(text or "")
-    if not raw or not worker_labels:
+    if not raw or not subagent_labels:
         return raw
 
     cleaned = raw
     ordered = sorted(
         (
-            (str(worker_id or "").strip(), str(name or "").strip())
-            for worker_id, name in worker_labels.items()
+            (str(subagent_id or "").strip(), str(name or "").strip())
+            for subagent_id, name in subagent_labels.items()
         ),
         key=lambda item: len(item[0]),
         reverse=True,
     )
-    ordered = [(worker_id, name) for worker_id, name in ordered if worker_id]
+    ordered = [(subagent_id, name) for subagent_id, name in ordered if subagent_id]
     if not ordered:
         return raw
 
     primary_name = next(
-        (name for _worker_id, name in ordered if name),
+        (name for _subagent_id, name in ordered if name),
         ordered[0][0],
     )
 
-    for worker_id, worker_name in ordered:
-        display_name = worker_name or primary_name
-        cleaned = cleaned.replace(f"`{worker_id}`", display_name)
-        cleaned = cleaned.replace(worker_id, display_name)
+    for subagent_id, subagent_name in ordered:
+        display_name = subagent_name or primary_name
+        cleaned = cleaned.replace(f"`{subagent_id}`", display_name)
+        cleaned = cleaned.replace(subagent_id, display_name)
 
-    cleaned = re.sub(r"\bworker_id\b", "执行助手编号", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bsubagent_id\b", "执行助手编号", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bbackend\b", "执行方式", cleaned, flags=re.IGNORECASE)
-    if "worker" not in primary_name.lower():
+    if "subagent" not in primary_name.lower():
         cleaned = re.sub(
-            r"\bworkers\b", f"{primary_name}团队", cleaned, flags=re.IGNORECASE
+            r"\bsubagents\b", f"{primary_name}团队", cleaned, flags=re.IGNORECASE
         )
-        cleaned = re.sub(r"\bworker\b", primary_name, cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\bWorker\b", primary_name, cleaned)
+        cleaned = re.sub(r"\bsubagent\b", primary_name, cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bSubagent\b", primary_name, cleaned)
     return cleaned
 
 
@@ -115,8 +115,20 @@ class AgentOrchestrator:
         platform_name = runtime_ctx.platform_name
         runtime_policy_ctx = runtime_ctx.runtime_policy_ctx
         manager_runtime = runtime_ctx.manager_runtime
+        explicit_allowed_skill_names = {
+            str(item or "").strip()
+            for item in list(user_data.get("allowed_skill_names") or [])
+            if str(item or "").strip()
+        }
+        explicit_allowed_tool_names = {
+            str(item or "").strip()
+            for item in list(user_data.get("allowed_tool_names") or [])
+            if str(item or "").strip()
+        }
+        if not explicit_allowed_tool_names:
+            explicit_allowed_tool_names = set()
 
-        dispatched_worker_labels: Dict[str, str] = {}
+        dispatched_subagent_labels: Dict[str, str] = {}
         last_user_text = self._extract_last_user_text(message_history)
         routing_text = self._extract_recent_user_text(message_history, max_messages=3)
         if not routing_text:
@@ -149,8 +161,13 @@ class AgentOrchestrator:
             last_user_text=last_user_text,
             runtime_user_id=user_id_str,
             platform_name=platform_name,
+            explicit_allowed_skill_names=explicit_allowed_skill_names,
         )
-        allowed_skill_names = {candidate.name for candidate in extension_candidates}
+        allowed_skill_names = (
+            set(explicit_allowed_skill_names)
+            if explicit_allowed_skill_names
+            else {candidate.name for candidate in extension_candidates}
+        )
         logger.info(
             "Extension candidates selected: raw=%s filtered=%s routed=%s route_ok=%s confidence=%.2f reason=%s",
             [candidate.name for candidate in raw_extension_candidates] or "none",
@@ -184,18 +201,9 @@ class AgentOrchestrator:
             platform_name=platform_name,
             runtime_tool_allowed=self._runtime_tool_allowed,
             allowed_skill_names=allowed_skill_names,
+            allowed_tool_names=explicit_allowed_tool_names or None,
         )
         tools = await tooling_assembler.assemble()
-
-        def on_worker_dispatched(worker_id: str, worker_name: str) -> None:
-            dispatched_worker_id = str(worker_id or "").strip()
-            dispatched_worker_name = str(worker_name or "").strip()
-            if dispatched_worker_id:
-                dispatched_worker_labels[dispatched_worker_id] = (
-                    dispatched_worker_name or dispatched_worker_id
-                )
-            if dispatched_worker_name:
-                user_data["last_dispatched_worker_name"] = dispatched_worker_name
 
         tool_dispatcher = ToolCallDispatcher(
             runtime_user_id=user_id_str,
@@ -209,8 +217,8 @@ class AgentOrchestrator:
             runtime_tool_allowed=self._runtime_tool_allowed,
             todo_mark_step=todo_session.mark_step,
             append_session_event=append_session_event,
-            on_worker_dispatched=on_worker_dispatched,
             allowed_skill_names=allowed_skill_names,
+            allowed_tool_names=explicit_allowed_tool_names or None,
         )
         tool_dispatcher.set_available_tool_names(tooling_assembler.tool_names(tools))
 
@@ -253,6 +261,7 @@ class AgentOrchestrator:
             runtime_user_id=user_id_str,
             runtime_policy_ctx=runtime_policy_ctx,
             tools=tools,
+            allowed_skill_names_override=allowed_skill_names,
         )
 
         suppressed_max_turn_warning = ""
@@ -260,7 +269,7 @@ class AgentOrchestrator:
 
         def sanitize_preview(text: str) -> str:
             if manager_runtime:
-                return _sanitize_manager_text(text, dispatched_worker_labels)
+                return _sanitize_manager_text(text, dispatched_subagent_labels)
             return text
 
         event_handler = OrchestratorEventHandler(
@@ -279,25 +288,25 @@ class AgentOrchestrator:
             update_task_inbox_status=update_task_inbox_status,
         )
 
-        worker_progress_hook = get_runtime_callback(ctx, "worker_progress_callback")
-        if not callable(worker_progress_hook):
-            worker_progress_hook = user_data.get("worker_progress_callback")
-        if not callable(worker_progress_hook):
-            worker_progress_hook = None
+        subagent_progress_hook = get_runtime_callback(ctx, "subagent_progress_callback")
+        if not callable(subagent_progress_hook):
+            subagent_progress_hook = user_data.get("subagent_progress_callback")
+        if not callable(subagent_progress_hook):
+            subagent_progress_hook = None
         manager_progress_hook = get_runtime_callback(ctx, "manager_progress_callback")
         if not callable(manager_progress_hook):
             manager_progress_hook = user_data.get("manager_progress_callback")
         if not callable(manager_progress_hook):
             manager_progress_hook = None
-        progress_steps_raw = user_data.get("worker_progress_steps")
+        progress_steps_raw = user_data.get("subagent_progress_steps")
         progress_steps: list[dict[str, Any]] = (
             [item for item in progress_steps_raw if isinstance(item, dict)]
             if isinstance(progress_steps_raw, list)
             else []
         )
 
-        async def emit_worker_progress(event: str, payload: Dict[str, Any]) -> None:
-            if worker_progress_hook is None:
+        async def emit_subagent_progress(event: str, payload: Dict[str, Any]) -> None:
+            if subagent_progress_hook is None:
                 return
             try:
                 event_name = str(event or "").strip().lower()
@@ -339,12 +348,12 @@ class AgentOrchestrator:
                             }
                         )
                 elif event_name == "final_response":
-                    user_data["worker_progress_final_preview"] = str(
+                    user_data["subagent_progress_final_preview"] = str(
                         payload.get("text_preview") or ""
                     )[:180]
 
                 progress_steps[:] = progress_steps[-20:]
-                user_data["worker_progress_steps"] = progress_steps
+                user_data["subagent_progress_steps"] = progress_steps
 
                 running_tool = ""
                 done_tools: list[str] = []
@@ -372,7 +381,7 @@ class AgentOrchestrator:
                     "failed_tools": failed_tools[-3:],
                     "recent_steps": progress_steps[-6:],
                     "final_preview": str(
-                        user_data.get("worker_progress_final_preview") or ""
+                        user_data.get("subagent_progress_final_preview") or ""
                     )[:180],
                 }
                 if event_name in {"tool_call_started", "tool_call_finished"}:
@@ -398,11 +407,11 @@ class AgentOrchestrator:
                     if terminal_text:
                         snapshot["terminal_text"] = terminal_text
 
-                maybe_coro = worker_progress_hook(snapshot)
+                maybe_coro = subagent_progress_hook(snapshot)
                 if inspect.isawaitable(maybe_coro):
                     await cast(Any, maybe_coro)
             except Exception as exc:
-                logger.debug("worker progress hook error: %s", exc)
+                logger.debug("subagent progress hook error: %s", exc)
 
         async def emit_manager_progress(event: str, payload: Dict[str, Any]) -> None:
             if not manager_runtime or manager_progress_hook is None:
@@ -420,7 +429,7 @@ class AgentOrchestrator:
         async def on_agent_event(event: str, payload: Dict[str, Any]):
             directive = await event_handler.handle(event, payload)
             await emit_manager_progress(event, payload)
-            await emit_worker_progress(event, payload)
+            await emit_subagent_progress(event, payload)
             return directive
 
         logger.info("final tools: %s", tools)
@@ -436,7 +445,7 @@ class AgentOrchestrator:
                 suppressed_max_turn_warning = chunk
                 continue
             if manager_runtime and isinstance(chunk, str):
-                yield _sanitize_manager_text(chunk, dispatched_worker_labels)
+                yield _sanitize_manager_text(chunk, dispatched_subagent_labels)
             else:
                 yield chunk
 
@@ -474,10 +483,13 @@ class AgentOrchestrator:
                     last_user_text=last_user_text,
                     runtime_user_id=user_id_str,
                     platform_name=platform_name,
+                    explicit_allowed_skill_names=explicit_allowed_skill_names,
                 )
                 allowed_skill_names = {
                     candidate.name for candidate in extension_candidates
                 }
+                if explicit_allowed_skill_names:
+                    allowed_skill_names = set(explicit_allowed_skill_names)
                 logger.info(
                     "Extension candidates after evolution: raw=%s filtered=%s routed=%s route_ok=%s confidence=%.2f reason=%s",
                     [candidate.name for candidate in reroute_candidates] or "none",
@@ -489,6 +501,16 @@ class AgentOrchestrator:
                 )
                 tooling_assembler.allowed_skill_names = set(allowed_skill_names)
                 tool_dispatcher.allowed_skill_names = set(allowed_skill_names)
+                tooling_assembler.allowed_tool_names = (
+                    set(explicit_allowed_tool_names)
+                    if explicit_allowed_tool_names
+                    else None
+                )
+                tool_dispatcher.allowed_tool_names = (
+                    set(explicit_allowed_tool_names)
+                    if explicit_allowed_tool_names
+                    else None
+                )
                 tools = await tooling_assembler.assemble()
                 tool_dispatcher.set_available_tool_names(
                     tooling_assembler.tool_names(tools)
@@ -500,6 +522,7 @@ class AgentOrchestrator:
                     runtime_user_id=user_id_str,
                     runtime_policy_ctx=runtime_policy_ctx,
                     tools=tools,
+                    allowed_skill_names_override=allowed_skill_names,
                 )
 
                 event_handler.flags.blocked = False
@@ -519,7 +542,7 @@ class AgentOrchestrator:
                         suppressed_max_turn_warning = chunk
                         continue
                     if manager_runtime and isinstance(chunk, str):
-                        yield _sanitize_manager_text(chunk, dispatched_worker_labels)
+                        yield _sanitize_manager_text(chunk, dispatched_subagent_labels)
                     else:
                         yield chunk
 
@@ -631,20 +654,34 @@ class AgentOrchestrator:
         runtime_user_id: str = "",
         runtime_policy_ctx: Dict[str, Any] | None = None,
         tools: List[Dict[str, Any]] | None = None,
+        allowed_skill_names_override: set[str] | None = None,
     ) -> str:
         del intent_text
         agent_kind = (
             str((runtime_policy_ctx or {}).get("agent_kind") or "").strip().lower()
         )
-        mode = "worker" if agent_kind == "worker" else "manager"
-        allowed_skill_names = [
-            str(getattr(item, "name", "") or "").strip()
-            for item in list(extension_candidates or [])
-            if str(getattr(item, "name", "") or "").strip()
-        ]
+        if agent_kind == "subagent":
+            mode = "subagent"
+        else:
+            mode = "manager"
+        allowed_skill_names = (
+            sorted(
+                {
+                    str(item or "").strip()
+                    for item in list(allowed_skill_names_override or [])
+                    if str(item or "").strip()
+                }
+            )
+            if allowed_skill_names_override
+            else [
+                str(getattr(item, "name", "") or "").strip()
+                for item in list(extension_candidates or [])
+                if str(getattr(item, "name", "") or "").strip()
+            ]
+        )
         return prompt_composer.compose_base(
             runtime_user_id=runtime_user_id,
-            platform="worker_kernel" if agent_kind == "worker" else "",
+            platform="subagent_kernel" if agent_kind == "subagent" else "",
             tools=tools or [],
             runtime_policy_ctx=runtime_policy_ctx or {},
             mode=mode,
@@ -711,6 +748,7 @@ class AgentOrchestrator:
         last_user_text: str,
         runtime_user_id: str,
         platform_name: str,
+        explicit_allowed_skill_names: set[str] | None = None,
     ) -> tuple[list[ExtensionCandidate], list[ExtensionCandidate], Any]:
         raw_extension_candidates = self.extension_router.route(
             routing_text, max_candidates=24
@@ -729,6 +767,12 @@ class AgentOrchestrator:
                 kind="tool",
             )
         ]
+        if explicit_allowed_skill_names:
+            extension_candidates = [
+                candidate
+                for candidate in extension_candidates
+                if candidate.name in explicit_allowed_skill_names
+            ]
 
         skill_route = await skill_router.route(
             dialog_messages=self._extract_recent_dialog_messages(
@@ -744,6 +788,12 @@ class AgentOrchestrator:
                 candidate
                 for candidate in extension_candidates
                 if candidate.name in selected
+            ]
+        if explicit_allowed_skill_names:
+            extension_candidates = [
+                candidate
+                for candidate in extension_candidates
+                if candidate.name in explicit_allowed_skill_names
             ]
         return raw_extension_candidates, extension_candidates, skill_route
 
@@ -762,13 +812,7 @@ class AgentOrchestrator:
             kind=kind,
         )
         if not allowed:
-            log_level = (
-                logging.DEBUG
-                if detail.get("reason") == "worker_memory_disabled"
-                else logging.INFO
-            )
-            logger.log(
-                log_level,
+            logger.info(
                 "Tool blocked by policy: user=%s tool=%s kind=%s groups=%s reason=%s agent=%s:%s",
                 runtime_user_id,
                 tool_name,
