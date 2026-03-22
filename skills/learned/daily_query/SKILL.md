@@ -17,6 +17,7 @@ input_schema:
       enum: ["weather", "time", "crypto", "currency"]
   required:
     - query_type
+platform_handlers: true
 permissions:
   filesystem: workspace
   shell: true

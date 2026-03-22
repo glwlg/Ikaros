@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from core.platform.models import UnifiedContext
+from core.skill_menu import cache_items, get_cached_item, make_callback, parse_callback
 from core.skill_cli import (
     add_common_arguments,
     merge_params,
@@ -28,6 +29,9 @@ try:
     import pyotp
 except ImportError:
     pyotp = None
+
+
+ACCOUNT_MENU_NS = "accm"
 
 
 async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
@@ -135,6 +139,271 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
             return {"text": "❌ 删除失败。"}
 
     return {"text": f"❌ 未知操作: {action}"}
+
+
+def _parse_account_subcommand(text: str) -> tuple[str, str, str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return "menu", "", ""
+
+    parts = raw.split(maxsplit=3)
+    if not parts or not parts[0].startswith("/account"):
+        return "help", "", ""
+    if len(parts) == 1:
+        return "menu", "", ""
+
+    sub = str(parts[1] or "").strip().lower()
+    if sub in {"menu", "home", "start"}:
+        return "menu", "", ""
+    if sub in {"help", "h", "?"}:
+        return "help", "", ""
+    if sub in {"list", "ls", "show"}:
+        return "list", "", ""
+    if sub in {"get", "view"}:
+        return "get", str(parts[2] if len(parts) >= 3 else "").strip(), ""
+    if sub in {"remove", "rm", "del", "delete"}:
+        return "remove", str(parts[2] if len(parts) >= 3 else "").strip(), ""
+    if sub in {"add", "set", "save"}:
+        return (
+            "add",
+            str(parts[2] if len(parts) >= 3 else "").strip(),
+            str(parts[3] if len(parts) >= 4 else "").strip(),
+        )
+    return "get", str(parts[1] or "").strip(), ""
+
+
+def _account_usage_text() -> str:
+    return (
+        "用法:\n"
+        "`/account`\n"
+        "`/account list`\n"
+        "`/account <service>`\n"
+        "`/account get <service>`\n"
+        "`/account add <service> <key=value ...>`\n"
+        "`/account remove <service>`"
+    )
+
+
+def _account_menu_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "📋 账号列表", "callback_data": make_callback(ACCOUNT_MENU_NS, "list")},
+                {"text": "➕ 添加说明", "callback_data": make_callback(ACCOUNT_MENU_NS, "addhelp")},
+            ],
+            [
+                {"text": "ℹ️ 帮助", "callback_data": make_callback(ACCOUNT_MENU_NS, "help")},
+            ],
+        ]
+    }
+
+
+async def show_account_menu(ctx: UnifiedContext) -> dict:
+    accounts = await list_accounts(ctx.message.user.id)
+    cache_items(ctx, ACCOUNT_MENU_NS, "services", accounts)
+    preview = "、".join(str(item or "").strip() for item in accounts[:4] if str(item or "").strip())
+    if len(accounts) > 4:
+        preview += " 等"
+    if not preview:
+        preview = "暂无已保存账号"
+    return {
+        "text": (
+            "🔐 **账号管理**\n\n"
+            f"已保存账号：{len(accounts)}\n"
+            f"当前列表：{preview}\n\n"
+            "查看详情可直接发 `/account <service>`。"
+        ),
+        "ui": _account_menu_ui(),
+    }
+
+
+def _account_add_help_response() -> dict:
+    return {
+        "text": (
+            "➕ **添加账号**\n\n"
+            "直接发送：\n"
+            "• `/account add github username=alice token=xxx`\n"
+            "• `/account add google {\"username\":\"alice\",\"password\":\"secret\"}`\n\n"
+            "支持 JSON 和空格分隔的 `key=value`。"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "🏠 返回首页", "callback_data": make_callback(ACCOUNT_MENU_NS, "home")},
+                    {"text": "📋 账号列表", "callback_data": make_callback(ACCOUNT_MENU_NS, "list")},
+                ]
+            ]
+        },
+    }
+
+
+async def _build_account_list_response(ctx: UnifiedContext) -> dict:
+    accounts = await list_accounts(ctx.message.user.id)
+    cache_items(ctx, ACCOUNT_MENU_NS, "services", accounts)
+    if not accounts:
+        return {"text": "📭 您还没有保存任何账号。", "ui": _account_menu_ui()}
+
+    lines = ["📋 **已保存的账号**：", ""]
+    for index, service in enumerate(accounts, start=1):
+        lines.append(f"{index}. `{service}`")
+    lines.append("")
+    lines.append("点按钮查看详情，或直接发 `/account <service>`。")
+
+    actions = []
+    row = []
+    for index, service in enumerate(accounts):
+        row.append(
+            {
+                "text": str(service)[:18],
+                "callback_data": make_callback(ACCOUNT_MENU_NS, "show", index),
+            }
+        )
+        if len(row) == 2:
+            actions.append(row)
+            row = []
+    if row:
+        actions.append(row)
+    actions.append(
+        [
+            {"text": "➕ 添加说明", "callback_data": make_callback(ACCOUNT_MENU_NS, "addhelp")},
+            {"text": "🏠 返回首页", "callback_data": make_callback(ACCOUNT_MENU_NS, "home")},
+        ]
+    )
+    return {"text": "\n".join(lines), "ui": {"actions": actions}}
+
+
+async def _build_account_detail_response(
+    ctx: UnifiedContext,
+    service_index: str | int | None,
+) -> dict:
+    service = get_cached_item(ctx, ACCOUNT_MENU_NS, "services", service_index)
+    if service is None:
+        accounts = await list_accounts(ctx.message.user.id)
+        cache_items(ctx, ACCOUNT_MENU_NS, "services", accounts)
+        service = get_cached_item(ctx, ACCOUNT_MENU_NS, "services", service_index)
+    if service is None:
+        return {"text": "❌ 账号缓存已过期，请返回列表重试。", "ui": _account_menu_ui()}
+
+    payload = await execute(
+        ctx,
+        {
+            "action": "get",
+            "service": str(service),
+        },
+    )
+    ui = {
+        "actions": [
+            [
+                {"text": "🗑️ 删除账号", "callback_data": make_callback(ACCOUNT_MENU_NS, "confirmdel", service_index)},
+            ],
+            [
+                {"text": "📋 返回列表", "callback_data": make_callback(ACCOUNT_MENU_NS, "list")},
+                {"text": "🏠 返回首页", "callback_data": make_callback(ACCOUNT_MENU_NS, "home")},
+            ],
+        ]
+    }
+    return {"text": payload.get("text", "❌ 获取账号失败。"), "ui": ui}
+
+
+async def handle_account_menu_callback(ctx: UnifiedContext):
+    data = ctx.callback_data
+    if not data:
+        return
+
+    action, parts = parse_callback(data, ACCOUNT_MENU_NS)
+    if not action:
+        return
+
+    await ctx.answer_callback()
+    arg = parts[0] if parts else ""
+
+    if action == "home":
+        payload = await show_account_menu(ctx)
+    elif action == "list":
+        payload = await _build_account_list_response(ctx)
+    elif action == "addhelp":
+        payload = _account_add_help_response()
+    elif action == "help":
+        payload = {
+            "text": _account_usage_text(),
+            "ui": {
+                "actions": [
+                    [
+                        {"text": "🏠 返回首页", "callback_data": make_callback(ACCOUNT_MENU_NS, "home")},
+                        {"text": "📋 账号列表", "callback_data": make_callback(ACCOUNT_MENU_NS, "list")},
+                    ]
+                ]
+            },
+        }
+    elif action == "show":
+        payload = await _build_account_detail_response(ctx, arg)
+    elif action == "confirmdel":
+        service = get_cached_item(ctx, ACCOUNT_MENU_NS, "services", arg)
+        if service is None:
+            payload = await _build_account_list_response(ctx)
+        else:
+            payload = {
+                "text": f"⚠️ 确认删除账号 `{service}`？",
+                "ui": {
+                    "actions": [
+                        [
+                            {"text": "🗑️ 确认删除", "callback_data": make_callback(ACCOUNT_MENU_NS, "del", arg)},
+                            {"text": "↩️ 返回详情", "callback_data": make_callback(ACCOUNT_MENU_NS, "show", arg)},
+                        ]
+                    ]
+                },
+            }
+    elif action == "del":
+        service = get_cached_item(ctx, ACCOUNT_MENU_NS, "services", arg)
+        if service is None:
+            payload = await _build_account_list_response(ctx)
+        else:
+            delete_payload = await execute(
+                ctx,
+                {
+                    "action": "remove",
+                    "service": str(service),
+                },
+            )
+            list_payload = await _build_account_list_response(ctx)
+            payload = {
+                "text": f"{delete_payload.get('text', '❌ 删除失败。')}\n\n{list_payload['text']}",
+                "ui": list_payload.get("ui", {}),
+            }
+    else:
+        payload = {"text": "❌ 未知操作。", "ui": _account_menu_ui()}
+
+    await ctx.edit_message(ctx.message.id, payload["text"], ui=payload.get("ui"))
+
+
+def register_handlers(adapter_manager):
+    from core.config import is_user_allowed
+
+    async def cmd_account(ctx):
+        if not await is_user_allowed(ctx.message.user.id):
+            return
+
+        action, service, data = _parse_account_subcommand(ctx.message.text or "")
+        if action == "menu":
+            return await show_account_menu(ctx)
+        if action == "list":
+            return await _build_account_list_response(ctx)
+        if action == "get":
+            if not service:
+                return {"text": "用法: `/account <service>`", "ui": _account_menu_ui()}
+            return await execute(ctx, {"action": "get", "service": service})
+        if action == "add":
+            if not service or not data:
+                return _account_add_help_response()
+            return await execute(ctx, {"action": "add", "service": service, "data": data})
+        if action == "remove":
+            if not service:
+                return {"text": "用法: `/account remove <service>`", "ui": _account_menu_ui()}
+            return await execute(ctx, {"action": "remove", "service": service})
+        return {"text": _account_usage_text(), "ui": _account_menu_ui()}
+
+    adapter_manager.on_command("account", cmd_account, description="账号信息管理")
+    adapter_manager.on_callback_query("^accm_", handle_account_menu_callback)
 
 
 def _build_parser() -> argparse.ArgumentParser:

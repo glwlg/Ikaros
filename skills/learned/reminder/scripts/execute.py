@@ -26,7 +26,6 @@ from core.skill_cli import (
 
 prepare_default_env(REPO_ROOT)
 
-from core.config import WAITING_FOR_REMIND_INPUT
 from core.scheduler import schedule_reminder
 from stats import increment_stat
 
@@ -103,11 +102,6 @@ async def _process_remind_logic(
     }
 
 
-# --- Handlers ---
-
-CONVERSATION_END = -1
-
-
 def _parse_remind_command(text: str) -> tuple[str, str, str]:
     raw = str(text or "").strip()
     if not raw:
@@ -143,89 +137,22 @@ def _remind_usage_text() -> str:
     )
 
 
-async def remind_command(ctx: UnifiedContext) -> int:
+async def remind_command(ctx: UnifiedContext):
     """处理 /remind 命令"""
-    # check permission logic if needed, usually adapter_manager handles basic routing,
-    # but specific permission checks (like admin only) are inside.
-    # checking base_handlers implementation:
     from core.config import is_user_allowed
 
     if not await is_user_allowed(ctx.message.user.id):
-        return CONVERSATION_END
+        return None
 
     mode, time_str, content = _parse_remind_command(ctx.message.text or "")
     if mode == "set":
-        result = await _process_remind_logic(ctx, time_str, content)
-        await ctx.reply(result.get("text"))
-        return CONVERSATION_END
+        return await _process_remind_logic(ctx, time_str, content)
 
-    await ctx.reply({"text": _remind_usage_text(), "ui": {}})
-    return CONVERSATION_END
-
-
-async def handle_remind_input(ctx: UnifiedContext) -> int:
-    text = ctx.message.text
-    if not text:
-        await ctx.reply("请发送有效文本。")
-        return WAITING_FOR_REMIND_INPUT
-
-    parts = text.strip().split(" ", 1)
-    if len(parts) < 2:
-        await ctx.reply(
-            "⚠️ 格式不正确。请同时提供时间和内容，用空格分开。\n例如：10m 喝水"
-        )
-        return WAITING_FOR_REMIND_INPUT
-
-    result = await _process_remind_logic(ctx, parts[0], parts[1])
-    await ctx.reply(result.get("text"))
-
-    # Check for success based on text content
-    if "❌" in result.get("text", "") or "⚠️" in result.get("text", ""):
-        return WAITING_FOR_REMIND_INPUT
-
-    return CONVERSATION_END
-
-
-async def cancel(ctx: UnifiedContext) -> int:
-    await ctx.reply("已取消操作。")
-    return CONVERSATION_END
+    return {"text": _remind_usage_text(), "ui": {}}
 
 
 def register_handlers(adapter_manager: Any):
     """Register handlers for Reminder skill"""
-
-    # 1. Telegram Conversation Handler
-    try:
-        tg_adapter = adapter_manager.get_adapter("telegram")
-        from telegram.ext import ConversationHandler, filters
-
-        # Create wrappers
-        entry_handler = tg_adapter.create_command_handler("remind", remind_command)
-        msg_handler = tg_adapter.create_message_handler(
-            filters.TEXT & ~filters.COMMAND, handle_remind_input
-        )
-        cancel_handler = tg_adapter.create_command_handler("cancel", cancel)
-
-        conv_handler = ConversationHandler(
-            entry_points=[entry_handler],
-            states={
-                WAITING_FOR_REMIND_INPUT: [msg_handler],
-            },
-            fallbacks=[cancel_handler],
-            per_message=False,
-        )
-
-        tg_adapter.application.add_handler(conv_handler)
-        logger.info("✅ Registered /remind ConversationHandler for Telegram")
-
-    except ValueError:
-        logger.info("Telegram adapter not found, skipping specific registration")
-    except Exception as e:
-        logger.error(f"Failed to register Telegram reminder handler: {e}")
-
-    # 2. Generic Command (Fallback for other platforms or if TG fails)
-    # Note: On TG, ConversationHandler takes precedence if added first/correctly.
-    # For Discord/DingTalk, we support simple stateless command "/remind 10m content"
     adapter_manager.on_command("remind", remind_command, description="设置定时提醒")
 
 

@@ -12,6 +12,7 @@ triggers:
 input_schema:
   type: object
   properties: {}
+platform_handlers: true
 permissions:
   filesystem: workspace
   shell: true

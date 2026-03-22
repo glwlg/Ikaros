@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from core.platform.models import UnifiedContext
+from core.skill_menu import make_callback, parse_callback
 from core.skill_cli import (
     add_common_arguments,
     merge_params,
@@ -26,12 +27,13 @@ from core.state_store import add_scheduled_task, delete_task, get_all_active_tas
 import logging
 
 logger = logging.getLogger(__name__)
+SCHEDULE_MENU_NS = "schm"
 
 
 def _parse_schedule_subcommand(text: str) -> tuple[str, str]:
     raw = str(text or "").strip()
     if not raw:
-        return "list", ""
+        return "menu", ""
 
     parts = raw.split(maxsplit=2)
     if not parts:
@@ -39,11 +41,13 @@ def _parse_schedule_subcommand(text: str) -> tuple[str, str]:
     if not parts[0].startswith("/schedule"):
         return "help", ""
     if len(parts) == 1:
-        return "list", ""
+        return "menu", ""
 
     sub = str(parts[1] or "").strip().lower()
     args = str(parts[2] if len(parts) >= 3 else "").strip()
 
+    if sub in {"menu", "home", "start"}:
+        return "menu", ""
     if sub in {"list", "ls", "show"}:
         return "list", ""
     if sub in {"delete", "del", "rm", "remove"}:
@@ -54,7 +58,63 @@ def _parse_schedule_subcommand(text: str) -> tuple[str, str]:
 
 
 def _schedule_usage_text() -> str:
-    return "用法:\n`/schedule list`\n`/schedule delete <task_id>`\n`/schedule help`"
+    return (
+        "用法:\n"
+        "`/schedule`\n"
+        "`/schedule list`\n"
+        "`/schedule delete <task_id>`\n"
+        "`/schedule help`\n\n"
+        "新增任务请直接告诉我任务内容，或通过技能参数创建。"
+    )
+
+
+def _schedule_menu_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "📋 任务列表", "callback_data": make_callback(SCHEDULE_MENU_NS, "list")},
+                {"text": "❌ 删除任务", "callback_data": make_callback(SCHEDULE_MENU_NS, "delete")},
+            ],
+            [
+                {"text": "➕ 新建说明", "callback_data": make_callback(SCHEDULE_MENU_NS, "addhelp")},
+                {"text": "ℹ️ 帮助", "callback_data": make_callback(SCHEDULE_MENU_NS, "help")},
+            ],
+        ]
+    }
+
+
+async def show_schedule_menu(ctx: UnifiedContext) -> dict:
+    tasks = await get_all_active_tasks()
+    return {
+        "text": (
+            "⏰ **定时任务管理**\n\n"
+            f"当前活跃任务：{len(tasks)}\n\n"
+            "删除任务可直接用 `/schedule delete <task_id>`。\n"
+            "新增任务建议直接告诉我执行频率和内容，或走技能参数创建。"
+        ),
+        "ui": _schedule_menu_ui(),
+    }
+
+
+def _schedule_add_help_response() -> dict:
+    return {
+        "text": (
+            "➕ **新增定时任务**\n\n"
+            "这个命令入口当前只负责查看和删除。\n"
+            "如果你想新建任务，建议直接描述需求，例如：\n"
+            "• 每天早上 9 点提醒我看日报\n"
+            "• 每小时检查一次 RSS\n\n"
+            "如果要手动删除，直接发 `/schedule delete <task_id>`。"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "🏠 返回首页", "callback_data": make_callback(SCHEDULE_MENU_NS, "home")},
+                    {"text": "📋 查看任务", "callback_data": make_callback(SCHEDULE_MENU_NS, "list")},
+                ]
+            ]
+        },
+    }
 
 
 async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
@@ -128,13 +188,15 @@ def register_handlers(adapter_manager):
             return
 
         sub, args = _parse_schedule_subcommand(ctx.message.text or "")
+        if sub == "menu":
+            return await show_schedule_menu(ctx)
         if sub == "list":
-            return await list_tasks_command(ctx)
+            return await list_tasks_command(ctx, include_menu_nav=True)
 
         if sub == "delete":
             task_id_raw = args.strip()
             if not task_id_raw:
-                return await show_delete_menu(ctx)
+                return await show_delete_menu(ctx, include_menu_nav=True)
             try:
                 task_id = int(task_id_raw)
             except ValueError:
@@ -155,9 +217,14 @@ def register_handlers(adapter_manager):
 
     # Callbacks
     adapter_manager.on_callback_query("^sch_del_", handle_task_delete_callback)
+    adapter_manager.on_callback_query("^schm_", handle_task_delete_callback)
 
 
-async def list_tasks_command(ctx: UnifiedContext):
+async def list_tasks_command(
+    ctx: UnifiedContext,
+    *,
+    include_menu_nav: bool = False,
+):
     """处理 schedule 列表展示，显示带按钮的任务列表"""
     tasks = await get_all_active_tasks()
 
@@ -169,7 +236,10 @@ async def list_tasks_command(ctx: UnifiedContext):
         # Let's return dict format which is supported by unified_adapter for skills usually,
         # but check how cmd handles it.
         # The adapter generally handles str or dict.
-        return {"text": "📭 当前没有活跃的定时任务。", "ui": {}}
+        return {
+            "text": "📭 当前没有活跃的定时任务。",
+            "ui": _schedule_menu_ui() if include_menu_nav else {},
+        }
 
     msg = "📋 **定时任务列表**\n\n"
     all_sorted = list(tasks)
@@ -205,18 +275,58 @@ async def list_tasks_command(ctx: UnifiedContext):
     if temp_row:
         actions.append(temp_row)
 
+    if include_menu_nav:
+        actions.append(
+            [
+                {"text": "➕ 新建说明", "callback_data": make_callback(SCHEDULE_MENU_NS, "addhelp")},
+                {"text": "🏠 返回首页", "callback_data": make_callback(SCHEDULE_MENU_NS, "home")},
+            ]
+        )
+
     return {"text": msg, "ui": {"actions": actions}}
 
 
-async def show_delete_menu(ctx: UnifiedContext):
+async def show_delete_menu(
+    ctx: UnifiedContext,
+    *,
+    include_menu_nav: bool = False,
+):
     """显示删除菜单"""
-    return await list_tasks_command(ctx)
+    return await list_tasks_command(ctx, include_menu_nav=include_menu_nav)
 
 
 async def handle_task_delete_callback(ctx: UnifiedContext):
     """处理删除按钮回调"""
     data = ctx.callback_data
     if not data:
+        return
+
+    action, _parts = parse_callback(data, SCHEDULE_MENU_NS)
+    if action:
+        await ctx.answer_callback()
+        if action == "home":
+            payload = await show_schedule_menu(ctx)
+        elif action == "list":
+            payload = await list_tasks_command(ctx, include_menu_nav=True)
+        elif action == "delete":
+            payload = await show_delete_menu(ctx, include_menu_nav=True)
+        elif action == "addhelp":
+            payload = _schedule_add_help_response()
+        elif action == "help":
+            payload = {
+                "text": _schedule_usage_text(),
+                "ui": {
+                    "actions": [
+                        [
+                            {"text": "🏠 返回首页", "callback_data": make_callback(SCHEDULE_MENU_NS, "home")},
+                            {"text": "📋 查看任务", "callback_data": make_callback(SCHEDULE_MENU_NS, "list")},
+                        ]
+                    ]
+                },
+            }
+        else:
+            payload = {"text": "❌ 未知操作。", "ui": _schedule_menu_ui()}
+        await ctx.edit_message(ctx.message.id, payload["text"], ui=payload.get("ui"))
         return
 
     await ctx.answer_callback()
@@ -232,9 +342,10 @@ async def handle_task_delete_callback(ctx: UnifiedContext):
 
         await reload_scheduler_jobs()
 
-        # Optionally update the list if we can edit the message
-        # But simple return text is also fine for notification
-        return f"✅ 任务 {task_id} 已删除。"
+        payload = await list_tasks_command(ctx, include_menu_nav=True)
+        text = f"✅ 任务 {task_id} 已删除。\n\n{payload['text']}"
+        await ctx.edit_message(ctx.message.id, text, ui=payload.get("ui"))
+        return None
     except Exception as e:
         return f"❌ 删除失败: {e}"
 

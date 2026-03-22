@@ -267,6 +267,16 @@ class DiscordAdapter(BotAdapter):
 
         return view
 
+    @staticmethod
+    def _is_auto_reply_payload(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return True
+        if isinstance(value, dict):
+            return "text" in value
+        return False
+
     async def _generic_button_callback(self, interaction: discord.Interaction):
         """Handle dynamic button clicks"""
         # Acknowledge to prevent failure state (some handlers might need to followup)
@@ -410,10 +420,14 @@ class DiscordAdapter(BotAdapter):
                     result = await handler(context)
 
                     # 处理 handler 返回值
-                    if result:
+                    if self._is_auto_reply_payload(result):
                         text = ""
+                        view = discord.utils.MISSING
                         if isinstance(result, dict):
                             text = result.get("text", "")
+                            ui = result.get("ui", {})
+                            if isinstance(ui, dict) and ui.get("actions"):
+                                view = self._actions_to_discord_view(ui["actions"])
                         elif isinstance(result, str):
                             text = result
 
@@ -421,7 +435,11 @@ class DiscordAdapter(BotAdapter):
                             from .formatter import markdown_to_discord_compat
 
                             text = markdown_to_discord_compat(text)
-                            await interaction.followup.send(text, ephemeral=True)
+                            await interaction.followup.send(
+                                text,
+                                view=view,
+                                ephemeral=True,
+                            )
 
                     matched = True
                     break
@@ -544,7 +562,12 @@ class DiscordAdapter(BotAdapter):
             raise MessageSendError(str(e))
 
     async def edit_text(
-        self, context: UnifiedContext, message_id: str, text: str, **kwargs
+        self,
+        context: UnifiedContext,
+        message_id: str,
+        text: str,
+        ui: Optional[Dict] = None,
+        **kwargs,
     ) -> Any:
         try:
             # We need the channel to fetch message, or if context.platform_event is the message we can edit it?
@@ -556,7 +579,11 @@ class DiscordAdapter(BotAdapter):
             channel = context.platform_event.channel
             msg = await channel.fetch_message(int(message_id))
             # Check for reply_markup
-            view = self._telegram_markup_to_discord_view(kwargs.get("reply_markup"))
+            reply_markup = kwargs.pop("reply_markup", None)
+            view = self._telegram_markup_to_discord_view(reply_markup)
+            if view is None and isinstance(ui, dict) and ui.get("actions"):
+                view = self._actions_to_discord_view(ui["actions"])
+            view_arg = view if view is not None else discord.utils.MISSING
 
             # Interaction specific edit?
             if isinstance(context.platform_event, discord.Interaction):
@@ -567,7 +594,7 @@ class DiscordAdapter(BotAdapter):
                 # Let's rely on fetch_message mostly, but if it is the interaction response we can use edit_original_response
                 pass
 
-            return await msg.edit(content=text, view=view)
+            return await msg.edit(content=text, view=view_arg)
         except Exception as e:
             logger.error(f"Discord edit error: {e}")
             raise MessageSendError(str(e))

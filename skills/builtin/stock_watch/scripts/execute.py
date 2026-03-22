@@ -24,6 +24,7 @@ from core.state_store import (
     get_user_watchlist,
     add_watchlist_stock,
 )
+from core.skill_menu import make_callback, parse_callback
 from core.platform.models import UnifiedContext
 import logging
 
@@ -41,12 +42,13 @@ else:
     )
 
 logger = logging.getLogger(__name__)
+STOCK_MENU_NS = "stkm"
 
 
 def _parse_stock_subcommand(text: str) -> tuple[str, str]:
     raw = str(text or "").strip()
     if not raw:
-        return "list", ""
+        return "menu", ""
 
     parts = raw.split(maxsplit=2)
     if not parts:
@@ -54,11 +56,13 @@ def _parse_stock_subcommand(text: str) -> tuple[str, str]:
     if not parts[0].startswith("/stock"):
         return "help", ""
     if len(parts) == 1:
-        return "list", ""
+        return "menu", ""
 
     sub = str(parts[1] or "").strip().lower()
     args = str(parts[2] if len(parts) >= 3 else "").strip()
 
+    if sub in {"menu", "home", "start"}:
+        return "menu", ""
     if sub in {"list", "ls", "show"}:
         return "list", ""
     if sub in {"add", "add_stock"}:
@@ -75,12 +79,70 @@ def _parse_stock_subcommand(text: str) -> tuple[str, str]:
 def _stock_usage_text() -> str:
     return (
         "用法:\n"
+        "`/stock`\n"
         "`/stock list`\n"
         "`/stock add <股票名称或代码>`\n"
         "`/stock remove <股票名称或代码>`\n"
         "`/stock refresh`\n"
         "`/stock help`"
     )
+
+
+def _stock_home_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "📋 我的自选股", "callback_data": make_callback(STOCK_MENU_NS, "list")},
+                {"text": "🔄 刷新行情", "callback_data": make_callback(STOCK_MENU_NS, "refresh")},
+            ],
+            [
+                {"text": "➕ 如何添加", "callback_data": make_callback(STOCK_MENU_NS, "addhelp")},
+                {"text": "ℹ️ 帮助", "callback_data": make_callback(STOCK_MENU_NS, "help")},
+            ],
+        ]
+    }
+
+
+async def show_stock_menu(ctx: UnifiedContext, user_id: int | str) -> dict:
+    platform = ctx.message.platform if ctx.message.platform else "telegram"
+    watchlist = await get_user_watchlist(user_id, platform=platform)
+    names = [str(item.get("stock_name") or "").strip() for item in watchlist[:4] if str(item.get("stock_name") or "").strip()]
+    summary = "、".join(names)
+    if len(watchlist) > 4:
+        summary += " 等"
+    if not summary:
+        summary = "暂无自选股"
+
+    return {
+        "text": (
+            "📈 **自选股管理**\n\n"
+            f"当前数量：{len(watchlist)}\n"
+            f"当前列表：{summary}\n\n"
+            "支持直接输入：`/stock add <名称或代码>`、`/stock remove <名称或代码>`。"
+        ),
+        "ui": _stock_home_ui(),
+    }
+
+
+def _stock_add_help_response() -> dict:
+    return {
+        "text": (
+            "➕ **添加自选股**\n\n"
+            "直接发送以下命令：\n"
+            "• `/stock add 贵州茅台`\n"
+            "• `/stock add sh600519`\n"
+            "• `/stock add 茅台 腾讯 苹果`\n\n"
+            "如果命中多个股票，我会给你按钮继续点选。"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "🏠 返回首页", "callback_data": make_callback(STOCK_MENU_NS, "home")},
+                    {"text": "📋 查看自选股", "callback_data": make_callback(STOCK_MENU_NS, "list")},
+                ]
+            ]
+        },
+    }
 
 
 async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> str:
@@ -144,8 +206,11 @@ def register_handlers(adapter_manager):
         sub, args = _parse_stock_subcommand(ctx.message.text or "")
         user_id = ctx.message.user.id
 
+        if sub == "menu":
+            return await show_stock_menu(ctx, user_id)
+
         if sub == "list":
-            return await show_watchlist(ctx, user_id)
+            return await show_watchlist(ctx, user_id, include_menu_nav=True)
 
         if sub == "add":
             name = args.strip()
@@ -169,9 +234,9 @@ def register_handlers(adapter_manager):
             if result:
                 return {
                     "text": f"✅ 股票行情已刷新。\n[CONTEXT_DATA_ONLY - DO NOT REPEAT]\n{result}",
-                    "ui": {},
+                    "ui": _stock_home_ui(),
                 }
-            return {"text": "📭 您的自选股列表为空，无法刷新。", "ui": {}}
+            return {"text": "📭 您的自选股列表为空，无法刷新。", "ui": _stock_home_ui()}
 
         return {"text": _stock_usage_text(), "ui": {}}
 
@@ -179,6 +244,7 @@ def register_handlers(adapter_manager):
 
     # Callback
     adapter_manager.on_callback_query("^stock_", handle_stock_select_callback)
+    adapter_manager.on_callback_query("^stkm_", handle_stock_select_callback)
 
     # "del_stock_" is handled by generic handle_subscription_callback in old code?
     # No, stock_del_ is in handle_stock_select_callback now (refactored previously).
@@ -187,7 +253,12 @@ def register_handlers(adapter_manager):
     # Check handle_stock_select_callback below.
 
 
-async def show_watchlist(ctx: UnifiedContext, user_id: int) -> str:
+async def show_watchlist(
+    ctx: UnifiedContext,
+    user_id: int | str,
+    *,
+    include_menu_nav: bool = False,
+) -> str:
     """显示自选股列表"""
     # Note: caller should handle permission if needed
     platform = ctx.message.platform if ctx.message.platform else "telegram"
@@ -196,7 +267,7 @@ async def show_watchlist(ctx: UnifiedContext, user_id: int) -> str:
     if not watchlist:
         return {
             "text": "📭 **您的自选股为空**\n\n发送「帮我关注 XX股票」可添加自选股。",
-            "ui": {},
+            "ui": _stock_home_ui() if include_menu_nav else {},
         }
 
     stock_codes = [item["stock_code"] for item in watchlist]
@@ -225,6 +296,14 @@ async def show_watchlist(ctx: UnifiedContext, user_id: int) -> str:
 
     if temp_row:
         actions.append(temp_row)
+
+    if include_menu_nav:
+        actions.append(
+            [
+                {"text": "➕ 如何添加", "callback_data": make_callback(STOCK_MENU_NS, "addhelp")},
+                {"text": "🏠 返回首页", "callback_data": make_callback(STOCK_MENU_NS, "home")},
+            ]
+        )
 
     return {"text": message, "ui": {"actions": actions}}
 
@@ -353,6 +432,47 @@ async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
     if not data:
         return
 
+    action, parts = parse_callback(data, STOCK_MENU_NS)
+    if action:
+        await ctx.answer_callback()
+        user_id = ctx.callback_user_id or ctx.message.user.id
+
+        if action == "home":
+            payload = await show_stock_menu(ctx, user_id)
+        elif action == "list":
+            payload = await show_watchlist(ctx, user_id, include_menu_nav=True)
+        elif action == "refresh":
+            from core.scheduler import trigger_manual_stock_check
+
+            result = await trigger_manual_stock_check(user_id)
+            payload = {
+                "text": (
+                    f"✅ 股票行情已刷新。\n[CONTEXT_DATA_ONLY - DO NOT REPEAT]\n{result}"
+                    if result
+                    else "📭 您的自选股列表为空，无法刷新。"
+                ),
+                "ui": _stock_home_ui(),
+            }
+        elif action == "addhelp":
+            payload = _stock_add_help_response()
+        elif action == "help":
+            payload = {
+                "text": _stock_usage_text(),
+                "ui": {
+                    "actions": [
+                        [
+                            {"text": "🏠 返回首页", "callback_data": make_callback(STOCK_MENU_NS, "home")},
+                            {"text": "📋 查看自选股", "callback_data": make_callback(STOCK_MENU_NS, "list")},
+                        ]
+                    ]
+                },
+            }
+        else:
+            payload = {"text": "❌ 未知操作。", "ui": _stock_home_ui()}
+
+        await ctx.edit_message(ctx.message.id, payload["text"], ui=payload.get("ui"))
+        return
+
     await ctx.answer_callback()
 
     user_id = ctx.callback_user_id
@@ -386,7 +506,12 @@ async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
         stock_code = data.replace("stock_del_", "")
         success = await remove_watchlist_stock(user_id, stock_code)
         if success:
-            await ctx.edit_message(ctx.message.id, f"✅ 已取消关注 {stock_code}")
+            payload = await show_watchlist(ctx, user_id, include_menu_nav=True)
+            await ctx.edit_message(
+                ctx.message.id,
+                f"✅ 已取消关注 {stock_code}\n\n{payload['text']}",
+                ui=payload.get("ui"),
+            )
         else:
             await ctx.edit_message(ctx.message.id, "❌ 删除失败")
         return

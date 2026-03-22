@@ -19,6 +19,7 @@ if str(SRC_ROOT) not in sys.path:
 
 import httpx
 from core.platform.models import UnifiedContext
+from core.skill_menu import make_callback, parse_callback
 from core.skill_cli import (
     add_common_arguments,
     merge_params,
@@ -29,6 +30,7 @@ from core.skill_cli import (
 prepare_default_env(REPO_ROOT)
 
 logger = logging.getLogger(__name__)
+DAILY_MENU_NS = "dlym"
 
 WEATHER_CODE_MAP = {
     0: "晴",
@@ -363,6 +365,176 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None):
         return
 
     yield {"text": f"❌ 不支持的日常查询分类: {query_type}", "ui": {}}
+
+
+def _parse_daily_subcommand(text: str) -> tuple[str, str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return "menu", ""
+
+    parts = raw.split(maxsplit=2)
+    if not parts or not parts[0].startswith("/daily"):
+        return "help", ""
+    if len(parts) == 1:
+        return "menu", ""
+
+    sub = str(parts[1] or "").strip().lower()
+    args = str(parts[2] if len(parts) >= 3 else "").strip()
+
+    if sub in {"menu", "home", "start"}:
+        return "menu", ""
+    if sub in {"help", "h", "?"}:
+        return "help", ""
+    if sub in {"weather", "time", "crypto", "currency"}:
+        return sub, args
+    return "help", ""
+
+
+def _daily_usage_text() -> str:
+    return (
+        "用法:\n"
+        "`/daily`\n"
+        "`/daily weather [地点]`\n"
+        "`/daily crypto [币种]`\n"
+        "`/daily currency [法币]`\n"
+        "`/daily time`"
+    )
+
+
+def _daily_menu_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "🕒 当前时间", "callback_data": make_callback(DAILY_MENU_NS, "time")},
+                {"text": "₿ BTC 价格", "callback_data": make_callback(DAILY_MENU_NS, "crypto", "BTC")},
+            ],
+            [
+                {"text": "💱 USD 汇率", "callback_data": make_callback(DAILY_MENU_NS, "currency", "USD")},
+                {"text": "🌦️ 天气用法", "callback_data": make_callback(DAILY_MENU_NS, "weatherhelp")},
+            ],
+        ]
+    }
+
+
+def _daily_weather_help_response() -> dict:
+    return {
+        "text": (
+            "🌦️ **天气查询**\n\n"
+            "直接发送：\n"
+            "• `/daily weather 无锡`\n"
+            "• `/daily weather Tokyo`\n"
+            "• `/daily weather`（使用服务器所在地）"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "🏠 返回首页", "callback_data": make_callback(DAILY_MENU_NS, "home")},
+                    {"text": "🕒 当前时间", "callback_data": make_callback(DAILY_MENU_NS, "time")},
+                ]
+            ]
+        },
+    }
+
+
+async def _run_daily_query(ctx: UnifiedContext, params: dict) -> dict:
+    final_payload: dict | None = None
+    async for chunk in execute(ctx, params):
+        if isinstance(chunk, dict) and ("text" in chunk or "ui" in chunk):
+            final_payload = dict(chunk)
+    return final_payload or {"text": "❌ 查询失败。", "ui": {}}
+
+
+async def show_daily_menu() -> dict:
+    return {
+        "text": (
+            "🧭 **日常查询**\n\n"
+            "支持天气、时间、加密货币价格和法币汇率。\n"
+            "你也可以直接输入 `/daily weather 无锡` 这类命令。"
+        ),
+        "ui": _daily_menu_ui(),
+    }
+
+
+async def handle_daily_menu_callback(ctx: UnifiedContext):
+    data = ctx.callback_data
+    if not data:
+        return
+
+    action, parts = parse_callback(data, DAILY_MENU_NS)
+    if not action:
+        return
+
+    await ctx.answer_callback()
+    if action == "home":
+        payload = await show_daily_menu()
+    elif action == "time":
+        payload = await _run_daily_query(ctx, {"query_type": "time"})
+        payload["ui"] = _daily_menu_ui()
+    elif action == "crypto":
+        payload = await _run_daily_query(
+            ctx,
+            {
+                "query_type": "crypto",
+                "symbol": str(parts[0] if parts else "BTC").strip() or "BTC",
+            },
+        )
+        payload["ui"] = _daily_menu_ui()
+    elif action == "currency":
+        payload = await _run_daily_query(
+            ctx,
+            {
+                "query_type": "currency",
+                "symbol": str(parts[0] if parts else "USD").strip() or "USD",
+            },
+        )
+        payload["ui"] = _daily_menu_ui()
+    elif action == "weatherhelp":
+        payload = _daily_weather_help_response()
+    else:
+        payload = {"text": "❌ 未知操作。", "ui": _daily_menu_ui()}
+
+    await ctx.edit_message(ctx.message.id, payload["text"], ui=payload.get("ui"))
+
+
+def register_handlers(adapter_manager):
+    from core.config import is_user_allowed
+
+    async def cmd_daily(ctx):
+        if not await is_user_allowed(ctx.message.user.id):
+            return
+
+        action, args = _parse_daily_subcommand(ctx.message.text or "")
+        if action == "menu":
+            return await show_daily_menu()
+        if action == "time":
+            payload = await _run_daily_query(ctx, {"query_type": "time"})
+            payload["ui"] = _daily_menu_ui()
+            return payload
+        if action == "crypto":
+            payload = await _run_daily_query(
+                ctx,
+                {"query_type": "crypto", "symbol": args or "BTC"},
+            )
+            payload["ui"] = _daily_menu_ui()
+            return payload
+        if action == "currency":
+            payload = await _run_daily_query(
+                ctx,
+                {"query_type": "currency", "symbol": args or "USD"},
+            )
+            payload["ui"] = _daily_menu_ui()
+            return payload
+        if action == "weather":
+            payload = await _run_daily_query(
+                ctx,
+                {"query_type": "weather", "location": args},
+            )
+            payload["ui"] = _daily_menu_ui()
+            return payload
+        return {"text": _daily_usage_text(), "ui": _daily_menu_ui()}
+
+    adapter_manager.on_command("daily", cmd_daily, description="天气时间汇率查询")
+    adapter_manager.on_callback_query("^dlym_", handle_daily_menu_callback)
 
 
 def _build_parser() -> argparse.ArgumentParser:

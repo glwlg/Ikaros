@@ -32,6 +32,13 @@ from core.skill_cli import (
     prepare_default_env,
     run_execute_cli,
 )
+from core.skill_menu import (
+    button_rows,
+    cache_items,
+    get_cached_item,
+    make_callback,
+    parse_callback,
+)
 
 prepare_default_env(REPO_ROOT)
 
@@ -44,6 +51,7 @@ from core.platform.models import UnifiedContext
 
 logger = logging.getLogger(__name__)
 DEFAULT_HOST_PORT = 20080
+DEPLOY_MENU_NS = "depm"
 COMPOSE_FILENAMES = (
     "docker-compose.yml",
     "docker-compose.yaml",
@@ -1160,82 +1168,30 @@ async def _do_clone(repo_url: str, target_path: Path) -> dict:
 
 async def _get_status() -> dict:
     """获取已部署项目状态"""
-    projects = []
-
     try:
-        # 列出工作目录下的所有项目
-        for item in WORK_BASE.iterdir():
-            if item.is_dir():
-                # 检查是否有 docker-compose.yml
-                compose_file = item / "docker-compose.yml"
-                if not compose_file.exists():
-                    compose_file = item / "docker-compose.yaml"
-
-                has_compose = compose_file.exists()
-                projects.append(
-                    {
-                        "name": item.name,
-                        "path": str(item),
-                        "has_compose": has_compose,
-                    }
-                )
-
+        projects = await _list_projects()
         if not projects:
             return {
                 "text": "📭 暂无部署项目。\n\n工作目录: `" + str(WORK_BASE) + "`",
                 "ui": {},
             }
 
-        # 获取运行中的容器及其端口
-        container_ports = {}  # {container_name: [ports]}
-        try:
-            process = await asyncio.create_subprocess_shell(
-                "docker ps --format '{{.Names}}|{{.Ports}}'",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await process.communicate()
-            for line in stdout.decode().strip().split("\n"):
-                if "|" in line:
-                    name, ports_str = line.split("|", 1)
-                    # 解析端口，如 "0.0.0.0:21000->8080/tcp"
-                    ports = []
-                    import re
-
-                    for match in re.findall(r"0\.0\.0\.0:(\d+)->", ports_str):
-                        ports.append(int(match))
-                    container_ports[name] = ports
-        except Exception:
-            pass
-
         # 构建输出
         lines = ["📋 **已部署项目**:\n"]
         for proj in projects:
-            name = proj["name"]
-
-            # 查找匹配的容器
-            matching_ports = []
-            for container_name, ports in container_ports.items():
-                if name in container_name:
-                    matching_ports.extend(ports)
-
-            if matching_ports:
+            if proj.get("running"):
                 status = "🟢 运行中"
-                urls = []
-                for port in sorted(set(matching_ports)):
-                    local_url, public_url = _build_access_urls(port)
-                    for item in (local_url, public_url):
-                        if item not in urls:
-                            urls.append(item)
-                access_info = " | ".join(urls)
-                lines.append(f"• **{name}**: {status}")
+                access_info = " | ".join(list(proj.get("urls") or []))
+                lines.append(f"• **{proj['name']}**: {status}")
                 lines.append(f"  📍 访问: {access_info}")
             else:
                 status = "⚪ 未运行"
                 compose_status = (
-                    "✓ docker-compose" if proj["has_compose"] else "✗ 无配置"
+                    f"✓ {proj.get('compose_name') or 'docker-compose'}"
+                    if proj["has_compose"]
+                    else "✗ 无配置"
                 )
-                lines.append(f"• **{name}**: {status} ({compose_status})")
+                lines.append(f"• **{proj['name']}**: {status} ({compose_status})")
 
         lines.append(f"\n工作目录: `{WORK_BASE}`")
 
@@ -1462,7 +1418,7 @@ async def _delete_project(params: dict) -> dict:
 def _parse_deploy_request(text: str) -> tuple[str, str]:
     raw = str(text or "").strip()
     if not raw:
-        return "help", ""
+        return "menu", ""
 
     parts = raw.split(maxsplit=2)
     if not parts:
@@ -1470,9 +1426,13 @@ def _parse_deploy_request(text: str) -> tuple[str, str]:
     if not parts[0].startswith("/deploy"):
         return "help", ""
     if len(parts) == 1:
-        return "help", ""
+        return "menu", ""
 
     sub = str(parts[1] or "").strip().lower()
+    if sub in {"menu", "home", "start"}:
+        return "menu", ""
+    if sub in {"status", "list", "show"}:
+        return "status", ""
     if sub in {"help", "h", "?"}:
         return "help", ""
     if sub == "run":
@@ -1489,8 +1449,9 @@ def _parse_deploy_request(text: str) -> tuple[str, str]:
 
 def _deploy_usage_text() -> str:
     return (
-        "⚠️ 请提供部署目标。\n\n"
         "用法:\n"
+        "• `/deploy`\n"
+        "• `/deploy status`\n"
         "• `/deploy run <描述或URL>`\n"
         "• `/deploy <描述或URL>`\n"
         "• `/deploy help`\n\n"
@@ -1498,6 +1459,331 @@ def _deploy_usage_text() -> str:
         "• `/deploy https://github.com/user/repo`\n"
         "• `/deploy run Uptime Kuma`"
     )
+
+
+def _deploy_menu_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "📋 项目列表", "callback_data": make_callback(DEPLOY_MENU_NS, "list", 0)},
+                {"text": "🔄 刷新状态", "callback_data": make_callback(DEPLOY_MENU_NS, "refresh", 0)},
+            ],
+            [
+                {"text": "🚀 部署帮助", "callback_data": make_callback(DEPLOY_MENU_NS, "help")},
+            ],
+        ]
+    }
+
+
+async def _list_projects() -> list[dict]:
+    projects: list[dict] = []
+
+    if not WORK_BASE.exists():
+        return projects
+
+    container_ports: dict[str, list[int]] = {}
+    try:
+        process = await asyncio.create_subprocess_shell(
+            "docker ps --format '{{.Names}}|{{.Ports}}'",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _stderr = await process.communicate()
+        for line in stdout.decode().strip().split("\n"):
+            if "|" not in line:
+                continue
+            name, ports_str = line.split("|", 1)
+            ports = []
+            for match in re.findall(r"0\.0\.0\.0:(\d+)->", ports_str):
+                try:
+                    ports.append(int(match))
+                except Exception:
+                    continue
+            container_ports[name] = ports
+    except Exception:
+        container_ports = {}
+
+    for item in sorted(WORK_BASE.iterdir(), key=lambda entry: entry.name.lower()):
+        if not item.is_dir():
+            continue
+
+        compose_file = _find_compose_file(item)
+        matching_ports: list[int] = []
+        for container_name, ports in container_ports.items():
+            if item.name in container_name:
+                matching_ports.extend(ports)
+
+        urls: list[str] = []
+        for port in sorted(set(matching_ports)):
+            local_url, public_url = _build_access_urls(port)
+            for value in (local_url, public_url):
+                if value not in urls:
+                    urls.append(value)
+
+        projects.append(
+            {
+                "name": item.name,
+                "path": str(item),
+                "has_compose": compose_file is not None,
+                "compose_name": compose_file.name if compose_file else "",
+                "running": bool(matching_ports),
+                "ports": sorted(set(matching_ports)),
+                "urls": urls,
+            }
+        )
+
+    return projects
+
+
+async def show_deploy_menu(ctx: UnifiedContext) -> dict:
+    projects = await _list_projects()
+    cache_items(ctx, DEPLOY_MENU_NS, "projects", projects)
+
+    running_count = sum(1 for project in projects if project.get("running"))
+    preview = "、".join(
+        str(project.get("name") or "").strip()
+        for project in projects[:3]
+        if str(project.get("name") or "").strip()
+    )
+    if len(projects) > 3:
+        preview += " 等"
+    if not preview:
+        preview = "暂无部署项目"
+
+    return {
+        "text": (
+            "🚀 **部署管理**\n\n"
+            f"项目总数：{len(projects)}\n"
+            f"运行中：{running_count}\n"
+            f"当前项目：{preview}\n\n"
+            "新部署请直接输入 `/deploy <描述或URL>`。"
+        ),
+        "ui": _deploy_menu_ui(),
+    }
+
+
+def _build_deploy_help_response() -> dict:
+    return {
+        "text": (
+            "🚀 **如何发起部署**\n\n"
+            "直接发送以下任一命令：\n"
+            "• `/deploy https://github.com/user/repo`\n"
+            "• `/deploy run Uptime Kuma`\n"
+            "• `/deploy run n8n`\n\n"
+            "菜单主要用于查看项目状态、检查访问和删除已有项目。"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "🏠 返回首页", "callback_data": make_callback(DEPLOY_MENU_NS, "home")},
+                    {"text": "📋 项目列表", "callback_data": make_callback(DEPLOY_MENU_NS, "list", 0)},
+                ]
+            ]
+        },
+    }
+
+
+async def _build_project_list_response(ctx: UnifiedContext, page: int = 0) -> dict:
+    projects = await _list_projects()
+    cache_items(ctx, DEPLOY_MENU_NS, "projects", projects)
+    if not projects:
+        return {
+            "text": "📭 暂无部署项目。\n\n新部署请直接发送 `/deploy <描述或URL>`。",
+            "ui": _deploy_menu_ui(),
+        }
+
+    page_size = 6
+    total_pages = max(1, (len(projects) + page_size - 1) // page_size)
+    current_page = max(0, min(int(page or 0), total_pages - 1))
+    start = current_page * page_size
+    current_items = projects[start : start + page_size]
+
+    lines = [f"📋 **部署项目列表**（第 {current_page + 1}/{total_pages} 页）", ""]
+    for offset, project in enumerate(current_items, start=start):
+        status = "🟢 运行中" if project.get("running") else "⚪ 未运行"
+        compose_text = (
+            project.get("compose_name")
+            if project.get("has_compose")
+            else "无 compose"
+        )
+        lines.append(f"{offset + 1}. **{project['name']}**")
+        lines.append(f"   状态：{status}")
+        lines.append(f"   配置：{compose_text}")
+        if project.get("urls"):
+            lines.append(f"   访问：{project['urls'][0]}")
+        lines.append("")
+
+    buttons = [
+        {
+            "text": f"{'🟢' if project.get('running') else '⚪'} {project['name'][:18]}",
+            "callback_data": make_callback(DEPLOY_MENU_NS, "proj", index),
+        }
+        for index, project in enumerate(current_items, start=start)
+    ]
+    actions = button_rows(buttons, columns=2)
+
+    nav_row = []
+    if current_page > 0:
+        nav_row.append(
+            {"text": "⬅️ 上一页", "callback_data": make_callback(DEPLOY_MENU_NS, "list", current_page - 1)}
+        )
+    if current_page < total_pages - 1:
+        nav_row.append(
+            {"text": "➡️ 下一页", "callback_data": make_callback(DEPLOY_MENU_NS, "list", current_page + 1)}
+        )
+    if nav_row:
+        actions.append(nav_row)
+
+    actions.append(
+        [
+            {"text": "🔄 刷新状态", "callback_data": make_callback(DEPLOY_MENU_NS, "refresh", current_page)},
+            {"text": "🏠 返回首页", "callback_data": make_callback(DEPLOY_MENU_NS, "home")},
+        ]
+    )
+    return {"text": "\n".join(lines).strip(), "ui": {"actions": actions}}
+
+
+async def _build_project_detail_response(
+    ctx: UnifiedContext,
+    project_index: str | int | None,
+) -> dict:
+    project = get_cached_item(ctx, DEPLOY_MENU_NS, "projects", project_index)
+    if project is None:
+        projects = await _list_projects()
+        cache_items(ctx, DEPLOY_MENU_NS, "projects", projects)
+        project = get_cached_item(ctx, DEPLOY_MENU_NS, "projects", project_index)
+
+    if project is None:
+        return {
+            "text": "❌ 项目缓存已失效，请返回列表重试。",
+            "ui": _deploy_menu_ui(),
+        }
+
+    lines = [f"📦 **{project['name']}**", ""]
+    lines.append(f"状态：{'🟢 运行中' if project.get('running') else '⚪ 未运行'}")
+    lines.append(f"路径：`{project['path']}`")
+    lines.append(
+        f"compose：`{project.get('compose_name') or '未发现 compose 配置'}`"
+    )
+    if project.get("ports"):
+        lines.append(f"端口：{', '.join(str(port) for port in project['ports'])}")
+    if project.get("urls"):
+        lines.append("")
+        lines.append("访问地址：")
+        for url in project["urls"]:
+            lines.append(f"- {url}")
+
+    return {
+        "text": "\n".join(lines).strip(),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "🌐 访问信息", "callback_data": make_callback(DEPLOY_MENU_NS, "access", project_index)},
+                    {"text": "✅ 健康检查", "callback_data": make_callback(DEPLOY_MENU_NS, "verify", project_index)},
+                ],
+                [
+                    {"text": "🗑️ 删除项目", "callback_data": make_callback(DEPLOY_MENU_NS, "confirmdel", project_index)},
+                ],
+                [
+                    {"text": "📋 返回列表", "callback_data": make_callback(DEPLOY_MENU_NS, "list", 0)},
+                    {"text": "🏠 返回首页", "callback_data": make_callback(DEPLOY_MENU_NS, "home")},
+                ],
+            ]
+        },
+    }
+
+
+async def handle_deploy_menu_callback(ctx: UnifiedContext):
+    data = ctx.callback_data
+    if not data:
+        return
+
+    action, parts = parse_callback(data, DEPLOY_MENU_NS)
+    if not action:
+        return
+
+    await ctx.answer_callback()
+    arg = parts[0] if parts else ""
+
+    if action == "home":
+        payload = await show_deploy_menu(ctx)
+    elif action == "help":
+        payload = _build_deploy_help_response()
+    elif action == "list":
+        payload = await _build_project_list_response(ctx, int(arg or 0))
+    elif action == "refresh":
+        payload = await _build_project_list_response(ctx, int(arg or 0))
+    elif action == "proj":
+        payload = await _build_project_detail_response(ctx, arg)
+    elif action == "access":
+        project = get_cached_item(ctx, DEPLOY_MENU_NS, "projects", arg)
+        if project is None:
+            payload = await _build_project_list_response(ctx, 0)
+        else:
+            access_result = await _get_access_info({"name": project["name"]})
+            payload = {
+                "text": access_result.get("text", "❌ 获取访问信息失败。"),
+                "ui": {
+                    "actions": [
+                        [
+                            {"text": "📦 返回项目", "callback_data": make_callback(DEPLOY_MENU_NS, "proj", arg)},
+                            {"text": "🏠 返回首页", "callback_data": make_callback(DEPLOY_MENU_NS, "home")},
+                        ]
+                    ]
+                },
+            }
+    elif action == "verify":
+        project = get_cached_item(ctx, DEPLOY_MENU_NS, "projects", arg)
+        if project is None:
+            payload = await _build_project_list_response(ctx, 0)
+        else:
+            verify_result = await _verify_access({"name": project["name"]})
+            payload = {
+                "text": verify_result.get("text", "❌ 校验失败。"),
+                "ui": {
+                    "actions": [
+                        [
+                            {"text": "📦 返回项目", "callback_data": make_callback(DEPLOY_MENU_NS, "proj", arg)},
+                            {"text": "🏠 返回首页", "callback_data": make_callback(DEPLOY_MENU_NS, "home")},
+                        ]
+                    ]
+                },
+            }
+    elif action == "confirmdel":
+        project = get_cached_item(ctx, DEPLOY_MENU_NS, "projects", arg)
+        if project is None:
+            payload = await _build_project_list_response(ctx, 0)
+        else:
+            payload = {
+                "text": (
+                    f"⚠️ 确认删除项目 **{project['name']}**？\n\n"
+                    f"路径：`{project['path']}`\n"
+                    "这会直接删除项目目录。"
+                ),
+                "ui": {
+                    "actions": [
+                        [
+                            {"text": "🗑️ 确认删除", "callback_data": make_callback(DEPLOY_MENU_NS, "del", arg)},
+                            {"text": "↩️ 返回项目", "callback_data": make_callback(DEPLOY_MENU_NS, "proj", arg)},
+                        ]
+                    ]
+                },
+            }
+    elif action == "del":
+        project = get_cached_item(ctx, DEPLOY_MENU_NS, "projects", arg)
+        if project is None:
+            payload = await _build_project_list_response(ctx, 0)
+        else:
+            delete_result = await _delete_project({"name": project["name"]})
+            list_payload = await _build_project_list_response(ctx, 0)
+            payload = {
+                "text": f"{delete_result.get('text', '❌ 删除失败。')}\n\n{list_payload['text']}",
+                "ui": list_payload.get("ui", {}),
+            }
+    else:
+        payload = {"text": "❌ 未知操作。", "ui": _deploy_menu_ui()}
+
+    await ctx.edit_message(ctx.message.id, payload["text"], ui=payload.get("ui"))
 
 
 def register_handlers(adapter_manager):
@@ -1512,9 +1798,15 @@ def register_handlers(adapter_manager):
             return
 
         mode, target = _parse_deploy_request(ctx.message.text or "")
+        if mode == "menu":
+            return await show_deploy_menu(ctx)
+        if mode == "status":
+            return await _build_project_list_response(ctx, 0)
         if mode != "run" or not target:
-            await ctx.reply(_deploy_usage_text())
-            return
+            return {
+                "text": _deploy_usage_text(),
+                "ui": _deploy_menu_ui(),
+            }
 
         # 将请求转发给 Agent 处理
         from core.agent_orchestrator import agent_orchestrator
@@ -1533,6 +1825,7 @@ def register_handlers(adapter_manager):
                 await ctx.reply(response)
 
     adapter_manager.on_command("deploy", deploy_command, description="智能部署服务")
+    adapter_manager.on_callback_query("^depm_", handle_deploy_menu_callback)
 
 
 def _build_parser() -> argparse.ArgumentParser:
