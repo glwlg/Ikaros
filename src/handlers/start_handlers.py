@@ -1,11 +1,18 @@
 import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from core.platform.models import UnifiedContext
+from core.skill_menu import make_callback, parse_callback
 from core.session_task_store import session_task_store
 from core.task_cards import build_session_brief_lines
-from .base_handlers import check_permission_unified, CONVERSATION_END
+from .base_handlers import (
+    check_permission_unified,
+    CONVERSATION_END,
+    edit_callback_message,
+    get_effective_user_id,
+)
 
 logger = logging.getLogger(__name__)
+HOME_MENU_NS = "home"
+HELP_MENU_NS = "helpm"
 
 WELCOME_MESSAGE = (
     "👋 **欢迎使用 X-Bot！**\n\n"
@@ -13,16 +20,131 @@ WELCOME_MESSAGE = (
     "💬 **直接对话**：你可以像朋友一样跟我聊天。\n"
     "🛠️ **执行任务**：下载视频、监控股票、阅读PDF、生成播客等。\n"
     "🧬 **自我进化**：遇到不会的问题，我会尝试自己写代码解决！\n\n"
-    "👇 点击下方 **[ℹ️ 帮助]** 查看所有指令与技能。"
+    "👇 点击下方按钮进入帮助、技能、模型和常用工具。"
 )
 
 
-def get_main_menu_keyboard():
-    return [
-        [
-            InlineKeyboardButton("ℹ️ 使用帮助 / Help", callback_data="help"),
-        ],
-    ]
+def get_main_menu_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "ℹ️ 使用帮助", "callback_data": make_callback(HOME_MENU_NS, "help")},
+                {"text": "🧩 Skills", "callback_data": make_callback(HOME_MENU_NS, "skills")},
+            ],
+            [
+                {"text": "🤖 模型", "callback_data": make_callback(HOME_MENU_NS, "model")},
+                {"text": "📊 用量", "callback_data": make_callback(HOME_MENU_NS, "usage")},
+            ],
+            [
+                {"text": "💓 Heartbeat", "callback_data": make_callback(HOME_MENU_NS, "heartbeat")},
+                {"text": "🧾 任务", "callback_data": make_callback(HOME_MENU_NS, "task")},
+            ],
+            [
+                {"text": "📚 记账", "callback_data": make_callback(HOME_MENU_NS, "accounting")},
+                {"text": "🔎 检索", "callback_data": make_callback(HOME_MENU_NS, "chatlog")},
+            ],
+            [
+                {"text": "🗜️ 压缩", "callback_data": make_callback(HOME_MENU_NS, "compact")},
+            ],
+        ]
+    }
+
+
+def _help_categories_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "🚀 对话与多模态", "callback_data": make_callback(HELP_MENU_NS, "chat")},
+                {"text": "🧩 技能与工具", "callback_data": make_callback(HELP_MENU_NS, "skills")},
+            ],
+            [
+                {"text": "⚙️ 模型与用量", "callback_data": make_callback(HELP_MENU_NS, "ops")},
+                {"text": "⏰ 自动化与任务", "callback_data": make_callback(HELP_MENU_NS, "automation")},
+            ],
+            [
+                {"text": "🏠 返回主菜单", "callback_data": make_callback(HOME_MENU_NS, "main")},
+            ],
+        ]
+    }
+
+
+def _build_help_payload(section: str = "home") -> tuple[str, dict]:
+    normalized = str(section or "home").strip().lower()
+    if normalized == "chat":
+        return (
+            "🚀 **对话与多模态**\n\n"
+            "• 直接发送文本、图片、语音即可。\n"
+            "• 发图片后可继续追问“这是什么”“帮我总结”。\n"
+            "• 发视频链接时可直接下载或生成摘要。\n"
+            "• 想新开上下文用 `/new`。",
+            {
+                "actions": [
+                    [
+                        {"text": "返回帮助", "callback_data": make_callback(HELP_MENU_NS, "home")},
+                        {"text": "返回主菜单", "callback_data": make_callback(HOME_MENU_NS, "main")},
+                    ]
+                ]
+            },
+        )
+    if normalized == "skills":
+        return (
+            "🧩 **技能与工具**\n\n"
+            "• `/skills` 浏览已安装技能。\n"
+            "• `/stock` `/rss` `/deploy` `/download` 都支持菜单。\n"
+            "• `/daily` 可查天气、时间、汇率、币价。\n"
+            "• `/account` 管理账号凭据。",
+            {
+                "actions": [
+                    [
+                        {"text": "查看 Skills", "callback_data": make_callback(HOME_MENU_NS, "skills")},
+                        {"text": "返回帮助", "callback_data": make_callback(HELP_MENU_NS, "home")},
+                    ]
+                ]
+            },
+        )
+    if normalized == "ops":
+        return (
+            "⚙️ **模型与用量**\n\n"
+            "• `/model` 查看和切换模型。\n"
+            "• `/usage` 查看按模型聚合的 token 用量。\n"
+            "• `/usage today` 看当天用量。\n"
+            "• `/usage reset` 立即清空统计；菜单按钮会二次确认。",
+            {
+                "actions": [
+                    [
+                        {"text": "模型", "callback_data": make_callback(HOME_MENU_NS, "model")},
+                        {"text": "用量", "callback_data": make_callback(HOME_MENU_NS, "usage")},
+                    ],
+                    [
+                        {"text": "返回帮助", "callback_data": make_callback(HELP_MENU_NS, "home")},
+                    ],
+                ]
+            },
+        )
+    if normalized == "automation":
+        return (
+            "⏰ **自动化与任务**\n\n"
+            "• `/remind 10m 喝水` 设置一次性提醒。\n"
+            "• `/heartbeat` 管理巡检节奏和 checklist。\n"
+            "• `/task` 查看最近任务和未完成任务。\n"
+            "• `/stop` 可中断当前任务。",
+            {
+                "actions": [
+                    [
+                        {"text": "Heartbeat", "callback_data": make_callback(HOME_MENU_NS, "heartbeat")},
+                        {"text": "任务", "callback_data": make_callback(HOME_MENU_NS, "task")},
+                    ],
+                    [
+                        {"text": "返回帮助", "callback_data": make_callback(HELP_MENU_NS, "home")},
+                    ],
+                ]
+            },
+        )
+    return (
+        "ℹ️ **X-Bot 使用指南**\n\n"
+        "按类别查看最常用功能和命令：",
+        _help_categories_ui(),
+    )
 
 
 async def start(ctx: UnifiedContext) -> None:
@@ -30,12 +152,7 @@ async def start(ctx: UnifiedContext) -> None:
     if not await check_permission_unified(ctx):
         return
 
-    reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard())
-
-    await ctx.reply(
-        WELCOME_MESSAGE,
-        reply_markup=reply_markup,
-    )
+    await ctx.reply(WELCOME_MESSAGE, ui=get_main_menu_ui())
 
 
 async def handle_new_command(ctx: UnifiedContext) -> None:
@@ -155,34 +272,117 @@ async def help_command(ctx: UnifiedContext) -> None:
     if not await check_permission_unified(ctx):
         return
 
-    await ctx.reply(
-        "ℹ️ **X-Bot 使用指南**\n\n"
-        "🚀 **多模态 AI**\n"
-        "• **对话**：直接发送文本、语音。\n"
-        '• **识图**：发送照片，问 "这是什么"。\n'
-        '• **绘图**："画一只赛博朋克风格的猫"。\n'
-        "• **翻译**：直接发送需要翻译的内容即可。\n\n"
-        "📓 **NotebookLM 知识库**\n"
-        '• **播客**："下载这个视频的播客" 或 "生成播客"。\n'
-        '• **问答**："询问 Kubernetes 调度原理"。\n'
-        '• **管理**：使用 "NotebookLM" 或 "list notebooks"。\n\n'
-        "📹 **媒体下载**\n"
-        "• 直接发送链接 (YouTube/X/B站等)，支持自动去重。\n"
-        '• "下载这个视频的音频 https://..."\n\n'
-        "📈 **行情与资讯**\n"
-        '• "帮我关注英伟达股票"\n'
-        '• "订阅 RSS https://..."\n\n'
-        "⏰ **实用工具**\n"
-        '• "10分钟后提醒我喝水"\n'
-        '• "部署这个仓库 https://..."\n'
-        '• "列出运行的服务"\n\n'
-        "💡 **技能扩展 (自进化)**\n"
-        '• **无师自通**：直接问我 "查询最新 GitHub 趋势"，我会自动学习新技能。\n'
-        "• **手动教学**：/teach - 强制触发学习模式\n"
-        "• /skills - 查看已安装技能\n\n"
-        "**常用命令：**\n"
-        "/start 主菜单 | /new 新对话 | /compact 压缩 | /chatlog 检索 | /heartbeat 心跳 | /task 任务 | /model 模型 | /usage 用量"
-    )
+    payload, ui = _build_help_payload("home")
+    await ctx.reply(payload, ui=ui)
+
+
+async def handle_home_callback(ctx: UnifiedContext) -> int:
+    if not await check_permission_unified(ctx):
+        return CONVERSATION_END
+
+    data = ctx.callback_data
+    if not data:
+        return CONVERSATION_END
+
+    return await _dispatch_home_callback_data(ctx, data)
+
+
+async def _dispatch_home_callback_data(ctx: UnifiedContext, data: str) -> int:
+    action, parts = parse_callback(data, HOME_MENU_NS)
+    if not action:
+        action, parts = parse_callback(data, HELP_MENU_NS)
+        if action:
+            payload, ui = _build_help_payload(action)
+            await edit_callback_message(ctx, payload, ui=ui)
+            return CONVERSATION_END
+        return CONVERSATION_END
+
+    try:
+        if action == "main":
+            await edit_callback_message(ctx, WELCOME_MESSAGE, ui=get_main_menu_ui())
+            return CONVERSATION_END
+        if action == "help":
+            payload, ui = _build_help_payload("home")
+            await edit_callback_message(ctx, payload, ui=ui)
+            return CONVERSATION_END
+        if action == "skills":
+            from handlers.skill_handlers import _build_skills_home_payload
+
+            payload, ui = _build_skills_home_payload()
+            await edit_callback_message(ctx, payload, ui=ui)
+            return CONVERSATION_END
+        if action == "model":
+            from handlers.model_handlers import _build_summary_payload
+
+            payload, ui = _build_summary_payload()
+            await edit_callback_message(ctx, payload, ui=ui)
+            return CONVERSATION_END
+        if action == "usage":
+            from handlers.usage_handlers import _build_usage_payload
+
+            payload, ui = _build_usage_payload("show")
+            await edit_callback_message(ctx, payload, ui=ui)
+            return CONVERSATION_END
+        if action == "heartbeat":
+            from handlers.heartbeat_handlers import _build_heartbeat_payload
+
+            payload, ui = await _build_heartbeat_payload(get_effective_user_id(ctx))
+            await edit_callback_message(ctx, payload, ui=ui)
+            return CONVERSATION_END
+        if action == "task":
+            from handlers.task_handlers import _build_task_list_payload
+
+            payload, ui = await _build_task_list_payload(ctx, view="recent")
+            await edit_callback_message(ctx, payload, ui=ui)
+            return CONVERSATION_END
+        if action == "accounting":
+            from handlers.accounting_handlers import _build_accounting_info_payload
+
+            payload, ui = await _build_accounting_info_payload(ctx)
+            await edit_callback_message(ctx, payload, ui=ui)
+            return CONVERSATION_END
+        if action == "chatlog":
+            await edit_callback_message(
+                ctx,
+                "🔎 对话检索\n\n直接发送 `/chatlog <关键词>`，例如：`/chatlog PR`。",
+                ui={
+                    "actions": [
+                        [
+                            {"text": "示例：PR", "callback_data": make_callback("chatlog", "hint", "PR")},
+                            {"text": "返回主菜单", "callback_data": make_callback(HOME_MENU_NS, "main")},
+                        ]
+                    ]
+                },
+            )
+            return CONVERSATION_END
+        if action == "compact":
+            from user_context import get_context_length
+
+            try:
+                dialog_count = await get_context_length(ctx, get_effective_user_id(ctx))
+            except Exception:
+                dialog_count = 0
+            await edit_callback_message(
+                ctx,
+                "🗜️ 会话压缩\n\n"
+                f"当前上下文消息数：`{dialog_count}`\n\n"
+                "确认后会把更早历史压成摘要，保留最近原始消息。",
+                ui={
+                    "actions": [
+                        [
+                            {"text": "确认压缩", "callback_data": make_callback("compact", "run")},
+                            {"text": "返回主菜单", "callback_data": make_callback(HOME_MENU_NS, "main")},
+                        ]
+                    ]
+                },
+            )
+            return CONVERSATION_END
+    except Exception as exc:
+        logger.error("Error in handle_home_callback: %s", exc, exc_info=True)
+        await ctx.reply("❌ 操作失败，请重试或输入 /start 重启。")
+        return CONVERSATION_END
+
+    return CONVERSATION_END
 
 
 async def button_callback(ctx: UnifiedContext) -> int:
@@ -240,195 +440,22 @@ async def button_callback(ctx: UnifiedContext) -> int:
                 )
                 await heartbeat_store.release_lock(hb_user_id)
                 await heartbeat_store.append_session_event(
-                    hb_user_id, f"user_confirm_stop:{task_id}"
+                        hb_user_id, f"user_confirm_stop:{task_id}"
                 )
                 await ctx.reply("🛑 已停止该任务。")
             return CONVERSATION_END
-
-        if data == "ai_chat":
-            keyboard = [
-                [InlineKeyboardButton("« 返回主菜单", callback_data="back_to_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await ctx.edit_message(
-                msg_id,
-                "💬 **AI 对话模式**\n\n"
-                "现在您可以直接发送任何消息，我会用 AI 智能回复！\n\n"
-                "💡 提示：直接在对话框输入消息即可，无需点击按钮。",
-                reply_markup=reply_markup,
-            )
-            return CONVERSATION_END
-
-        elif data == "help":
-            keyboard = [
-                [InlineKeyboardButton("« 返回主菜单", callback_data="back_to_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await ctx.edit_message(
-                msg_id,
-                "ℹ️ **X-Bot 使用指南**\n\n"
-                "🚀 **多模态 AI**\n"
-                "• **对话**：直接发送文本、语音。\n"
-                '• **识图**：发送照片，问 "这是什么"。\n'
-                '• **绘图**："画一只赛博朋克风格的猫"。\n'
-                "• **翻译**：直接发送需要翻译的内容即可。\n\n"
-                "📓 **NotebookLM 知识库**\n"
-                '• **播客**："下载这个视频的播客" 或 "生成播客"。\n'
-                '• **问答**："询问 Kubernetes 调度原理"。\n'
-                '• **管理**：使用 "NotebookLM" 或 "list notebooks"。\n\n'
-                "📹 **媒体下载**\n"
-                "• 直接发送链接 (YouTube/X/B站等)，支持自动去重。\n"
-                '• "下载这个视频的音频 https://..."\n\n'
-                "📈 **行情与资讯**\n"
-                '• "帮我关注英伟达股票"\n'
-                '• "订阅 RSS https://..."\n\n'
-                "⏰ **实用工具**\n"
-                '• "10分钟后提醒我喝水"\n'
-                '• "部署这个仓库 https://..."\n'
-                '• "列出运行的服务"\n\n'
-                "💡 **技能扩展**\n"
-                "• /teach - 教我学会新技能 (自定义代码)\n"
-                "• /skills - 查看已安装技能\n\n"
-                "**常用命令：**\n"
-                "/start 主菜单 | /new 新对话 | /chatlog 检索 | /heartbeat 心跳 | /task 任务",
-                reply_markup=reply_markup,
-            )
-            return CONVERSATION_END
-
-        elif data == "settings":
-            keyboard = [
-                [InlineKeyboardButton("« 返回主菜单", callback_data="back_to_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            from core.model_config import get_current_model
-
-            openai_model = get_current_model()
-
-            await ctx.edit_message(
-                msg_id,
-                "⚙️ **设置**\n\n"
-                "当前配置：\n"
-                f"• 对话模型：{openai_model}\n"
-                "• 视频质量：最高\n"
-                "• 文件大小限制：49 MB\n\n"
-                "更多设置功能即将推出...",
-                reply_markup=reply_markup,
-            )
-            return CONVERSATION_END
-
-        elif data == "platforms":
-            keyboard = [
-                [InlineKeyboardButton("« 返回主菜单", callback_data="back_to_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await ctx.edit_message(
-                msg_id,
-                "📊 **支持的视频平台**\n\n"
-                "✅ X (Twitter) - twitter.com, x.com\n"
-                "✅ YouTube - youtube.com, youtu.be\n"
-                "✅ Instagram - instagram.com\n"
-                "✅ TikTok - tiktok.com\n"
-                "✅ Bilibili - bilibili.com\n\n"
-                "支持绝大多数公开视频链接！",
-                reply_markup=reply_markup,
-            )
-            return CONVERSATION_END
-
-        elif data == "watchlist":
-            keyboard = [
-                [InlineKeyboardButton("« 返回主菜单", callback_data="back_to_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            user_id = ctx.message.user.id
-            from core.state_store import get_user_watchlist
-            from services.stock_service import fetch_stock_quotes, format_stock_message
-
-            watchlist = await get_user_watchlist(user_id)
-
-            if not watchlist:
-                text = (
-                    "📈 **我的自选股**\n\n"
-                    "您还没有添加自选股。\n\n"
-                    "**使用方法：**\n"
-                    "• 发送「帮我关注仙鹤股份」添加\n"
-                    "• 支持多只：「关注红太阳和联环药业」\n"
-                    "• /stock list 查看列表"
-                )
-            else:
-                stock_codes = [item["stock_code"] for item in watchlist]
-                quotes = await fetch_stock_quotes(stock_codes)
-
-                if quotes:
-                    text = format_stock_message(quotes)
-                else:
-                    lines = ["📈 **我的自选股**\n"]
-                    for item in watchlist:
-                        lines.append(f"• {item['stock_name']} ({item['stock_code']})")
-                    text = "\n".join(lines)
-
-                text += "\n\n发送「取消关注 XX」可删除"
-
-            await ctx.edit_message(msg_id, text, reply_markup=reply_markup)
-            return CONVERSATION_END
-
-        elif data == "list_subs":
-            keyboard = [
-                [InlineKeyboardButton("« 返回主菜单", callback_data="back_to_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            user_id = ctx.message.user.id
-            from core.state_store import get_user_subscriptions
-
-            subs = await get_user_subscriptions(user_id)
-
-            if not subs:
-                text = (
-                    "📢 **我的订阅**\n\n"
-                    "您还没有订阅任何内容。\n\n"
-                    "**使用方法：**\n"
-                    "• /rss add `<URL>` : 订阅 RSS\n"
-                )
-            else:
-                text = "📢 **我的订阅列表**\n\n"
-                for sub in subs:
-                    title = sub["title"] or "无标题"
-                    text += f"• `#{sub['id']}` [RSS] [{title}]({sub['feed_url']})\n"
-
-                text += "\n使用 /rss remove `<订阅ID>` 取消订阅。"
-
-            await ctx.edit_message(msg_id, text, reply_markup=reply_markup)
-            return CONVERSATION_END
-
-        elif data == "remind_help":
-            keyboard = [
-                [InlineKeyboardButton("« 返回主菜单", callback_data="back_to_main")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await ctx.edit_message(
-                msg_id,
-                "⏰ **定时提醒使用帮助**\n\n"
-                "请直接发送二级命令设置提醒：\n\n"
-                "• **/remind 10m 关火** (10分钟后)\n"
-                "• **/remind 1h30m 休息一下** (1小时30分后)\n\n"
-                "• **/remind help** 查看说明\n\n"
-                "时间单位支持：s(秒), m(分), h(时), d(天)",
-                reply_markup=reply_markup,
-            )
-            return CONVERSATION_END
-
-        elif data == "back_to_main":
-            # 重新显示主菜单
-            reply_markup = InlineKeyboardMarkup(get_main_menu_keyboard())
-            await ctx.edit_message(
-                msg_id,
-                WELCOME_MESSAGE,
-                reply_markup=reply_markup,
-            )
-            return CONVERSATION_END
+        legacy_map = {
+            "help": make_callback(HOME_MENU_NS, "help"),
+            "back_to_main": make_callback(HOME_MENU_NS, "main"),
+            "ai_chat": make_callback(HELP_MENU_NS, "chat"),
+            "settings": make_callback(HOME_MENU_NS, "model"),
+            "watchlist": make_callback(HOME_MENU_NS, "skills"),
+            "list_subs": make_callback(HOME_MENU_NS, "skills"),
+            "remind_help": make_callback(HELP_MENU_NS, "automation"),
+        }
+        remapped = legacy_map.get(data)
+        if remapped:
+            return await _dispatch_home_callback_data(ctx, remapped)
 
     except Exception as e:
         logger.error(f"Error in button_callback for data {data}: {e}")

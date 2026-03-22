@@ -304,8 +304,7 @@ class UnifiedContext:
 
         # 2. Adapter Managed (Discord)
         if self._adapter and hasattr(self._adapter, "get_user_data"):
-            # Prefer explicit 'user' (effective user), else message sender
-            target_user_id = self.user.id if self.user else self.message.user.id
+            target_user_id = self.effective_user_id
             return self._adapter.get_user_data(target_user_id)
 
         # 3. Fallback (Ephemeral)
@@ -342,10 +341,23 @@ class UnifiedContext:
             hasattr(self.platform_event, "callback_query")
             and self.platform_event.callback_query
         ):
-            return self.platform_event.callback_query.from_user.id
+            from_user = getattr(self.platform_event.callback_query, "from_user", None)
+            if from_user is not None and getattr(from_user, "id", None) is not None:
+                return str(from_user.id)
         if hasattr(self, "user") and self.user:
-            return self.user.id
+            return str(self.user.id)
         return None
+
+    @property
+    def effective_user_id(self) -> str:
+        callback_user_id = self.callback_user_id
+        if callback_user_id:
+            return str(callback_user_id)
+        if self.user and getattr(self.user, "id", None):
+            return str(self.user.id)
+        if self.message and self.message.user and getattr(self.message.user, "id", None):
+            return str(self.message.user.id)
+        return ""
 
     async def answer_callback(self, text: str = None, show_alert: bool = False):
         """Unified way to acknowledge a callback"""

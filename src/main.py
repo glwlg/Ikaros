@@ -34,6 +34,7 @@ from handlers import (
     handle_new_command,
     help_command,
     button_callback,
+    handle_home_callback,
     cancel,
     handle_ai_chat,
     handle_ai_photo,
@@ -46,11 +47,17 @@ from handlers import (
     compact_command,
     stop_command,
     heartbeat_command,
+    handle_heartbeat_callback,
     task_command,
+    handle_task_callback,
     accounting_command,
+    handle_accounting_callback,
     model_command,
     handle_model_callback,
     usage_command,
+    handle_usage_callback,
+    handle_chatlog_callback,
+    handle_compact_callback,
 )
 from handlers.skill_handlers import (
     teach_command,
@@ -229,7 +236,15 @@ async def main():
     adapter_manager.on_command("acc", accounting_command, description="快捷记账助手")
     adapter_manager.on_command("model", model_command, description="查看和切换模型")
     adapter_manager.on_command("usage", usage_command, description="查看 LLM 用量")
+    adapter_manager.on_callback_query("^home_", handle_home_callback)
+    adapter_manager.on_callback_query("^helpm_", handle_home_callback)
+    adapter_manager.on_callback_query("^hbm_", handle_heartbeat_callback)
+    adapter_manager.on_callback_query("^taskm_", handle_task_callback)
+    adapter_manager.on_callback_query("^accu_", handle_accounting_callback)
     adapter_manager.on_callback_query("^model_", handle_model_callback)
+    adapter_manager.on_callback_query("^usagem_", handle_usage_callback)
+    adapter_manager.on_callback_query("^chatlog_", handle_chatlog_callback)
+    adapter_manager.on_callback_query("^compact_", handle_compact_callback)
 
     # ----------------------------------------------
     # 3.1 DYNAMIC SKILL HANDLER REGISTRATION
@@ -244,9 +259,10 @@ async def main():
     if tg_adapter:
         # Telegram Buttons & Callbacks
 
-        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|model_|del_rss_|del_stock_|action_|large_file_).*$"
+        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|skills_|home_|helpm_|hbm_|taskm_|accu_|model_|usagem_|chatlog_|compact_|del_rss_|del_stock_|action_|large_file_).*$"
         tg_adapter.on_callback_query(common_pattern, button_callback)
         tg_adapter.on_callback_query("^skill_", handle_skill_callback)
+        tg_adapter.on_callback_query("^skills_", handle_skill_callback)
         # Note: stock_ & unsub_ are now registered via register_skill_handlers dynamically
 
         # Telegram Conversations
@@ -319,6 +335,7 @@ async def main():
 
         # Register Discord Callbacks (Unified)
         discord_adapter.on_callback_query("^skill_", handle_skill_callback)
+        discord_adapter.on_callback_query("^skills_", handle_skill_callback)
         # unsubs, stock Handled by dynamic
 
         # Generic Button Callback (Help, Settings, etc.)
@@ -327,7 +344,7 @@ async def main():
         # Generic Button Callback (Help, Settings, etc.)
         # Note: Discord regex matching might be slightly different if compiled differently, but standard python re works.
         # We reuse the common pattern from Telegram.
-        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|model_|del_rss_|del_stock_|action_|large_file_).*$"
+        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|skills_|home_|helpm_|hbm_|taskm_|accu_|model_|usagem_|chatlog_|compact_|del_rss_|del_stock_|action_|large_file_).*$"
         discord_adapter.on_callback_query(common_pattern, button_callback)
 
         # Note: ConversationHandler logic not yet fully ported to DiscordAdapter
@@ -354,10 +371,11 @@ async def main():
 
         # Register DingTalk Callbacks (Unified)
         dingtalk_adapter.on_callback_query("^skill_", handle_skill_callback)
+        dingtalk_adapter.on_callback_query("^skills_", handle_skill_callback)
 
         # Generic Button Callback
         # Generic Button Callback
-        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|model_|del_rss_|del_stock_|action_|large_file_).*$"
+        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|skills_|home_|helpm_|hbm_|taskm_|accu_|model_|usagem_|chatlog_|compact_|del_rss_|del_stock_|action_|large_file_).*$"
         dingtalk_adapter.on_callback_query(common_pattern, button_callback)
 
     # 6. Start Engines

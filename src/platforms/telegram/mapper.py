@@ -6,13 +6,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def map_telegram_message(msg: TGMessage) -> UnifiedMessage:
-    """Map a Telegram Message object to UnifiedMessage"""
-    user = msg.from_user
-    chat = msg.chat
-
-    # Map User
-    unified_user = User(
+def map_telegram_user(user) -> User:
+    return User(
         id=str(user.id) if user else "unknown",
         username=user.username if user else None,
         first_name=user.first_name if user else None,
@@ -21,6 +16,15 @@ def map_telegram_message(msg: TGMessage) -> UnifiedMessage:
         is_bot=user.is_bot if user else False,
         raw_data=user.to_dict() if user else {},
     )
+
+
+def map_telegram_message(msg: TGMessage) -> UnifiedMessage:
+    """Map a Telegram Message object to UnifiedMessage"""
+    user = msg.from_user
+    chat = msg.chat
+
+    # Map User
+    unified_user = map_telegram_user(user)
 
     # Map Chat
     unified_chat = Chat(
@@ -124,4 +128,9 @@ def map_update_to_message(update: Update) -> UnifiedMessage:
     """Maps a Telegram Update to a UnifiedMessage"""
     if not update.effective_message:
         raise ValueError("Update has no effective message")
-    return map_telegram_message(update.effective_message)
+    mapped = map_telegram_message(update.effective_message)
+    callback_query = getattr(update, "callback_query", None)
+    callback_user = getattr(callback_query, "from_user", None)
+    if callback_user is not None:
+        mapped.user = map_telegram_user(callback_user)
+    return mapped

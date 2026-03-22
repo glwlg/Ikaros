@@ -587,6 +587,7 @@ class TelegramAdapter(BotAdapter):
                     platform_ctx=context,
                     platform_event=update,
                     _adapter=self,
+                    user=unified_msg.user,
                 )
                 res = await handler_func(unified_ctx)
                 await self._auto_reply_if_needed(unified_ctx, res)
@@ -607,6 +608,7 @@ class TelegramAdapter(BotAdapter):
                     platform_ctx=context,
                     platform_event=update,
                     _adapter=self,
+                    user=unified_msg.user,
                 )
                 res = await handler_func(unified_ctx)
                 await self._auto_reply_if_needed(unified_ctx, res)
@@ -631,6 +633,7 @@ class TelegramAdapter(BotAdapter):
                     platform_ctx=context,
                     platform_event=update,
                     _adapter=self,
+                    user=unified_msg.user,
                 )
                 res = await handler_func(unified_ctx)
                 await self._auto_reply_if_needed(unified_ctx, res)
@@ -655,6 +658,7 @@ class TelegramAdapter(BotAdapter):
                     platform_ctx=context,
                     platform_event=update,
                     _adapter=self,
+                    user=unified_msg.user,
                 )
                 res = await handler_func(unified_ctx)
                 await self._auto_reply_if_needed(unified_ctx, res)
@@ -677,6 +681,7 @@ class TelegramAdapter(BotAdapter):
                     platform_ctx=context,
                     platform_event=update,
                     _adapter=self,
+                    user=unified_msg.user,
                 )
                 res = await handler_func(unified_ctx)
                 await self._auto_reply_if_needed(unified_ctx, res)

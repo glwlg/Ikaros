@@ -13,7 +13,7 @@ from core.model_config import (
 )
 from core.platform.models import UnifiedContext
 
-from .base_handlers import check_permission_unified
+from .base_handlers import check_permission_unified, edit_callback_message
 
 _ROLE_ORDER = [
     "primary",
@@ -367,24 +367,23 @@ async def handle_model_callback(ctx: UnifiedContext) -> None:
     if not data:
         return
 
-    await ctx.answer_callback()
     message_id = getattr(ctx.message, "id", "") or "model-menu"
 
     if data == "model_home":
         text, ui = _build_summary_payload()
-        await ctx.edit_message(message_id, text, ui=ui)
+        await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
         return
 
     if data == "model_all":
         text, ui = _build_all_models_payload()
-        await ctx.edit_message(message_id, text, ui=ui)
+        await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
         return
 
     if data.startswith("model_role:"):
         parts = data.split(":")
         if len(parts) != 3:
             text, ui = _build_summary_payload("❌ 菜单参数无效，请重新选择。")
-            await ctx.edit_message(message_id, text, ui=ui)
+            await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
             return
         _, role, raw_page = parts
         try:
@@ -392,14 +391,14 @@ async def handle_model_callback(ctx: UnifiedContext) -> None:
         except Exception:
             page = 0
         text, ui = _build_role_payload(ctx, role, page=page)
-        await ctx.edit_message(message_id, text, ui=ui)
+        await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
         return
 
     if data.startswith("model_set:"):
         parts = data.split(":")
         if len(parts) != 3:
             text, ui = _build_summary_payload("❌ 菜单参数无效，请重新选择。")
-            await ctx.edit_message(message_id, text, ui=ui)
+            await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
             return
         _, role, raw_index = parts
         normalized_role = normalize_model_role(role)
@@ -412,7 +411,7 @@ async def handle_model_callback(ctx: UnifiedContext) -> None:
         models = _resolve_cached_role_models(ctx, config, role)
         if not normalized_role or index < 0 or index >= len(models):
             text, ui = _build_summary_payload("❌ 菜单已过期，请重新选择。")
-            await ctx.edit_message(message_id, text, ui=ui)
+            await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
             return
 
         model_key = models[index]
@@ -422,15 +421,15 @@ async def handle_model_callback(ctx: UnifiedContext) -> None:
             text, ui = _build_summary_payload(
                 f"❌ 找不到模型配置文件：`{resolve_models_config_path()}`"
             )
-            await ctx.edit_message(message_id, text, ui=ui)
+            await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
             return
         except json.JSONDecodeError as exc:
             text, ui = _build_summary_payload(f"❌ 模型配置文件不是合法 JSON：`{exc}`")
-            await ctx.edit_message(message_id, text, ui=ui)
+            await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
             return
         except ValueError as exc:
             text, ui = _build_summary_payload(f"❌ {exc}")
-            await ctx.edit_message(message_id, text, ui=ui)
+            await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
             return
 
         text, ui = _build_summary_payload(
@@ -439,8 +438,8 @@ async def handle_model_callback(ctx: UnifiedContext) -> None:
             f"- 原值：`{result['previous'] or '未配置'}`\n"
             f"- 新值：`{result['current']}`"
         )
-        await ctx.edit_message(message_id, text, ui=ui)
+        await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
         return
 
     text, ui = _build_summary_payload("❌ 未识别的模型菜单操作。")
-    await ctx.edit_message(message_id, text, ui=ui)
+    await edit_callback_message(ctx, text, ui=ui, message_id=message_id)
