@@ -10,14 +10,16 @@ from typing import Dict, Any
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SRC_ROOT = REPO_ROOT / "src"
+SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
 
 from core.platform.models import UnifiedContext
-
-from core.config import WAITING_FOR_VIDEO_URL
+from core.skill_menu import make_callback, parse_callback
 from core.config import is_user_allowed
 from utils import extract_video_url
 from user_context import add_message
@@ -27,28 +29,97 @@ if __package__:
 else:
     from services.download_service import download_video, get_download_dir
 
-# Constants
-CONVERSATION_END = -1
-
 logger = logging.getLogger(__name__)
-
-
-def _inline_keyboard_markup(rows: list[list[tuple[str, str]]]) -> Any:
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    keyboard = [
-        [InlineKeyboardButton(text, callback_data=callback) for text, callback in row]
-        for row in rows
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# --- Helper Logic ---
+DOWNLOAD_MENU_NS = "dlm"
 
 
 async def check_permission(ctx: UnifiedContext) -> bool:
     if not await is_user_allowed(ctx.message.user.id):
         return False
     return True
+
+
+def _download_usage_text() -> str:
+    return (
+        "📹 **视频下载**\n\n"
+        "直接发送以下命令：\n"
+        "• `/download <视频链接>`\n"
+        "• `/download video <视频链接>`\n"
+        "• `/download audio <视频链接>`\n\n"
+        "支持平台：X、YouTube、Instagram、TikTok、Bilibili。"
+    )
+
+
+def _download_menu_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "📹 视频示例", "callback_data": make_callback(DOWNLOAD_MENU_NS, "videohelp")},
+                {"text": "🎵 音频示例", "callback_data": make_callback(DOWNLOAD_MENU_NS, "audiohelp")},
+            ]
+        ]
+    }
+
+
+def _download_video_help() -> dict:
+    return {
+        "text": (
+            "📹 **下载视频**\n\n"
+            "直接发送：\n"
+            "• `/download https://www.youtube.com/watch?v=xxx`\n"
+            "• `/download video https://x.com/...`\n\n"
+            "默认下载最佳可用视频。"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "🎵 音频用法", "callback_data": make_callback(DOWNLOAD_MENU_NS, "audiohelp")},
+                    {"text": "🏠 返回帮助", "callback_data": make_callback(DOWNLOAD_MENU_NS, "home")},
+                ]
+            ]
+        },
+    }
+
+
+def _download_audio_help() -> dict:
+    return {
+        "text": (
+            "🎵 **提取音频**\n\n"
+            "直接发送：\n"
+            "• `/download audio https://www.youtube.com/watch?v=xxx`\n\n"
+            "这会优先返回 MP3 音频。"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "📹 视频用法", "callback_data": make_callback(DOWNLOAD_MENU_NS, "videohelp")},
+                    {"text": "🏠 返回帮助", "callback_data": make_callback(DOWNLOAD_MENU_NS, "home")},
+                ]
+            ]
+        },
+    }
+
+
+def _parse_download_command(text: str) -> tuple[str, str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return "help", ""
+
+    parts = raw.split(maxsplit=2)
+    if not parts or not parts[0].startswith("/download"):
+        return "help", ""
+    if len(parts) == 1:
+        return "help", ""
+
+    sub = str(parts[1] or "").strip()
+    lowered = sub.lower()
+    if lowered in {"help", "h", "?"}:
+        return "help", ""
+    if lowered in {"audio", "mp3"}:
+        return "audio", str(parts[2] if len(parts) >= 3 else "").strip()
+    if lowered in {"video"}:
+        return "video", str(parts[2] if len(parts) >= 3 else "").strip()
+    return "video", " ".join(parts[1:]).strip()
 
 
 # --- Skill Entry Point ---
@@ -68,10 +139,7 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> Dict[str, 
             url = match.group(0)
 
     if not url:
-        return {
-            "text": "🔇🔇🔇📹 **视频下载**\n\n请提供视频链接，例如：\n• 下载 https://www.youtube.com/watch?v=xxx",
-            "ui": {},
-        }
+        return {"text": _download_usage_text(), "ui": _download_menu_ui()}
 
     # Helper function handles finding platform_ctx internally or we pass logic
     # But stateless execute might not have interaction flow.
@@ -84,127 +152,24 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> Dict[str, 
     return {"text": "🔇🔇🔇✅ 视频下载任务已提交", "ui": {}}
 
 
-# --- Handlers Logic (Moved from media_handlers.py) ---
-
-
-async def download_command(ctx: UnifiedContext) -> int:
-    """处理 /download 命令，进入视频下载模式"""
+async def download_command(ctx: UnifiedContext):
+    """处理 /download 命令"""
     if not await check_permission(ctx):
-        return CONVERSATION_END
+        return None
 
-    await ctx.reply(
-        "📹 **视频下载模式**\n\n"
-        "请发送视频链接，支持以下平台：\n"
-        "• X (Twitter)\n"
-        "• YouTube\n"
-        "• Instagram\n"
-        "• TikTok\n"
-        "• Bilibili\n\n"
-        "发送 /cancel 取消操作。"
-    )
-    return WAITING_FOR_VIDEO_URL
+    mode, raw_target = _parse_download_command(ctx.message.text or "")
+    if mode == "help":
+        return {"text": _download_usage_text(), "ui": _download_menu_ui()}
 
-
-async def start_download_video(ctx: UnifiedContext) -> int:
-    """进入视频下载模式的入口 (Button)"""
-    await ctx.answer_callback()
-
-    logger.info("Entering download video mode")
-
-    # 提供下载格式选择
-    reply_markup = _inline_keyboard_markup(
-        [
-            [
-                ("📹 视频（最佳质量）", "dl_format_video"),
-                ("🎵 仅音频 (MP3)", "dl_format_audio"),
-            ],
-            [
-                ("« 返回主菜单", "back_to_main_cancel"),
-            ],
-        ]
-    )
-
-    try:
-        await ctx.edit_message(
-            ctx.message.id,
-            "📹 **视频下载模式**\n\n请选择下载格式：",
-            reply_markup=reply_markup,
-        )
-    except Exception as e:
-        logger.error(f"Error editing message in start_download_video: {e}")
-
-    return WAITING_FOR_VIDEO_URL
-
-
-async def handle_download_format(ctx: UnifiedContext) -> int:
-    """处理下载格式选择"""
-    data = ctx.callback_data
-    if not data:
-        return CONVERSATION_END
-
-    await ctx.answer_callback()
-
-    if not ctx.platform_ctx:
-        return CONVERSATION_END
-
-    # 存储用户选择的格式
-    if data == "dl_format_video":
-        ctx.user_data["download_format"] = "video"
-        format_text = "📹 视频（最佳质量）"
-    else:
-        ctx.user_data["download_format"] = "audio"
-        format_text = "🎵 仅音频 (MP3)"
-
-    reply_markup = _inline_keyboard_markup(
-        [[("« 返回主菜单", "back_to_main_cancel")]]
-    )
-
-    try:
-        await ctx.edit_message(
-            ctx.message.id,
-            f"📹 **视频下载模式**\n\n"
-            f"已选择：{format_text}\n\n"
-            "请发送视频链接，支持以下平台：\n"
-            "• X (Twitter)\n"
-            "• YouTube\n"
-            "• Instagram\n"
-            "• TikTok\n"
-            "• Bilibili\n\n"
-            "发送 /cancel 取消操作。",
-            reply_markup=reply_markup,
-        )
-    except Exception as e:
-        logger.error(f"Error editing message: {e}")
-
-    return WAITING_FOR_VIDEO_URL
-
-
-async def handle_video_download(ctx: UnifiedContext) -> int:
-    """处理视频下载流程中的 URL 输入"""
-    message_text = ctx.message.text
-    if not message_text:
-        await ctx.reply("请发送有效的视频链接。")
-        return WAITING_FOR_VIDEO_URL
-
-    # Permission check for direct text input in download mode
-    # if not await check_permission(ctx):
-    #     return CONVERSATION_END
-
-    url = extract_video_url(message_text)
+    url = extract_video_url(raw_target)
     if not url:
-        await ctx.reply("链接格式似乎不被支持，请检查。\n\n发送 /cancel 取消操作。")
-        return WAITING_FOR_VIDEO_URL
+        return {
+            "text": "❌ 未识别到有效视频链接。\n\n" + _download_usage_text(),
+            "ui": _download_menu_ui(),
+        }
 
-    if not ctx.platform_ctx:
-        return CONVERSATION_END
-
-    # 获取用户选择的下载格式（默认视频）
-    audio_only = ctx.user_data.get("download_format") == "audio"
-
-    # Delegate to the shared processing function
-    await process_video_download(ctx, url, audio_only)
-
-    return CONVERSATION_END
+    await process_video_download(ctx, url, audio_only=(mode == "audio"))
+    return None
 
 
 async def process_video_download(
@@ -251,18 +216,17 @@ async def process_video_download(
     if result.is_too_large:
         # 暂存路径到 user_data以供后续操作
         ctx.user_data["large_file_path"] = file_path
-
-        reply_markup = _inline_keyboard_markup(
-            [
+        ui = {
+            "actions": [
                 [
-                    ("📝 生成内容摘要 (AI)", "large_file_summary"),
-                    ("🎵 仅发送音频", "large_file_audio"),
+                    {"text": "📝 生成内容摘要 (AI)", "callback_data": "large_file_summary"},
+                    {"text": "🎵 仅发送音频", "callback_data": "large_file_audio"},
                 ],
                 [
-                    ("🗑️ 删除文件", "large_file_delete"),
+                    {"text": "🗑️ 删除文件", "callback_data": "large_file_delete"},
                 ],
             ]
-        )
+        }
 
         msg_id = getattr(
             processing_message, "message_id", getattr(processing_message, "id", None)
@@ -273,7 +237,7 @@ async def process_video_download(
                 f"⚠️ **视频文件过大 ({result.file_size_mb:.1f}MB)**\n\n"
                 f"超过 Telegram 限制 (50MB)，无法直接发送。\n"
                 f"您可以选择：",
-                reply_markup=reply_markup,
+                ui=ui,
             )
         return
 
@@ -465,8 +429,7 @@ async def handle_large_file_action(ctx: UnifiedContext) -> None:
                     ctx.message.id, "❌ 提取的音频也超过 50MB，无法发送。"
                 )
             else:
-                await ctx.platform_ctx.bot.send_audio(
-                    chat_id=chat_id,
+                await ctx.reply_audio(
                     audio=open(final_path, "rb"),
                     caption="🎵 仅音频 (从大视频提取)",
                 )
@@ -585,90 +548,34 @@ async def handle_large_file_action(ctx: UnifiedContext) -> None:
         await ctx.reply(f"❌ 操作失败: {str(e)}")
 
 
-async def cancel(ctx: UnifiedContext) -> int:
-    await ctx.reply("已取消操作。")
-    return CONVERSATION_END
+async def handle_download_menu_callback(ctx: UnifiedContext):
+    data = ctx.callback_data
+    if not data:
+        return
 
+    action, _parts = parse_callback(data, DOWNLOAD_MENU_NS)
+    if not action:
+        return
 
-async def back_to_main_and_cancel(ctx: UnifiedContext) -> int:
-    """Handle back button: Cancel conversation and show main menu (if implemented)"""
-    await ctx.reply("操作已取消。")
-    # In original it might show start menu, but cancel is sufficient
-    return CONVERSATION_END
+    await ctx.answer_callback()
+    if action == "home":
+        payload = {"text": _download_usage_text(), "ui": _download_menu_ui()}
+    elif action == "videohelp":
+        payload = _download_video_help()
+    elif action == "audiohelp":
+        payload = _download_audio_help()
+    else:
+        payload = {"text": "❌ 未知操作。", "ui": _download_menu_ui()}
+
+    await ctx.edit_message(ctx.message.id, payload["text"], ui=payload.get("ui"))
 
 
 def register_handlers(adapter_manager: Any):
-    """Register handlers including ConversationHandler"""
-
-    # 1. Telegram
-    try:
-        from telegram.ext import ConversationHandler, filters
-
-        tg_adapter = adapter_manager.get_adapter("telegram")
-        logger.info(
-            f"🔌 [DownloadVideo] Registering Telegram handlers to adapter: {tg_adapter}"
-        )
-
-        # Callbacks
-        tg_adapter.on_callback_query("^action_.*", handle_video_actions)
-        tg_adapter.on_callback_query("^large_file_", handle_large_file_action)
-
-        # Conversation Handler for /download
-        back_handler = tg_adapter.create_callback_handler(
-            "^back_to_main_cancel$", back_to_main_and_cancel
-        )
-        format_handler = tg_adapter.create_callback_handler(
-            "^dl_format_", handle_download_format
-        )
-
-        video_conv_handler = ConversationHandler(
-            entry_points=[
-                tg_adapter.create_callback_handler(
-                    "^download_video$", start_download_video
-                ),
-                tg_adapter.create_command_handler("download", download_command),
-            ],
-            states={
-                WAITING_FOR_VIDEO_URL: [
-                    back_handler,
-                    format_handler,
-                    tg_adapter.create_message_handler(
-                        filters.TEXT & ~filters.COMMAND, handle_video_download
-                    ),
-                ],
-            },
-            fallbacks=[
-                tg_adapter.create_command_handler("cancel", cancel),
-                back_handler,
-                format_handler,
-            ],
-            allow_reentry=True,
-            per_message=False,
-        )
-
-        tg_adapter.application.add_handler(video_conv_handler)
-        logger.info("✅ Registered /download ConversationHandler for Telegram")
-
-    except ValueError:
-        pass
-    except Exception as e:
-        logger.error(f"Failed to register Telegram video handlers: {e}")
-
-    # 2. Discord & DingTalk (Partial support)
-    try:
-        discord_adapter = adapter_manager.get_adapter("discord")
-        discord_adapter.on_callback_query("^action_.*", handle_video_actions)
-        discord_adapter.on_command(
-            "download", download_command
-        )  # Stateless command support if possible or just trigger
-    except:
-        pass
-
-    try:
-        dingtalk_adapter = adapter_manager.get_adapter("dingtalk")
-        dingtalk_adapter.on_callback_query("^action_.*", handle_video_actions)
-    except:
-        pass
+    """Register stateless /download command and callbacks"""
+    adapter_manager.on_command("download", download_command, description="下载视频或音频")
+    adapter_manager.on_callback_query("^action_.*", handle_video_actions)
+    adapter_manager.on_callback_query("^large_file_", handle_large_file_action)
+    adapter_manager.on_callback_query("^dlm_", handle_download_menu_callback)
 
 
 class _ConsoleProgressMessage:

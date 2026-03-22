@@ -106,6 +106,23 @@ class DingTalkAdapter(BotAdapter):
             self._main_loop = None
             logger.warning("DingTalkAdapter initialized without a running event loop!")
 
+    @staticmethod
+    def _is_auto_reply_payload(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return True
+        if isinstance(value, dict):
+            return "text" in value
+        return False
+
+    async def _auto_reply_if_needed(
+        self, unified_ctx: UnifiedContext, result: Any
+    ) -> None:
+        if not self._is_auto_reply_payload(result):
+            return
+        await unified_ctx.reply(result)
+
     @property
     def can_update_message(self) -> bool:
         """DingTalk does not support editing messages"""
@@ -164,7 +181,8 @@ class DingTalkAdapter(BotAdapter):
                 command = parts[0][1:]  # 去掉斜杠
                 if command in self._command_handlers:
                     logger.info(f"DingTalk: Dispatching command /{command}")
-                    await self._command_handlers[command](context)
+                    result = await self._command_handlers[command](context)
+                    await self._auto_reply_if_needed(context, result)
                     return
 
             # 5. Pseudo-Callback Logic (Prefix-based)
@@ -191,10 +209,12 @@ class DingTalkAdapter(BotAdapter):
                             platform_event=incoming_message,
                             platform_ctx=self._client,
                             _adapter=self,
+                            user=unified_msg.user,
                         )
                         cb_ctx._cb_data = real_callback_data
 
-                        await handler(cb_ctx)
+                        result = await handler(cb_ctx)
+                        await self._auto_reply_if_needed(cb_ctx, result)
                         return
 
                 logger.warning(
@@ -204,7 +224,8 @@ class DingTalkAdapter(BotAdapter):
 
             # 6. 默认消息处理器
             if self._message_handler:
-                await self._message_handler(context)
+                result = await self._message_handler(context)
+                await self._auto_reply_if_needed(context, result)
 
         except Exception as e:
             logger.error(f"Error handling DingTalk message: {e}", exc_info=True)

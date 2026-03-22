@@ -18,6 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 import feedparser
 import httpx
 from core.platform.models import UnifiedContext
+from core.skill_menu import make_callback, parse_callback
 from core.skill_cli import (
     add_common_arguments,
     merge_params,
@@ -36,12 +37,13 @@ from core.state_store import (
 from stats import increment_stat
 
 logger = logging.getLogger(__name__)
+RSS_MENU_NS = "rssm"
 
 
 def _parse_rss_subcommand(text: str) -> tuple[str, str]:
     raw = str(text or "").strip()
     if not raw:
-        return "list", ""
+        return "menu", ""
 
     parts = raw.split(maxsplit=2)
     if not parts:
@@ -49,11 +51,13 @@ def _parse_rss_subcommand(text: str) -> tuple[str, str]:
     if not parts[0].startswith("/rss"):
         return "help", ""
     if len(parts) == 1:
-        return "list", ""
+        return "menu", ""
 
     sub = str(parts[1] or "").strip().lower()
     args = str(parts[2] if len(parts) >= 3 else "").strip()
 
+    if sub in {"menu", "home", "start"}:
+        return "menu", ""
     if sub in {"list", "ls", "show"}:
         return "list", ""
     if sub in {"add", "subscribe", "sub"}:
@@ -72,12 +76,71 @@ def _parse_rss_subcommand(text: str) -> tuple[str, str]:
 def _rss_usage_text() -> str:
     return (
         "用法:\n"
+        "`/rss`\n"
         "`/rss list`\n"
         "`/rss add <RSS URL>`\n"
         "`/rss remove <订阅ID>`\n"
         "`/rss refresh`\n"
         "`/rss help`"
     )
+
+
+def _rss_menu_ui() -> dict:
+    return {
+        "actions": [
+            [
+                {"text": "📋 订阅列表", "callback_data": make_callback(RSS_MENU_NS, "list")},
+                {"text": "🔄 立即检查", "callback_data": make_callback(RSS_MENU_NS, "refresh")},
+            ],
+            [
+                {"text": "➕ 如何订阅", "callback_data": make_callback(RSS_MENU_NS, "addhelp")},
+                {"text": "❌ 取消订阅", "callback_data": make_callback(RSS_MENU_NS, "remove")},
+            ],
+        ]
+    }
+
+
+async def show_rss_menu(ctx: UnifiedContext) -> dict:
+    subs = await list_subscriptions(ctx.message.user.id)
+    preview = "、".join(
+        str(sub.get("title") or "").strip()
+        for sub in subs[:3]
+        if str(sub.get("title") or "").strip()
+    )
+    if len(subs) > 3:
+        preview += " 等"
+    if not preview:
+        preview = "暂无订阅"
+
+    return {
+        "text": (
+            "📰 **RSS 订阅管理**\n\n"
+            f"当前订阅数：{len(subs)}\n"
+            f"当前订阅：{preview}\n\n"
+            "支持直接输入：`/rss add <RSS URL>`、`/rss remove <订阅ID>`。"
+        ),
+        "ui": _rss_menu_ui(),
+    }
+
+
+def _rss_add_help_response() -> dict:
+    return {
+        "text": (
+            "➕ **添加 RSS 订阅**\n\n"
+            "直接发送：\n"
+            "• `/rss add https://example.com/feed.xml`\n"
+            "• `/rss add https://blog.example.com/rss`\n\n"
+            "只支持真实 RSS/Atom 链接，不支持关键词监控。"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {"text": "🏠 返回首页", "callback_data": make_callback(RSS_MENU_NS, "home")},
+                    {"text": "📋 订阅列表", "callback_data": make_callback(RSS_MENU_NS, "list")},
+                ]
+            ]
+        },
+    }
 
 
 def _normalize_action(value: str) -> str:
@@ -190,8 +253,10 @@ def register_handlers(adapter_manager):
             return
 
         sub, args = _parse_rss_subcommand(ctx.message.text or "")
+        if sub == "menu":
+            return await show_rss_menu(ctx)
         if sub == "list":
-            return await list_subs_command(ctx)
+            return await list_subs_command(ctx, include_menu_nav=True)
         if sub == "add":
             if not args.strip():
                 return {"text": "用法: `/rss add <RSS URL>`", "ui": {}}
@@ -201,13 +266,14 @@ def register_handlers(adapter_manager):
         if sub == "remove":
             if args.strip():
                 return await remove_subscription_by_target(ctx, args.strip())
-            return await show_unsubscribe_menu(ctx)
+            return await show_unsubscribe_menu(ctx, include_menu_nav=True)
         if sub == "refresh":
-            return {"text": await refresh_user_subscriptions(ctx), "ui": {}}
+            return {"text": await refresh_user_subscriptions(ctx), "ui": _rss_menu_ui()}
         return {"text": _rss_usage_text(), "ui": {}}
 
     adapter_manager.on_command("rss", cmd_rss, description="RSS 订阅管理")
     adapter_manager.on_callback_query("^unsub_", handle_unsubscribe_callback)
+    adapter_manager.on_callback_query("^rssm_", handle_unsubscribe_callback)
 
 
 async def fetch_feed_safe(url: str):
@@ -265,10 +331,17 @@ async def process_subscribe(ctx: UnifiedContext, url: str) -> dict:
     }
 
 
-async def list_subs_command(ctx: UnifiedContext) -> dict:
+async def list_subs_command(
+    ctx: UnifiedContext,
+    *,
+    include_menu_nav: bool = False,
+) -> dict:
     subs = await list_subscriptions(ctx.message.user.id)
     if not subs:
-        return {"text": "📭 您当前没有任何 RSS 订阅。", "ui": {}}
+        return {
+            "text": "📭 您当前没有任何 RSS 订阅。",
+            "ui": _rss_menu_ui() if include_menu_nav else {},
+        }
 
     msg = "📋 **您的订阅列表**\n\n"
     for sub in subs:
@@ -289,6 +362,14 @@ async def list_subs_command(ctx: UnifiedContext) -> dict:
             temp_row = []
     if temp_row:
         actions.append(temp_row)
+
+    if include_menu_nav:
+        actions.append(
+            [
+                {"text": "🔄 立即检查", "callback_data": make_callback(RSS_MENU_NS, "refresh")},
+                {"text": "🏠 返回首页", "callback_data": make_callback(RSS_MENU_NS, "home")},
+            ]
+        )
 
     return {"text": msg, "ui": {"actions": actions}}
 
@@ -312,15 +393,24 @@ async def refresh_user_subscriptions(ctx: UnifiedContext) -> str:
     return "✅ 检查完成，当前 RSS 订阅没有新增内容。"
 
 
-async def show_unsubscribe_menu(ctx: UnifiedContext) -> dict:
+async def show_unsubscribe_menu(
+    ctx: UnifiedContext,
+    *,
+    include_menu_nav: bool = False,
+) -> dict:
     subs = await list_subscriptions(ctx.message.user.id)
     if not subs:
-        return {"text": "📭 您当前没有任何 RSS 订阅。", "ui": {}}
+        return {
+            "text": "📭 您当前没有任何 RSS 订阅。",
+            "ui": _rss_menu_ui() if include_menu_nav else {},
+        }
 
     actions = []
     for sub in subs:
         label = f"❌ #{sub['id']} {sub['title']}"
         actions.append([{"text": label[:28], "callback_data": f"unsub_{sub['id']}"}])
+    if include_menu_nav:
+        actions.append([{"text": "🏠 返回首页", "callback_data": make_callback(RSS_MENU_NS, "home")}])
     actions.append([{"text": "🚫 取消", "callback_data": "unsub_cancel"}])
 
     return {"text": "📋 **请选择要取消的订阅**：", "ui": {"actions": actions}}
@@ -353,6 +443,24 @@ async def handle_unsubscribe_callback(ctx: UnifiedContext):
     if not data:
         return
 
+    action, _parts = parse_callback(data, RSS_MENU_NS)
+    if action:
+        await ctx.answer_callback()
+        if action == "home":
+            payload = await show_rss_menu(ctx)
+        elif action == "list":
+            payload = await list_subs_command(ctx, include_menu_nav=True)
+        elif action == "refresh":
+            payload = {"text": await refresh_user_subscriptions(ctx), "ui": _rss_menu_ui()}
+        elif action == "addhelp":
+            payload = _rss_add_help_response()
+        elif action == "remove":
+            payload = await show_unsubscribe_menu(ctx, include_menu_nav=True)
+        else:
+            payload = {"text": "❌ 未知操作。", "ui": _rss_menu_ui()}
+        await ctx.edit_message(ctx.message.id, payload["text"], ui=payload.get("ui"))
+        return
+
     await ctx.answer_callback()
 
     if data == "unsub_cancel":
@@ -365,7 +473,13 @@ async def handle_unsubscribe_callback(ctx: UnifiedContext):
 
     success = await delete_subscription(ctx.callback_user_id, sub_id)
     if success:
-        return f"✅ 已取消订阅 `#{sub_id}`。"
+        payload = await list_subs_command(ctx, include_menu_nav=True)
+        await ctx.edit_message(
+            ctx.message.id,
+            f"✅ 已取消订阅 `#{sub_id}`。\n\n{payload['text']}",
+            ui=payload.get("ui"),
+        )
+        return None
     return "❌ 取消失败，订阅可能已不存在。"
 
 

@@ -325,11 +325,14 @@ def test_builtin_command_skills_remain_opted_in_for_platform_handlers():
     loader = SkillLoader()
     indexed = loader.scan_skills()
 
+    assert indexed["account_manager"]["platform_handlers"] is True
+    assert indexed["daily_query"]["platform_handlers"] is True
     assert indexed["download_video"]["platform_handlers"] is True
-    assert indexed["rss_subscribe"]["platform_handlers"] is True
-    assert indexed["stock_watch"]["platform_handlers"] is True
-    assert indexed["scheduler_manager"]["platform_handlers"] is True
     assert indexed["deployment_manager"]["platform_handlers"] is True
+    assert indexed["reminder"]["platform_handlers"] is True
+    assert indexed["rss_subscribe"]["platform_handlers"] is True
+    assert indexed["scheduler_manager"]["platform_handlers"] is True
+    assert indexed["stock_watch"]["platform_handlers"] is True
 
 
 def test_skill_loader_get_skill_accepts_hyphen_underscore_aliases(tmp_path: Path):

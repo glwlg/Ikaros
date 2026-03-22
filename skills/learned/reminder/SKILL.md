@@ -10,7 +10,7 @@ triggers:
 - alarm
 policy_groups:
 - automation
-platform_handlers: false
+platform_handlers: true
 input_schema:
   type: object
   properties: {}

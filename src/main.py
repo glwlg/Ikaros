@@ -244,7 +244,7 @@ async def main():
     if tg_adapter:
         # Telegram Buttons & Callbacks
 
-        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|skill_|model_|del_rss_|del_stock_|action_).*$"
+        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|model_|del_rss_|del_stock_|action_|large_file_).*$"
         tg_adapter.on_callback_query(common_pattern, button_callback)
         tg_adapter.on_callback_query("^skill_", handle_skill_callback)
         # Note: stock_ & unsub_ are now registered via register_skill_handlers dynamically
@@ -327,7 +327,7 @@ async def main():
         # Generic Button Callback (Help, Settings, etc.)
         # Note: Discord regex matching might be slightly different if compiled differently, but standard python re works.
         # We reuse the common pattern from Telegram.
-        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|skill_|model_|del_rss_|del_stock_|action_).*$"
+        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|model_|del_rss_|del_stock_|action_|large_file_).*$"
         discord_adapter.on_callback_query(common_pattern, button_callback)
 
         # Note: ConversationHandler logic not yet fully ported to DiscordAdapter
@@ -357,7 +357,7 @@ async def main():
 
         # Generic Button Callback
         # Generic Button Callback
-        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|skill_|model_|del_rss_|del_stock_|action_).*$"
+        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|model_|del_rss_|del_stock_|action_|large_file_).*$"
         dingtalk_adapter.on_callback_query(common_pattern, button_callback)
 
     # 6. Start Engines
