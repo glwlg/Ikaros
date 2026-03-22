@@ -27,6 +27,20 @@ logger = logging.getLogger(__name__)
 openai_async_client: Any = None
 
 
+def _extract_weixin_voice_transcript(ctx: UnifiedContext) -> str:
+    raw_data = getattr(ctx.message, "raw_data", None)
+    if not isinstance(raw_data, dict):
+        return ""
+    for item in raw_data.get("item_list") or []:
+        if not isinstance(item, dict) or item.get("type") != 3:
+            continue
+        voice_item = item.get("voice_item") or {}
+        transcript = _normalize_transcribed_text(voice_item.get("text") or "")
+        if transcript:
+            return transcript
+    return ""
+
+
 def _resolve_voice_client(model_name: str) -> Any:
     if openai_async_client is not None:
         return openai_async_client
@@ -506,6 +520,13 @@ async def process_as_voice_message(
 
     # ── Step 1: 转写语音 ──
     transcribed_text = await transcribe_voice(voice_bytes, mime_type)
+    if not transcribed_text:
+        transcribed_text = _extract_weixin_voice_transcript(ctx)
+        if transcribed_text:
+            logger.info(
+                "Using embedded Weixin voice transcript fallback for user_id=%s",
+                ctx.message.user.id,
+            )
     if not transcribed_text:
         await ctx.edit_message(msg_id, "❌ 无法识别语音内容，请重试或改用文字发送。")
         return

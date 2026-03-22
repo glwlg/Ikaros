@@ -22,6 +22,7 @@ from core.config import (
     DINGTALK_CLIENT_SECRET,
     WEIXIN_ENABLE,
     WEIXIN_BASE_URL,
+    WEIXIN_CDN_BASE_URL,
     WEIXIN_LOGIN_TIMEOUT_SEC,
     WEIXIN_LOGIN_POLL_INTERVAL_SEC,
     WEIXIN_TEXT_CHUNK_LIMIT,
@@ -229,6 +230,7 @@ async def main():
     if WEIXIN_ENABLE:
         weixin_adapter = WeixinAdapter(
             base_url=WEIXIN_BASE_URL,
+            cdn_base_url=WEIXIN_CDN_BASE_URL,
             login_timeout_sec=WEIXIN_LOGIN_TIMEOUT_SEC,
             login_poll_interval_sec=WEIXIN_LOGIN_POLL_INTERVAL_SEC,
             text_chunk_limit=WEIXIN_TEXT_CHUNK_LIMIT,
@@ -402,7 +404,17 @@ async def main():
     if weixin_adapter:
 
         async def weixin_router(ctx):
-            await handle_ai_chat(ctx)
+            msg_type = ctx.message.type
+            if msg_type == MessageType.IMAGE:
+                await handle_ai_photo(ctx)
+            elif msg_type == MessageType.VIDEO:
+                await handle_ai_video(ctx)
+            elif msg_type == MessageType.AUDIO or msg_type == MessageType.VOICE:
+                await handle_voice_message(ctx)
+            elif msg_type == MessageType.DOCUMENT:
+                await handle_document(ctx)
+            else:
+                await handle_ai_chat(ctx)
 
         weixin_adapter.register_message_handler(weixin_router)
         weixin_adapter.on_callback_query("^skill_", handle_skill_callback)

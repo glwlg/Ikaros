@@ -10,6 +10,14 @@ def _safe_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _safe_int(value: Any) -> int | None:
+    try:
+        rendered = int(value)
+    except Exception:
+        return None
+    return rendered if rendered >= 0 else None
+
+
 def _as_datetime(raw_ms: Any) -> datetime:
     try:
         millis = int(raw_ms)
@@ -20,33 +28,119 @@ def _as_datetime(raw_ms: Any) -> datetime:
     return datetime.now()
 
 
-def _extract_text(raw_message: dict[str, Any]) -> str:
+def _collect_text_parts(raw_message: dict[str, Any]) -> list[str]:
     items = raw_message.get("item_list") or []
     parts: list[str] = []
-
     for item in items:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("type") != 1:
             continue
-        item_type = item.get("type")
-        if item_type == 1:
-            text_item = item.get("text_item") or {}
-            text = _safe_text(text_item.get("text"))
-            if text:
-                parts.append(text)
-        elif item_type == 2:
-            parts.append("(image)")
-        elif item_type == 3:
-            voice_item = item.get("voice_item") or {}
-            text = _safe_text(voice_item.get("text"))
-            parts.append(text or "(voice)")
-        elif item_type == 4:
-            file_item = item.get("file_item") or {}
-            name = _safe_text(file_item.get("file_name")) or "unknown"
-            parts.append(f"(file: {name})")
-        elif item_type == 5:
-            parts.append("(video)")
+        text_item = item.get("text_item") or {}
+        text = _safe_text(text_item.get("text"))
+        if text:
+            parts.append(text)
+    return parts
 
-    return "\n".join(part for part in parts if part).strip() or "(empty message)"
+
+def _default_mime(message_type: MessageType) -> str | None:
+    if message_type == MessageType.IMAGE:
+        return "image/jpeg"
+    if message_type == MessageType.VIDEO:
+        return "video/mp4"
+    if message_type == MessageType.VOICE:
+        return "audio/silk"
+    if message_type == MessageType.DOCUMENT:
+        return "application/octet-stream"
+    return None
+
+
+def _voice_mime_type(voice_item: dict[str, Any]) -> str:
+    encode_type = _safe_int(voice_item.get("encode_type"))
+    if encode_type == 7:
+        return "audio/mpeg"
+    if encode_type == 8:
+        return "audio/ogg"
+    if encode_type in {1, 2}:
+        return "audio/wav"
+    if encode_type == 5:
+        return "audio/amr"
+    return "audio/silk"
+
+
+def _extract_media_ref(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    media = payload.get("media") or {}
+    file_id = _safe_text(media.get("encrypt_query_param")) or None
+    mime_type = _safe_text(payload.get("mime_type")) or None
+    return file_id, mime_type
+
+
+def _map_media_message(
+    *,
+    raw_message: dict[str, Any],
+    item: dict[str, Any],
+    user: User,
+    chat: Chat,
+    message_id: str,
+    date: datetime,
+    caption: str,
+) -> UnifiedMessage:
+    item_type = item.get("type")
+    message_type = MessageType.TEXT
+    file_id: str | None = None
+    file_name: str | None = None
+    file_size: int | None = None
+    mime_type: str | None = None
+    duration: int | None = None
+
+    if item_type == 2:
+        message_type = MessageType.IMAGE
+        image_item = item.get("image_item") or {}
+        file_id, mime_type = _extract_media_ref(image_item)
+        if not file_id:
+            thumb_media = image_item.get("thumb_media") or {}
+            file_id = _safe_text(thumb_media.get("encrypt_query_param")) or None
+        file_size = (
+            _safe_int(image_item.get("hd_size"))
+            or _safe_int(image_item.get("mid_size"))
+            or _safe_int(image_item.get("thumb_size"))
+        )
+    elif item_type == 3:
+        message_type = MessageType.VOICE
+        voice_item = item.get("voice_item") or {}
+        file_id, mime_type = _extract_media_ref(voice_item)
+        mime_type = mime_type or _voice_mime_type(voice_item)
+        duration = _safe_int(voice_item.get("playtime"))
+    elif item_type == 4:
+        message_type = MessageType.DOCUMENT
+        file_item = item.get("file_item") or {}
+        file_id, mime_type = _extract_media_ref(file_item)
+        file_name = _safe_text(file_item.get("file_name")) or None
+        file_size = _safe_int(file_item.get("len"))
+    elif item_type == 5:
+        message_type = MessageType.VIDEO
+        video_item = item.get("video_item") or {}
+        file_id, mime_type = _extract_media_ref(video_item)
+        if not file_id:
+            thumb_media = video_item.get("thumb_media") or {}
+            file_id = _safe_text(thumb_media.get("encrypt_query_param")) or None
+        file_size = _safe_int(video_item.get("video_size"))
+        duration = _safe_int(video_item.get("play_length"))
+
+    return UnifiedMessage(
+        id=message_id,
+        platform="weixin",
+        user=user,
+        chat=chat,
+        date=date,
+        type=message_type,
+        text=None,
+        caption=caption or None,
+        file_id=file_id,
+        file_name=file_name,
+        file_size=file_size,
+        mime_type=mime_type or _default_mime(message_type),
+        duration=duration,
+        raw_data=dict(raw_message or {}),
+    )
 
 
 def map_weixin_message(raw_message: dict[str, Any]) -> UnifiedMessage:
@@ -62,6 +156,7 @@ def map_weixin_message(raw_message: dict[str, Any]) -> UnifiedMessage:
         or _safe_text(raw_message.get("message_id"))
         or str(int(datetime.now().timestamp() * 1000))
     )
+    message_date = _as_datetime(raw_message.get("create_time_ms"))
 
     user = User(
         id=sender_id,
@@ -76,13 +171,29 @@ def map_weixin_message(raw_message: dict[str, Any]) -> UnifiedMessage:
         title=sender_name or None,
     )
 
+    caption = "\n".join(_collect_text_parts(raw_message)).strip()
+    items = raw_message.get("item_list") or []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in (2, 3, 4, 5):
+            return _map_media_message(
+                raw_message=raw_message,
+                item=item,
+                user=user,
+                chat=chat,
+                message_id=message_id,
+                date=message_date,
+                caption=caption,
+            )
+
     return UnifiedMessage(
         id=message_id,
         platform="weixin",
         user=user,
         chat=chat,
-        date=_as_datetime(raw_message.get("create_time_ms")),
+        date=message_date,
         type=MessageType.TEXT,
-        text=_extract_text(raw_message),
+        text=caption or "(empty message)",
         raw_data=dict(raw_message or {}),
     )

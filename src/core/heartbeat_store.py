@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -92,6 +93,16 @@ def _truncate(value: Any, max_len: int) -> str:
     return text[:max_len]
 
 
+def _checklist_target_key(item: Any) -> str:
+    normalized = _truncate(item, 400)
+    if not normalized:
+        return ""
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
+
+_DEFAULT_CHECKLIST_PLACEHOLDER = "检查自己和后台任务的运行状态是否良好"
+
+
 class HeartbeatStore:
     """Single-user heartbeat configuration + runtime status store."""
 
@@ -172,6 +183,7 @@ class HeartbeatStore:
                 "last_platform": "",
                 "last_chat_id": "",
                 "last_session_id": "",
+                "checklist_targets": {},
             },
             "session": {
                 "active_task": None,
@@ -274,6 +286,23 @@ class HeartbeatStore:
             delivery.get("last_session_id", ""),
             120,
         )
+        raw_checklist_targets = delivery.get("checklist_targets")
+        if not isinstance(raw_checklist_targets, dict):
+            raw_checklist_targets = {}
+        checklist_targets: dict[str, dict[str, str]] = {}
+        for key, value in raw_checklist_targets.items():
+            if not isinstance(value, dict):
+                continue
+            safe_key = _truncate(key, 80)
+            platform = _truncate(str(value.get("platform") or "").strip().lower(), 64)
+            chat_id = _truncate(value.get("chat_id", ""), 128)
+            if not safe_key or not platform or not chat_id:
+                continue
+            checklist_targets[safe_key] = {
+                "platform": platform,
+                "chat_id": chat_id,
+            }
+        delivery["checklist_targets"] = checklist_targets
 
         session = dict(default["session"])
         session.update(dict((data or {}).get("session") or {}))
@@ -335,6 +364,7 @@ class HeartbeatStore:
                     checklist.append(item)
             elif in_checklist and stripped.startswith("#"):
                 break
+        checklist = [item for item in checklist if item != _DEFAULT_CHECKLIST_PLACEHOLDER]
         return data, checklist
 
     def _render_markdown(self, spec: dict[str, Any], checklist: list[str]) -> str:
@@ -352,7 +382,7 @@ class HeartbeatStore:
                 if normalized:
                     lines.append(f"- {normalized}")
         else:
-            lines.append("- 检查自己和后台任务的运行状态是否良好")
+            lines.append(f"- {_DEFAULT_CHECKLIST_PLACEHOLDER}")
         body = "\n".join(lines).rstrip() + "\n"
         return f"---\n{header}\n---\n\n{body}"
 
@@ -606,6 +636,7 @@ class HeartbeatStore:
         state = await self.get_state(user_id)
         spec = dict(state["spec"])
         spec["checklist"] = list(state["checklist"])
+        spec["checklist_items"] = await self.list_checklist_items(user_id)
         return spec
 
     async def set_heartbeat_spec(
@@ -648,7 +679,55 @@ class HeartbeatStore:
         state = await self.get_state(user_id)
         return list(state["checklist"])
 
-    async def add_checklist_item(self, user_id: str, item: str) -> list[str]:
+    def _resolve_checklist_target(
+        self,
+        item: str,
+        *,
+        status: dict[str, Any],
+    ) -> dict[str, str]:
+        delivery = dict(status.get("delivery") or {})
+        targets = delivery.get("checklist_targets")
+        if not isinstance(targets, dict):
+            targets = {}
+
+        target = dict(targets.get(_checklist_target_key(item)) or {})
+        platform = _truncate(target.get("platform", ""), 64)
+        chat_id = _truncate(target.get("chat_id", ""), 128)
+        if not platform or not chat_id:
+            platform = _truncate(delivery.get("last_platform", ""), 64)
+            chat_id = _truncate(delivery.get("last_chat_id", ""), 128)
+
+        return {
+            "platform": platform,
+            "chat_id": chat_id,
+        }
+
+    async def list_checklist_items(self, user_id: str) -> list[dict[str, Any]]:
+        _ = user_id
+        async with self._scope_lock():
+            _spec, checklist, status = self._ensure_canonical_unlocked()
+            items: list[dict[str, Any]] = []
+            for index, item in enumerate(checklist, start=1):
+                items.append(
+                    {
+                        "index": index,
+                        "text": item,
+                        "delivery_target": self._resolve_checklist_target(
+                            item,
+                            status=status,
+                        ),
+                    }
+                )
+            return items
+
+    async def add_checklist_item(
+        self,
+        user_id: str,
+        item: str,
+        *,
+        platform: str = "",
+        chat_id: str = "",
+    ) -> list[str]:
         _ = user_id
         normalized = _truncate(item, 400)
         if not normalized:
@@ -657,6 +736,15 @@ class HeartbeatStore:
             spec, checklist, status = self._ensure_canonical_unlocked()
             if normalized not in checklist:
                 checklist.append(normalized)
+                if platform and chat_id:
+                    delivery = dict(status.get("delivery") or {})
+                    targets = dict(delivery.get("checklist_targets") or {})
+                    targets[_checklist_target_key(normalized)] = {
+                        "platform": _truncate(platform, 64),
+                        "chat_id": _truncate(chat_id, 128),
+                    }
+                    delivery["checklist_targets"] = targets
+                    status["delivery"] = delivery
                 spec["updated_at"] = _now_iso()
                 self.heartbeat_path(self.scope).write_text(
                     self._render_markdown(spec, checklist),
@@ -671,7 +759,12 @@ class HeartbeatStore:
         async with self._scope_lock():
             spec, checklist, status = self._ensure_canonical_unlocked()
             if 1 <= index <= len(checklist):
-                checklist.pop(index - 1)
+                removed_item = checklist.pop(index - 1)
+                delivery = dict(status.get("delivery") or {})
+                targets = dict(delivery.get("checklist_targets") or {})
+                targets.pop(_checklist_target_key(removed_item), None)
+                delivery["checklist_targets"] = targets
+                status["delivery"] = delivery
                 spec["updated_at"] = _now_iso()
                 self.heartbeat_path(self.scope).write_text(
                     self._render_markdown(spec, checklist),
@@ -680,6 +773,44 @@ class HeartbeatStore:
                 status["last_update"] = _now_iso()
                 self._write_status_unlocked(status)
             return list(checklist)
+
+    async def set_checklist_item_delivery(
+        self,
+        user_id: str,
+        index: int,
+        platform: str,
+        chat_id: str,
+    ) -> dict[str, Any] | None:
+        _ = user_id
+        safe_platform = _truncate(platform, 64)
+        safe_chat_id = _truncate(chat_id, 128)
+        if not safe_platform or not safe_chat_id:
+            return None
+
+        async with self._scope_lock():
+            _spec, checklist, status = self._ensure_canonical_unlocked()
+            if index < 1 or index > len(checklist):
+                return None
+
+            item = checklist[index - 1]
+            delivery = dict(status.get("delivery") or {})
+            targets = dict(delivery.get("checklist_targets") or {})
+            targets[_checklist_target_key(item)] = {
+                "platform": safe_platform,
+                "chat_id": safe_chat_id,
+            }
+            delivery["checklist_targets"] = targets
+            status["delivery"] = delivery
+            status["last_update"] = _now_iso()
+            self._write_status_unlocked(status)
+            return {
+                "index": index,
+                "text": item,
+                "delivery_target": {
+                    "platform": safe_platform,
+                    "chat_id": safe_chat_id,
+                },
+            }
 
     async def mark_heartbeat_run(
         self,

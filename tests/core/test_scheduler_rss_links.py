@@ -376,9 +376,10 @@ async def test_run_skill_cron_job_pushes_for_shared_user(monkeypatch):
             }
         )
 
-    async def fake_resolve_proactive_delivery_target(user_id, platform):
+    async def fake_resolve_proactive_delivery_target(user_id, platform, metadata=None):
         assert user_id == "user"
         assert platform == "telegram"
+        assert metadata is None
         return "telegram", "257675041"
 
     monkeypatch.setitem(
@@ -410,6 +411,77 @@ async def test_run_skill_cron_job_pushes_for_shared_user(monkeypatch):
     assert "定时任务执行报告" in sent_messages[0]["text"]
     assert sent_messages[0]["kwargs"]["user_id"] == "user"
     assert sent_messages[0]["kwargs"]["record_history"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_skill_cron_job_prefers_task_delivery_target(monkeypatch):
+    sent_messages: list[dict] = []
+    captured: dict[str, object] = {}
+
+    class _FakeOrchestrator:
+        async def handle_message(self, ctx, message_history):
+            _ = (ctx, message_history)
+            yield "执行完成"
+
+    async def fake_send_via_adapter(*, chat_id, text, platform, **kwargs):
+        sent_messages.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "platform": platform,
+                "kwargs": dict(kwargs),
+            }
+        )
+
+    async def fake_resolve_proactive_delivery_target(user_id, platform, metadata=None):
+        captured["user_id"] = user_id
+        captured["platform"] = platform
+        captured["metadata"] = metadata
+        return "weixin", "wx-target-1"
+
+    async def fake_remember(user_id, platform, chat_id, session_id=""):
+        captured["remember"] = (user_id, platform, chat_id, session_id)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core.agent_orchestrator",
+        SimpleNamespace(agent_orchestrator=_FakeOrchestrator()),
+    )
+    monkeypatch.setattr(scheduler_module, "send_via_adapter", fake_send_via_adapter)
+    monkeypatch.setattr(
+        scheduler_module,
+        "_resolve_proactive_delivery_target",
+        fake_resolve_proactive_delivery_target,
+    )
+    monkeypatch.setattr(
+        scheduler_module,
+        "_remember_proactive_delivery_target",
+        fake_remember,
+    )
+
+    await scheduler_module.run_skill_cron_job(
+        "推送天气",
+        user_id="user",
+        platform="telegram",
+        need_push=True,
+        chat_id="task-chat-1",
+        session_id="task-session-1",
+    )
+
+    assert captured["metadata"] == {
+        "resource_binding": {
+            "platform": "telegram",
+            "chat_id": "task-chat-1",
+        }
+    }
+    assert captured["remember"] == (
+        "user",
+        "weixin",
+        "wx-target-1",
+        "task-session-1",
+    )
+    assert sent_messages[0]["chat_id"] == "wx-target-1"
+    assert sent_messages[0]["platform"] == "weixin"
 
 
 @pytest.mark.asyncio
@@ -496,6 +568,14 @@ async def test_stock_push_job_passes_history_metadata(monkeypatch):
         scheduler_module,
         "get_user_watchlist",
         fake_get_user_watchlist,
+    )
+    async def fake_get_feature_delivery_target(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(
+        scheduler_module,
+        "get_feature_delivery_target",
+        fake_get_feature_delivery_target,
     )
     monkeypatch.setattr(
         scheduler_module,

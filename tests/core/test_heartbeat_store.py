@@ -189,6 +189,40 @@ async def test_heartbeat_store_delivery_and_session_state(tmp_path):
     assert active_after_done is None
 
 
+@pytest.mark.asyncio
+async def test_heartbeat_store_persists_per_item_delivery_targets(tmp_path):
+    store = HeartbeatStore()
+    store.root = (tmp_path / "runtime_tasks").resolve()
+    store.root.mkdir(parents=True, exist_ok=True)
+    store._locks.clear()
+
+    await store.set_delivery_target("u5", "telegram", "fallback-chat")
+    await store.add_checklist_item(
+        "u5",
+        "检查微信消息",
+        platform="weixin",
+        chat_id="wx-user-1",
+    )
+    await store.add_checklist_item("u5", "检查邮件")
+    await store.set_checklist_item_delivery("u5", 2, "telegram", "mail-chat")
+
+    spec = await store.get_heartbeat_spec("u5")
+
+    assert spec["checklist"] == ["检查微信消息", "检查邮件"]
+    assert spec["checklist_items"] == [
+        {
+            "index": 1,
+            "text": "检查微信消息",
+            "delivery_target": {"platform": "weixin", "chat_id": "wx-user-1"},
+        },
+        {
+            "index": 2,
+            "text": "检查邮件",
+            "delivery_target": {"platform": "telegram", "chat_id": "mail-chat"},
+        },
+    ]
+
+
 def test_heartbeat_result_level_classification():
     store = HeartbeatStore()
     assert store.classify_result("HEARTBEAT_OK") == "OK"

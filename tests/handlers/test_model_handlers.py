@@ -64,6 +64,8 @@ def _reset_model_config_state(monkeypatch) -> None:
     monkeypatch.setattr(model_config_module, "_models_config", None)
     monkeypatch.setattr(model_config_module, "_model_manager", None)
     monkeypatch.setattr(model_config_module, "_primary_model", "")
+    monkeypatch.setattr(model_config_module, "_loaded_config_path", None)
+    monkeypatch.setattr(model_config_module, "_loaded_config_mtime_ns", None)
 
 
 def _write_models_config(tmp_path: Path) -> Path:
