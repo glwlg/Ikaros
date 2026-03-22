@@ -161,6 +161,73 @@ async def test_heartbeat_worker_push_records_history_metadata(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_worker_routes_items_to_configured_targets(monkeypatch, tmp_path):
+    runtime_root = (tmp_path / "runtime_tasks").resolve()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(heartbeat_store, "root", runtime_root)
+    heartbeat_store._locks.clear()
+
+    user_id = "worker_u_route"
+    await heartbeat_store.set_heartbeat_spec(
+        user_id,
+        every="30m",
+        active_start="00:00",
+        active_end="23:59",
+        paused=False,
+    )
+    await heartbeat_store.set_delivery_target(user_id, "telegram", "fallback-chat")
+    await heartbeat_store.add_checklist_item(
+        user_id,
+        "检查微信任务",
+        platform="weixin",
+        chat_id="wx-target",
+    )
+    await heartbeat_store.add_checklist_item(
+        user_id,
+        "检查 Telegram 任务",
+        platform="telegram",
+        chat_id="tg-target",
+    )
+
+    async def fake_handle_message(_ctx, message_history):
+        goal = str(message_history[-1]["parts"][0]["text"] or "")
+        if "微信任务" in goal:
+            yield "微信任务正常"
+            return
+        yield "Telegram 任务正常"
+
+    calls: list[dict] = []
+
+    async def fake_push_background_text(**kwargs):
+        calls.append(dict(kwargs))
+        return True
+
+    monkeypatch.setattr(
+        heartbeat_worker_module,
+        "agent_orchestrator",
+        type("FakeOrchestrator", (), {"handle_message": fake_handle_message})(),
+    )
+    monkeypatch.setattr(
+        heartbeat_worker_module,
+        "push_background_text",
+        fake_push_background_text,
+    )
+
+    worker = HeartbeatWorker()
+    worker.enabled = True
+    worker.suppress_ok = True
+
+    result = await worker.run_user_now(user_id)
+
+    assert "微信任务正常" in result
+    assert "Telegram 任务正常" in result
+    assert {(call["platform"], call["chat_id"]) for call in calls} == {
+        ("weixin", "wx-target"),
+        ("telegram", "tg-target"),
+    }
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_worker_readonly_action_does_not_dispatch_to_worker(
     monkeypatch, tmp_path
 ):

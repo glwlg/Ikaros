@@ -23,11 +23,42 @@ from core.skill_cli import (
 
 prepare_default_env(REPO_ROOT)
 
-from core.state_store import add_scheduled_task, delete_task, get_all_active_tasks
+from core.state_store import (
+    add_scheduled_task,
+    delete_task,
+    get_all_active_tasks,
+    update_task_delivery_target,
+)
 import logging
 
 logger = logging.getLogger(__name__)
 SCHEDULE_MENU_NS = "schm"
+
+
+def _format_delivery_target(task: dict) -> str:
+    platform = str(task.get("platform") or "").strip()
+    chat_id = str(task.get("chat_id") or "").strip()
+    if not platform or not chat_id:
+        return "未设置"
+    return f"{platform}:{chat_id}"
+
+
+def _current_delivery_target(ctx: UnifiedContext) -> tuple[str, str]:
+    platform = (
+        str(getattr(getattr(ctx, "message", None), "platform", "") or "").strip()
+        or "telegram"
+    )
+    chat_id = str(
+        getattr(getattr(getattr(ctx, "message", None), "chat", None), "id", "") or ""
+    ).strip()
+    return platform, chat_id
+
+
+def _current_session_id(ctx: UnifiedContext) -> str:
+    user_data = getattr(ctx, "user_data", None)
+    if not isinstance(user_data, dict):
+        return ""
+    return str(user_data.get("current_session_id") or "").strip()
 
 
 def _parse_schedule_subcommand(text: str) -> tuple[str, str]:
@@ -76,7 +107,10 @@ def _schedule_menu_ui() -> dict:
                 {"text": "❌ 删除任务", "callback_data": make_callback(SCHEDULE_MENU_NS, "delete")},
             ],
             [
+                {"text": "📍 当前聊天设为推送渠道", "callback_data": make_callback(SCHEDULE_MENU_NS, "bindhelp")},
                 {"text": "➕ 新建说明", "callback_data": make_callback(SCHEDULE_MENU_NS, "addhelp")},
+            ],
+            [
                 {"text": "ℹ️ 帮助", "callback_data": make_callback(SCHEDULE_MENU_NS, "help")},
             ],
         ]
@@ -90,7 +124,8 @@ async def show_schedule_menu(ctx: UnifiedContext) -> dict:
             "⏰ **定时任务管理**\n\n"
             f"当前活跃任务：{len(tasks)}\n\n"
             "删除任务可直接用 `/schedule delete <task_id>`。\n"
-            "新增任务建议直接告诉我执行频率和内容，或走技能参数创建。"
+            "新增任务默认推送到创建它的聊天。\n"
+            "如果要改某个任务的推送渠道，请在目标聊天里打开菜单后点对应任务的「📍 当前聊天」。"
         ),
         "ui": _schedule_menu_ui(),
     }
@@ -139,7 +174,13 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
 
         try:
             task_id = await add_scheduled_task(
-                crontab, instruction, user_id, platform, need_push
+                crontab,
+                instruction,
+                user_id,
+                platform,
+                chat_id=str(getattr(ctx.message.chat, "id", "") or "").strip(),
+                session_id=_current_session_id(ctx),
+                need_push=need_push,
             )
 
             # 立即触发 Scheduler 重载
@@ -217,6 +258,7 @@ def register_handlers(adapter_manager):
 
     # Callbacks
     adapter_manager.on_callback_query("^sch_del_", handle_task_delete_callback)
+    adapter_manager.on_callback_query("^sch_route_", handle_task_delete_callback)
     adapter_manager.on_callback_query("^schm_", handle_task_delete_callback)
 
 
@@ -249,6 +291,7 @@ async def list_tasks_command(
         msg += f"   Cron: `{t['crontab']}`\n"
         msg += f"   Desc: `{t['instruction']}`\n"
         msg += f"   Push: {t.get('need_push', True)}\n\n"
+        msg += f"   Channel: `{_format_delivery_target(t)}`\n\n"
 
     # Actions: Create delete buttons for own tasks (or all if admin?)
     # Assuming user can delete any task for now as per previous logic "trust SkillAgent"
@@ -258,16 +301,23 @@ async def list_tasks_command(
     actions = []
     temp_row = []
     for t in all_sorted:
-        # Label: "❌ {id} {instruction[:5]}"
         instr_short = (
             t["instruction"][:8] + ".."
             if len(t["instruction"]) > 8
             else t["instruction"]
         )
-        btn_text = f"❌ {t['id']} {instr_short}"
-        btn_data = f"sch_del_{t['id']}"
-
-        temp_row.append({"text": btn_text, "callback_data": btn_data})
+        temp_row.append(
+            {
+                "text": f"❌ {t['id']} {instr_short}",
+                "callback_data": f"sch_del_{t['id']}",
+            }
+        )
+        temp_row.append(
+            {
+                "text": f"📍 {t['id']} 当前聊天",
+                "callback_data": f"sch_route_{t['id']}",
+            }
+        )
         if len(temp_row) == 2:
             actions.append(temp_row)
             temp_row = []
@@ -310,6 +360,23 @@ async def handle_task_delete_callback(ctx: UnifiedContext):
             payload = await list_tasks_command(ctx, include_menu_nav=True)
         elif action == "delete":
             payload = await show_delete_menu(ctx, include_menu_nav=True)
+        elif action == "bindhelp":
+            payload = {
+                "text": (
+                    "📍 **定时任务推送渠道**\n\n"
+                    "每个定时任务都能单独设置推送渠道。\n"
+                    "默认会发到创建该任务的聊天。\n\n"
+                    "如果你想改成当前聊天，请先点「📋 任务列表」，再点对应任务的「📍 当前聊天」。"
+                ),
+                "ui": {
+                    "actions": [
+                        [
+                            {"text": "📋 任务列表", "callback_data": make_callback(SCHEDULE_MENU_NS, "list")},
+                            {"text": "🏠 返回首页", "callback_data": make_callback(SCHEDULE_MENU_NS, "home")},
+                        ]
+                    ]
+                },
+            }
         elif action == "addhelp":
             payload = _schedule_add_help_response()
         elif action == "help":
@@ -330,6 +397,33 @@ async def handle_task_delete_callback(ctx: UnifiedContext):
         return
 
     await ctx.answer_callback()
+
+    if data.startswith("sch_route_"):
+        try:
+            task_id = int(data.replace("sch_route_", ""))
+        except ValueError:
+            return "❌ 无效的操作。"
+
+        from core.scheduler import reload_scheduler_jobs
+
+        current_platform, current_chat_id = _current_delivery_target(ctx)
+        changed = await update_task_delivery_target(
+            task_id,
+            platform=current_platform,
+            chat_id=current_chat_id,
+            session_id=_current_session_id(ctx),
+        )
+        if not changed:
+            return "❌ 任务不存在。"
+        await reload_scheduler_jobs()
+
+        payload = await list_tasks_command(ctx, include_menu_nav=True)
+        text = (
+            f"✅ 已把任务 {task_id} 的推送渠道改为当前聊天 "
+            f"`{current_platform}:{current_chat_id}`。\n\n{payload['text']}"
+        )
+        await ctx.edit_message(ctx.message.id, text, ui=payload.get("ui"))
+        return None
 
     try:
         task_id = int(data.replace("sch_del_", ""))

@@ -340,6 +340,17 @@ class ModelManager:
 _models_config: Optional[ModelsConfig] = None
 _model_manager: Optional[ModelManager] = None
 _primary_model: str = ""
+_loaded_config_path: Optional[Path] = None
+_loaded_config_mtime_ns: Optional[int] = None
+
+
+def _config_mtime_ns(path: Path) -> Optional[int]:
+    try:
+        return path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
 
 
 def _parse_models_config_data(data: dict[str, Any]) -> ModelsConfig:
@@ -384,6 +395,15 @@ def _ensure_models_loaded() -> Optional[ModelsConfig]:
     global _models_config
     if _models_config is None:
         load_models_config()
+        return _models_config
+
+    if _loaded_config_path is None:
+        return _models_config
+
+    config_file = resolve_models_config_path()
+    current_mtime_ns = _config_mtime_ns(config_file)
+    if config_file != _loaded_config_path or current_mtime_ns != _loaded_config_mtime_ns:
+        load_models_config(config_path=str(config_file), force_reload=True)
     return _models_config
 
 
@@ -394,6 +414,7 @@ def load_models_config(
 ) -> ModelsConfig:
     """加载模型配置并自动初始化ModelManager"""
     global _models_config, _model_manager, _primary_model
+    global _loaded_config_path, _loaded_config_mtime_ns
 
     if _models_config is not None and not force_reload:
         return _models_config
@@ -401,6 +422,8 @@ def load_models_config(
     config_file = resolve_models_config_path(config_path)
     _model_manager = None
     _primary_model = ""
+    _loaded_config_path = config_file
+    _loaded_config_mtime_ns = _config_mtime_ns(config_file)
 
     if not config_file.exists():
         logger.warning(f"[ModelManager] Config file not found: {config_file}")
@@ -559,6 +582,9 @@ def get_model_for_input(input_type: str = "text", pool_type: str = "primary") ->
         model = _model_manager.get_next_available_model(input_type, pool_type)
         if model:
             return model
+    normalized_input_type = str(input_type or "text").strip().lower() or "text"
+    if normalized_input_type != "text":
+        return ""
     return _primary_model
 
 

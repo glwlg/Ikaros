@@ -31,13 +31,48 @@ prepare_default_env(REPO_ROOT)
 from core.state_store import (
     create_subscription,
     delete_subscription,
+    get_feature_delivery_target,
     get_subscription,
     list_subscriptions,
+    set_feature_delivery_target,
 )
 from stats import increment_stat
 
 logger = logging.getLogger(__name__)
 RSS_MENU_NS = "rssm"
+
+
+def _format_delivery_target(target: dict[str, str] | None) -> str:
+    platform = str((target or {}).get("platform") or "").strip()
+    chat_id = str((target or {}).get("chat_id") or "").strip()
+    if not platform or not chat_id:
+        return "未设置"
+    return f"{platform}:{chat_id}"
+
+
+def _current_delivery_target(ctx: UnifiedContext) -> dict[str, str]:
+    return {
+        "platform": str(ctx.message.platform or "telegram").strip() or "telegram",
+        "chat_id": str(getattr(ctx.message.chat, "id", "") or "").strip(),
+    }
+
+
+async def _ensure_default_rss_delivery_target(
+    ctx: UnifiedContext,
+    user_id: int | str,
+) -> dict[str, str]:
+    current = await get_feature_delivery_target(user_id, "rss")
+    if current:
+        return current
+    target = _current_delivery_target(ctx)
+    if target["platform"] and target["chat_id"]:
+        return await set_feature_delivery_target(
+            user_id,
+            "rss",
+            target["platform"],
+            target["chat_id"],
+        )
+    return {}
 
 
 def _parse_rss_subcommand(text: str) -> tuple[str, str]:
@@ -93,8 +128,11 @@ def _rss_menu_ui() -> dict:
                 {"text": "🔄 立即检查", "callback_data": make_callback(RSS_MENU_NS, "refresh")},
             ],
             [
-                {"text": "➕ 如何订阅", "callback_data": make_callback(RSS_MENU_NS, "addhelp")},
+                {"text": "📍 设为当前渠道", "callback_data": make_callback(RSS_MENU_NS, "bind")},
                 {"text": "❌ 取消订阅", "callback_data": make_callback(RSS_MENU_NS, "remove")},
+            ],
+            [
+                {"text": "➕ 如何订阅", "callback_data": make_callback(RSS_MENU_NS, "addhelp")},
             ],
         ]
     }
@@ -102,6 +140,7 @@ def _rss_menu_ui() -> dict:
 
 async def show_rss_menu(ctx: UnifiedContext) -> dict:
     subs = await list_subscriptions(ctx.message.user.id)
+    delivery_target = await get_feature_delivery_target(ctx.message.user.id, "rss")
     preview = "、".join(
         str(sub.get("title") or "").strip()
         for sub in subs[:3]
@@ -117,6 +156,7 @@ async def show_rss_menu(ctx: UnifiedContext) -> dict:
             "📰 **RSS 订阅管理**\n\n"
             f"当前订阅数：{len(subs)}\n"
             f"当前订阅：{preview}\n\n"
+            f"推送渠道：`{_format_delivery_target(delivery_target)}`\n\n"
             "支持直接输入：`/rss add <RSS URL>`、`/rss remove <订阅ID>`。"
         ),
         "ui": _rss_menu_ui(),
@@ -300,6 +340,7 @@ async def process_subscribe(ctx: UnifiedContext, url: str) -> dict:
 
     title = str(feed.feed.get("title") or "").strip() or target
     platform = str(ctx.message.platform or "telegram").strip() or "telegram"
+    await _ensure_default_rss_delivery_target(ctx, ctx.message.user.id)
 
     try:
         created = await create_subscription(
@@ -452,6 +493,22 @@ async def handle_unsubscribe_callback(ctx: UnifiedContext):
             payload = await list_subs_command(ctx, include_menu_nav=True)
         elif action == "refresh":
             payload = {"text": await refresh_user_subscriptions(ctx), "ui": _rss_menu_ui()}
+        elif action == "bind":
+            target = _current_delivery_target(ctx)
+            updated = await set_feature_delivery_target(
+                ctx.callback_user_id or ctx.message.user.id,
+                "rss",
+                target["platform"],
+                target["chat_id"],
+            )
+            menu = await show_rss_menu(ctx)
+            payload = {
+                "text": (
+                    "✅ 已把 RSS 推送渠道切换到当前聊天 "
+                    f"`{_format_delivery_target(updated)}`。\n\n{menu['text']}"
+                ),
+                "ui": menu.get("ui"),
+            }
         elif action == "addhelp":
             payload = _rss_add_help_response()
         elif action == "remove":

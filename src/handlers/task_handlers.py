@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import uuid4
 
 from core.heartbeat_store import heartbeat_store
 from core.platform.models import UnifiedContext
-from core.skill_menu import cache_items, get_cached_item, make_callback, parse_callback
+from core.skill_menu import (
+    cache_items,
+    get_cached_item,
+    make_callback,
+    menu_store,
+    parse_callback,
+)
 from core.task_inbox import task_inbox
 
 from .base_handlers import (
@@ -16,6 +23,7 @@ from .base_handlers import (
 
 TASK_MENU_NS = "taskm"
 logger = logging.getLogger(__name__)
+_TASK_ACTION_REFS_KEY = "__task_action_refs__"
 
 
 def _parse_subcommand(text: str) -> tuple[str, str]:
@@ -49,6 +57,52 @@ def _should_show_task(item: Any) -> bool:
 
 def _task_usage_text() -> str:
     return "用法: `/task`、`/task recent` 或 `/task open`"
+
+
+def _cache_task_action_ref(
+    ctx: UnifiedContext,
+    *,
+    view: str,
+    index: str | int | None,
+    task_id: str,
+) -> str:
+    token = uuid4().hex[:12]
+    store = menu_store(ctx, TASK_MENU_NS)
+    refs = store.setdefault(_TASK_ACTION_REFS_KEY, {})
+    if not isinstance(refs, dict):
+        refs = {}
+        store[_TASK_ACTION_REFS_KEY] = refs
+    refs[token] = {
+        "view": str(view or "").strip() or "recent",
+        "index": str(index if index is not None else "").strip(),
+        "task_id": str(task_id or "").strip(),
+    }
+    if len(refs) > 128:
+        stale_tokens = list(refs.keys())[:-64]
+        for stale_token in stale_tokens:
+            refs.pop(stale_token, None)
+    return token
+
+
+def _resolve_task_action_ref(
+    ctx: UnifiedContext,
+    token: str | None,
+) -> tuple[str, str, str]:
+    raw_token = str(token or "").strip()
+    if not raw_token:
+        return "", "", ""
+    store = menu_store(ctx, TASK_MENU_NS)
+    refs = store.get(_TASK_ACTION_REFS_KEY, {})
+    if not isinstance(refs, dict):
+        return "", "", ""
+    payload = refs.get(raw_token)
+    if not isinstance(payload, dict):
+        return "", "", ""
+    return (
+        str(payload.get("view") or "").strip(),
+        str(payload.get("index") or "").strip(),
+        str(payload.get("task_id") or "").strip(),
+    )
 
 
 async def _active_confirmation_row(user_id: str) -> list[dict[str, str]]:
@@ -184,18 +238,19 @@ async def _build_task_detail_payload(
     if getattr(item, "output", None):
         lines.append(f"- Output：{_compact(getattr(item, 'output'), 80)}")
 
+    delete_token = _cache_task_action_ref(
+        ctx,
+        view=view,
+        index=index,
+        task_id=item.task_id,
+    )
+
     return "\n".join(lines), {
         "actions": [
             [
                 {
                     "text": "🗑️ 删除任务",
-                    "callback_data": make_callback(
-                        TASK_MENU_NS,
-                        "delete",
-                        view,
-                        index,
-                        item.task_id,
-                    ),
+                    "callback_data": make_callback(TASK_MENU_NS, "delete", delete_token),
                 },
                 {"text": "返回列表", "callback_data": make_callback(TASK_MENU_NS, view, 0)},
             ]
@@ -229,6 +284,13 @@ async def _build_task_delete_confirm_payload(
         "",
         "删除后这条任务会从任务列表中移除；如果它正处于会话活跃状态，也会一并清理。",
     ]
+    confirm_token = _cache_task_action_ref(
+        ctx,
+        view=view,
+        index=index,
+        task_id=item.task_id,
+    )
+
     return "\n".join(lines), {
         "actions": [
             [
@@ -237,9 +299,7 @@ async def _build_task_delete_confirm_payload(
                     "callback_data": make_callback(
                         TASK_MENU_NS,
                         "deleteconfirm",
-                        view,
-                        index,
-                        item.task_id,
+                        confirm_token,
                     ),
                 },
                 {
@@ -365,22 +425,28 @@ async def handle_task_callback(ctx: UnifiedContext) -> None:
         index = parts[1] if len(parts) >= 2 else ""
         payload, ui = await _build_task_detail_payload(ctx, view=view, index=index)
     elif action == "delete":
-        view = str(parts[0] if parts else "recent").strip() or "recent"
-        index = parts[1] if len(parts) >= 2 else ""
-        task_id = str(parts[2] if len(parts) >= 3 else "").strip()
+        if len(parts) == 1:
+            view, index, task_id = _resolve_task_action_ref(ctx, parts[0])
+        else:
+            view = str(parts[0] if parts else "recent").strip() or "recent"
+            index = parts[1] if len(parts) >= 2 else ""
+            task_id = str(parts[2] if len(parts) >= 3 else "").strip()
         payload, ui = await _build_task_delete_confirm_payload(
             ctx,
-            view=view,
+            view=view or "recent",
             index=index,
             task_id=task_id,
         )
     elif action == "deleteconfirm":
-        view = str(parts[0] if parts else "recent").strip() or "recent"
-        task_id = str(parts[2] if len(parts) >= 3 else "").strip()
+        if len(parts) == 1:
+            view, _index, task_id = _resolve_task_action_ref(ctx, parts[0])
+        else:
+            view = str(parts[0] if parts else "recent").strip() or "recent"
+            task_id = str(parts[2] if len(parts) >= 3 else "").strip()
         ok, prefix = await _delete_task_from_menu(ctx, task_id=task_id)
         payload, ui = await _build_task_list_payload(
             ctx,
-            view=view,
+            view=view or "recent",
             prefix=prefix,
         )
     else:

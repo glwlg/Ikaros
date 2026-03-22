@@ -358,6 +358,45 @@ async def test_task_menu_can_delete_task_and_clear_active_state(monkeypatch, tmp
     assert "已删除任务" in ctx.edits[-1]
 
 
+@pytest.mark.asyncio
+async def test_task_menu_delete_callbacks_fit_telegram_limit(monkeypatch, tmp_path):
+    _reset_task_inbox(tmp_path)
+
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr("handlers.task_handlers.check_permission_unified", _allow)
+
+    task = await task_inbox.submit(
+        source="user_chat",
+        goal="删除一个最近任务，确保 Telegram callback_data 不超长",
+        user_id="u-task",
+    )
+
+    ctx = _FakeContext("/task recent", user_id="u-task")
+    await task_command(ctx)
+
+    ctx.callback_data = make_callback(TASK_MENU_NS, "show", "recent", 0)
+    await handle_task_callback(ctx)
+
+    detail_ui = ctx.edited_uis[-1]
+    delete_callback = detail_ui["actions"][0][0]["callback_data"]
+    assert len(delete_callback.encode("utf-8")) <= 64
+
+    ctx.callback_data = delete_callback
+    await handle_task_callback(ctx)
+
+    confirm_ui = ctx.edited_uis[-1]
+    confirm_callback = confirm_ui["actions"][0][0]["callback_data"]
+    assert len(confirm_callback.encode("utf-8")) <= 64
+
+    ctx.callback_data = confirm_callback
+    await handle_task_callback(ctx)
+
+    assert await task_inbox.get(task.task_id) is None
+    assert "已删除任务" in ctx.edits[-1]
+
+
 def test_task_command_is_exported_from_handlers_package():
     assert exported_task_command is task_command
 

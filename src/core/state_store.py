@@ -118,6 +118,98 @@ def _max_row_id(rows: list[dict[str, Any]]) -> int:
     return highest
 
 
+_FEATURE_DELIVERY_NAMES = {"rss", "stock"}
+
+
+def _feature_delivery_targets_path(user_id: int | str):
+    _ = user_id
+    return user_path(user_id, "automation", "delivery_targets.md")
+
+
+def _normalize_delivery_target(raw: dict[str, Any] | None) -> dict[str, str]:
+    payload = dict(raw or {})
+    return {
+        "platform": normalize_platform(payload.get("platform")),
+        "chat_id": str(payload.get("chat_id") or "").strip(),
+        "updated_at": str(payload.get("updated_at") or now_iso()),
+    }
+
+
+def _normalize_feature_delivery_name(feature: str) -> str:
+    normalized = str(feature or "").strip().lower()
+    if normalized not in _FEATURE_DELIVERY_NAMES:
+        raise ValueError(f"unsupported feature delivery target: {feature}")
+    return normalized
+
+
+async def _read_feature_delivery_targets(user_id: int | str) -> dict[str, dict[str, str]]:
+    data = await read_json(_feature_delivery_targets_path(user_id), {})
+    if not isinstance(data, dict):
+        return {}
+
+    normalized: dict[str, dict[str, str]] = {}
+    for feature in _FEATURE_DELIVERY_NAMES:
+        raw_target = data.get(feature)
+        if not isinstance(raw_target, dict):
+            continue
+        target = _normalize_delivery_target(raw_target)
+        if target["platform"] and target["chat_id"]:
+            normalized[feature] = target
+    return normalized
+
+
+async def _write_feature_delivery_targets(
+    user_id: int | str,
+    targets: dict[str, dict[str, str]],
+) -> None:
+    payload: dict[str, dict[str, str]] = {}
+    for feature, target in dict(targets or {}).items():
+        if feature not in _FEATURE_DELIVERY_NAMES or not isinstance(target, dict):
+            continue
+        normalized = _normalize_delivery_target(target)
+        if not normalized["platform"] or not normalized["chat_id"]:
+            continue
+        payload[feature] = normalized
+    await write_json(_feature_delivery_targets_path(user_id), payload)
+
+
+async def list_feature_delivery_targets(
+    user_id: int | str,
+) -> dict[str, dict[str, str]]:
+    return await _read_feature_delivery_targets(user_id)
+
+
+async def get_feature_delivery_target(
+    user_id: int | str,
+    feature: str,
+) -> dict[str, str]:
+    feature_name = _normalize_feature_delivery_name(feature)
+    targets = await _read_feature_delivery_targets(user_id)
+    return dict(targets.get(feature_name) or {})
+
+
+async def set_feature_delivery_target(
+    user_id: int | str,
+    feature: str,
+    platform: str,
+    chat_id: str,
+) -> dict[str, str]:
+    feature_name = _normalize_feature_delivery_name(feature)
+    targets = await _read_feature_delivery_targets(user_id)
+    normalized = _normalize_delivery_target(
+        {
+            "platform": platform,
+            "chat_id": chat_id,
+            "updated_at": now_iso(),
+        }
+    )
+    if not normalized["platform"] or not normalized["chat_id"]:
+        raise ValueError("platform and chat_id are required")
+    targets[feature_name] = normalized
+    await _write_feature_delivery_targets(user_id, targets)
+    return normalized
+
+
 async def _next_id_after_legacy_rows(
     counter_name: str,
     legacy_path: Path,
@@ -1067,6 +1159,8 @@ def _normalize_scheduled_task(
         "crontab": str(raw.get("crontab") or "").strip(),
         "instruction": str(raw.get("instruction") or "").strip(),
         "platform": str(raw.get("platform") or "telegram").strip() or "telegram",
+        "chat_id": str(raw.get("chat_id") or "").strip(),
+        "session_id": str(raw.get("session_id") or "").strip(),
         "need_push": bool(raw.get("need_push", True)),
         "is_active": bool(raw.get("is_active", True)),
         "created_at": str(raw.get("created_at") or now_iso()),
@@ -1106,12 +1200,16 @@ async def _write_user_scheduled_tasks(
                 "crontab": str(row.get("crontab") or "").strip(),
                 "instruction": str(row.get("instruction") or "").strip(),
                 "platform": str(row.get("platform") or "telegram"),
-                "need_push": bool(row.get("need_push", True)),
-                "is_active": bool(row.get("is_active", True)),
-                "created_at": str(row.get("created_at") or now_iso()),
-                "updated_at": str(row.get("updated_at") or now_iso()),
             }
         )
+        if str(row.get("chat_id") or "").strip():
+            payload[-1]["chat_id"] = str(row.get("chat_id") or "").strip()
+        if str(row.get("session_id") or "").strip():
+            payload[-1]["session_id"] = str(row.get("session_id") or "").strip()
+        payload[-1]["need_push"] = bool(row.get("need_push", True))
+        payload[-1]["is_active"] = bool(row.get("is_active", True))
+        payload[-1]["created_at"] = str(row.get("created_at") or now_iso())
+        payload[-1]["updated_at"] = str(row.get("updated_at") or now_iso())
     payload.sort(key=lambda item: int(item.get("id") or 0))
     await write_json(_scheduled_tasks_path(user_id), payload)
 
@@ -1121,6 +1219,8 @@ async def add_scheduled_task(
     instruction: str,
     user_id: int | str = 0,
     platform: str = "telegram",
+    chat_id: str = "",
+    session_id: str = "",
     need_push: bool = True,
 ) -> int:
     rows = await _read_user_scheduled_tasks(user_id or "")
@@ -1135,6 +1235,8 @@ async def add_scheduled_task(
             "crontab": str(crontab or "").strip(),
             "instruction": str(instruction or "").strip(),
             "platform": str(platform or "telegram"),
+            "chat_id": str(chat_id or "").strip(),
+            "session_id": str(session_id or "").strip(),
             "need_push": bool(need_push),
             "is_active": True,
             "created_at": now_iso(),
@@ -1167,6 +1269,32 @@ async def update_task_status(
         break
     if changed:
         await _write_user_scheduled_tasks(user_id or "", rows)
+
+
+async def update_task_delivery_target(
+    task_id: int,
+    user_id: int | str | None = None,
+    *,
+    platform: str,
+    chat_id: str,
+    session_id: str = "",
+) -> bool:
+    tid = int(task_id)
+    rows = await _read_user_scheduled_tasks(user_id or "")
+    changed = False
+    for item in rows:
+        if int(item.get("id") or 0) != tid:
+            continue
+        item["platform"] = str(platform or "telegram").strip() or "telegram"
+        item["chat_id"] = str(chat_id or "").strip()
+        item["session_id"] = str(session_id or "").strip()
+        item["updated_at"] = now_iso()
+        changed = True
+        break
+    if changed:
+        await _write_user_scheduled_tasks(user_id or "", rows)
+        return True
+    return False
 
 
 async def delete_task(task_id: int, user_id: int | str | None = None):
@@ -1323,18 +1451,18 @@ async def get_user_watchlist(
             for item in rows
             if str(item.get("platform") or "telegram").strip().lower() == target
         ]
+    else:
+        rows = _dedupe_rows(
+            rows,
+            key_fn=lambda row: str(row.get("stock_code") or "").strip().lower(),
+        )
     return _to_watchlist_runtime_rows(user_id, rows)
 
 
 async def get_all_watchlist_users() -> list[tuple[int | str, str]]:
-    pairs: list[tuple[int | str, str]] = []
-    seen: set[tuple[str, str]] = set()
     rows = await _read_watchlist("")
-    for row in rows:
-        plat = str(row.get("platform") or "telegram")
-        key = (SINGLE_USER_SCOPE, plat)
-        if key in seen:
-            continue
-        seen.add(key)
-        pairs.append((SINGLE_USER_SCOPE, plat))
-    return pairs
+    if not rows:
+        return []
+    target = await get_feature_delivery_target("", "stock")
+    platform = str(target.get("platform") or rows[0].get("platform") or "telegram")
+    return [(SINGLE_USER_SCOPE, platform)]

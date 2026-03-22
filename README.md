@@ -11,7 +11,7 @@ X-Bot 是一个 Python 多平台 AI Bot，当前采用 `Core Manager + API Servi
 
 ## 当前能力
 
-- 多平台接入：Telegram、Discord、钉钉 Stream、微信 iLink（MVP），以及独立 Web/API 服务
+- 多平台接入：Telegram、Discord、钉钉 Stream、微信 iLink（MVP，支持文本与出站图片/视频/文件），以及独立 Web/API 服务
 - 多模态交互：文本、图片、视频、语音、文档输入
 - Skill 体系：技能位于 `skills/`，通过 `SKILL.md` 描述 SOP、参数契约和可导出的 direct tool
 - 任务治理：真实任务具备 task/session/heartbeat 闭环，普通闲聊不写入 `task_inbox`
@@ -92,6 +92,7 @@ cp config/models.example.json config/models.json
 - `DINGTALK_CLIENT_ID`
 - `DINGTALK_CLIENT_SECRET`
 - `WEIXIN_ENABLE`
+- `WEIXIN_CDN_BASE_URL`
 - `ADMIN_USER_IDS`
 - `SEARXNG_URL`
 

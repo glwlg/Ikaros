@@ -32,6 +32,7 @@ manager-runtime = [
     "aiofiles>=23.0.0",
     "mistune>=3.0.0",
     "qrcode>=8.2",
+    "cryptography>=46.0.3",
     "discord-py>=2.6.4",
     "dingtalk-stream>=0.24.3",
 ]
@@ -78,7 +79,9 @@ manager = [
     { include-group = "manager-runtime" },
 ]
 api = [
-    { include-group = "shared-runtime" },
+    # API 会直接复用 AiService / core.config 做图片记账等能力，
+    # 需要 bot-runtime 中的 OpenAI 客户端与相关基础依赖。
+    { include-group = "bot-runtime" },
     "fastapi>=0.109.0",
     "uvicorn[standard]>=0.27.0,<0.31.0",
     "pydantic-settings>=2.0.0,<3.0.0",

@@ -16,6 +16,7 @@ from core.platform.registry import adapter_manager
 from core.task_manager import task_manager
 
 logger = logging.getLogger(__name__)
+_DEFAULT_HEARTBEAT_GOAL = "检查自己和后台任务的运行状态是否良好"
 
 
 class _HeartbeatSilentAdapter:
@@ -208,13 +209,16 @@ class HeartbeatWorker:
 
             spec = await heartbeat_store.get_heartbeat_spec(user_id)
             checklist = list(spec.get("checklist") or [])
+            checklist_items = list(spec.get("checklist_items") or [])
             delivery_target = await heartbeat_store.get_delivery_target(user_id)
-            final_text = await self._run_heartbeat_task_batch(
+            batch_result = await self._run_heartbeat_task_batch_details(
                 user_id=user_id,
                 checklist=checklist,
+                checklist_items=checklist_items,
                 owner=owner,
                 delivery_target=delivery_target,
             )
+            final_text = str(batch_result.get("text") or "").strip() or "HEARTBEAT_OK"
 
             if "已派发给" in final_text and "完成后会自动把结果发给你" in final_text:
                 final_text = "HEARTBEAT_OK"
@@ -241,33 +245,43 @@ class HeartbeatWorker:
             if suppress_push:
                 return final_text
 
-            target = delivery_target
-            platform = target.get("platform", "").strip()
-            chat_id = target.get("chat_id", "").strip()
-            session_id = str(target.get("session_id", "") or "").strip()
-            if not platform or not chat_id:
+            level = str(heartbeat_meta.get("last_level", level)).upper()
+            deliveries = list(batch_result.get("deliveries") or [])
+            if not deliveries:
                 logger.info(
                     "Heartbeat result skipped push: no delivery target for user=%s",
                     user_id,
                 )
                 return final_text
 
-            level = str(heartbeat_meta.get("last_level", level)).upper()
-            text_to_push = final_text
-            pushed = await self._push_to_target(
-                platform=platform,
-                chat_id=chat_id,
-                text=text_to_push,
-                user_id=user_id,
-                session_id=session_id,
-            )
-            if not pushed:
-                logger.warning(
-                    "Heartbeat result push failed. user=%s platform=%s chat=%s",
-                    user_id,
-                    platform,
-                    chat_id,
+            for target in deliveries:
+                platform = str(target.get("platform") or "").strip()
+                chat_id = str(target.get("chat_id") or "").strip()
+                text_to_push = str(target.get("text") or "").strip()
+                session_id = ""
+                if (
+                    platform
+                    and chat_id
+                    and platform == str(delivery_target.get("platform", "") or "").strip()
+                    and chat_id == str(delivery_target.get("chat_id", "") or "").strip()
+                ):
+                    session_id = str(delivery_target.get("session_id", "") or "").strip()
+                if not platform or not chat_id or not text_to_push:
+                    continue
+                pushed = await self._push_to_target(
+                    platform=platform,
+                    chat_id=chat_id,
+                    text=text_to_push,
+                    user_id=user_id,
+                    session_id=session_id,
                 )
+                if not pushed:
+                    logger.warning(
+                        "Heartbeat result push failed. user=%s platform=%s chat=%s",
+                        user_id,
+                        platform,
+                        chat_id,
+                    )
             return final_text
         except asyncio.CancelledError:
             raise
@@ -290,20 +304,71 @@ class HeartbeatWorker:
         checklist: list[str],
         owner: str,
         delivery_target: dict[str, str] | None = None,
+        checklist_items: list[dict[str, Any]] | None = None,
     ) -> str:
+        result = await self._run_heartbeat_task_batch_details(
+            user_id=user_id,
+            checklist=checklist,
+            checklist_items=checklist_items,
+            owner=owner,
+            delivery_target=delivery_target,
+        )
+        return str(result.get("text") or "").strip() or "HEARTBEAT_OK"
+
+    @staticmethod
+    def _normalize_delivery_target(
+        target: dict[str, Any] | None,
+    ) -> dict[str, str]:
+        payload = dict(target or {})
+        return {
+            "platform": str(payload.get("platform") or "").strip(),
+            "chat_id": str(payload.get("chat_id") or "").strip(),
+        }
+
+    @staticmethod
+    def _target_key(target: dict[str, str]) -> tuple[str, str]:
+        return (
+            str(target.get("platform") or "").strip(),
+            str(target.get("chat_id") or "").strip(),
+        )
+
+    @classmethod
+    def _append_delivery_section(
+        cls,
+        deliveries: dict[tuple[str, str], list[str]],
+        target: dict[str, str] | None,
+        text: str,
+    ) -> None:
+        normalized_target = cls._normalize_delivery_target(target)
+        key = cls._target_key(normalized_target)
+        if not key[0] or not key[1]:
+            return
+        body = str(text or "").strip()
+        if not body:
+            return
+        bucket = deliveries.setdefault(key, [])
+        if body not in bucket:
+            bucket.append(body)
+
+    async def _run_heartbeat_task_batch_details(
+        self,
+        *,
+        user_id: str,
+        checklist: list[str],
+        owner: str,
+        delivery_target: dict[str, str] | None = None,
+        checklist_items: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         specs = await self._build_heartbeat_task_specs(
-            user_id=user_id, checklist=checklist
+            user_id=user_id,
+            checklist=checklist,
+            checklist_items=checklist_items,
+            default_delivery_target=delivery_target,
         )
         if not specs:
-            return "HEARTBEAT_OK"
+            return {"text": "HEARTBEAT_OK", "deliveries": []}
 
         ctx = self._build_headless_context(user_id)
-        target_platform = str((delivery_target or {}).get("platform") or "").strip()
-        target_chat_id = str((delivery_target or {}).get("chat_id") or "").strip()
-        if target_platform:
-            ctx.user_data["subagent_delivery_platform"] = target_platform
-        if target_chat_id:
-            ctx.user_data["subagent_delivery_chat_id"] = target_chat_id
         ctx.user_data["heartbeat_session_state_enabled"] = True
         if self.mode == "readonly":
             ctx.user_data["execution_policy"] = "heartbeat_readonly_policy"
@@ -311,6 +376,7 @@ class HeartbeatWorker:
             ctx.user_data["execution_policy"] = "manager_execution_policy"
 
         sections: list[str] = []
+        routed_sections: dict[tuple[str, str], list[str]] = {}
         rss_refresh_attempted = False
         rss_refresh_available = False
         rss_refresh_text = ""
@@ -321,6 +387,19 @@ class HeartbeatWorker:
             goal = str(spec.get("goal") or "").strip()
             if not goal:
                 continue
+            spec_target = self._normalize_delivery_target(
+                spec.get("delivery_target")
+                if isinstance(spec, dict)
+                else delivery_target
+            )
+            if spec_target["platform"]:
+                ctx.user_data["subagent_delivery_platform"] = spec_target["platform"]
+            else:
+                ctx.user_data.pop("subagent_delivery_platform", None)
+            if spec_target["chat_id"]:
+                ctx.user_data["subagent_delivery_chat_id"] = spec_target["chat_id"]
+            else:
+                ctx.user_data.pop("subagent_delivery_chat_id", None)
 
             spec_type = str(spec.get("type") or "").strip().lower()
             if spec_type == "rss_signal" or self._is_rss_related_goal(goal):
@@ -346,6 +425,12 @@ class HeartbeatWorker:
                         )
 
                 if rss_refresh_available:
+                    if rss_refresh_text:
+                        self._append_delivery_section(
+                            routed_sections,
+                            spec_target,
+                            rss_refresh_text,
+                        )
                     if rss_refresh_text and not rss_refresh_appended:
                         sections.append(rss_refresh_text)
                         rss_refresh_appended = True
@@ -415,21 +500,75 @@ class HeartbeatWorker:
                 continue
 
             sections.append(text.strip())
+            self._append_delivery_section(routed_sections, spec_target, text.strip())
 
         if not sections:
-            return "HEARTBEAT_OK"
-        return "\n\n".join(sections)
+            return {"text": "HEARTBEAT_OK", "deliveries": []}
+        return {
+            "text": "\n\n".join(sections),
+            "deliveries": [
+                {
+                    "platform": platform,
+                    "chat_id": chat_id,
+                    "text": "\n\n".join(items),
+                }
+                for (platform, chat_id), items in routed_sections.items()
+                if platform and chat_id and items
+            ],
+        }
 
     async def _build_heartbeat_task_specs(
         self,
         *,
         user_id: str,
         checklist: list[str],
+        checklist_items: list[dict[str, Any]] | None = None,
+        default_delivery_target: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         specs: list[dict[str, Any]] = []
-        normalized = [
-            str(item or "").strip() for item in checklist if str(item or "").strip()
-        ]
+        normalized_items: list[dict[str, Any]] = []
+        if checklist_items:
+            for item in checklist_items:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                normalized_items.append(
+                    {
+                        "text": text,
+                        "delivery_target": self._normalize_delivery_target(
+                            item.get("delivery_target")
+                            if isinstance(item.get("delivery_target"), dict)
+                            else default_delivery_target
+                        ),
+                    }
+                )
+        else:
+            for item in checklist:
+                text = str(item or "").strip()
+                if not text:
+                    continue
+                normalized_items.append(
+                    {
+                        "text": text,
+                        "delivery_target": self._normalize_delivery_target(
+                            default_delivery_target
+                        ),
+                    }
+                )
+
+        if not normalized_items:
+            normalized_items.append(
+                {
+                    "text": _DEFAULT_HEARTBEAT_GOAL,
+                    "delivery_target": self._normalize_delivery_target(
+                        default_delivery_target
+                    ),
+                }
+            )
+
+        normalized = [str(item.get("text") or "").strip() for item in normalized_items]
         merged_checklist_text = "\n".join(normalized).lower()
         has_rss_focus = any(
             token in merged_checklist_text for token in ("rss", "订阅", "feed")
@@ -438,18 +577,35 @@ class HeartbeatWorker:
             token in merged_checklist_text
             for token in ("股票", "自选股", "行情", "stock", "quote")
         )
-        for idx, item in enumerate(normalized, start=1):
+        for idx, item in enumerate(normalized_items, start=1):
             specs.append(
                 {
                     "type": "checklist",
                     "title": f"Heartbeat 检查项 {idx}",
-                    "goal": item,
+                    "goal": str(item.get("text") or "").strip(),
+                    "delivery_target": self._normalize_delivery_target(
+                        item.get("delivery_target")
+                        if isinstance(item.get("delivery_target"), dict)
+                        else default_delivery_target
+                    ),
                 }
             )
 
         numeric_user_id = 0
         with contextlib.suppress(Exception):
             numeric_user_id = int(str(user_id))
+
+        rss_delivery_target = self._normalize_delivery_target(default_delivery_target)
+        stock_delivery_target = self._normalize_delivery_target(default_delivery_target)
+        with contextlib.suppress(Exception):
+            from core.state_store import get_feature_delivery_target
+
+            rss_target = await get_feature_delivery_target(user_id, "rss")
+            if rss_target:
+                rss_delivery_target = self._normalize_delivery_target(rss_target)
+            stock_target = await get_feature_delivery_target(user_id, "stock")
+            if stock_target:
+                stock_delivery_target = self._normalize_delivery_target(stock_target)
 
         if self.enable_rss_signal and numeric_user_id > 0 and not has_rss_focus:
             with contextlib.suppress(Exception):
@@ -462,6 +618,7 @@ class HeartbeatWorker:
                             "type": "rss_signal",
                             "title": "RSS 更新检查",
                             "goal": "检查用户 RSS 订阅最新更新。优先调用现有工具并直接交付工具结果，可在末尾补充简短观察。",
+                            "delivery_target": rss_delivery_target,
                         }
                     )
 
@@ -479,12 +636,13 @@ class HeartbeatWorker:
                     watchlist = await get_user_watchlist(numeric_user_id)
                     if watchlist:
                         specs.append(
-                            {
-                                "type": "stock_signal",
-                                "title": "股票行情检查",
-                                "goal": "获取用户自选股的最新行情并给出重点波动提醒。",
-                            }
-                        )
+                        {
+                            "type": "stock_signal",
+                            "title": "股票行情检查",
+                            "goal": "获取用户自选股的最新行情并给出重点波动提醒。",
+                            "delivery_target": stock_delivery_target,
+                        }
+                    )
 
         return specs
 

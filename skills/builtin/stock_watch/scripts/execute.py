@@ -23,6 +23,8 @@ from core.state_store import (
     remove_watchlist_stock,
     get_user_watchlist,
     add_watchlist_stock,
+    get_feature_delivery_target,
+    set_feature_delivery_target,
 )
 from core.skill_menu import make_callback, parse_callback
 from core.platform.models import UnifiedContext
@@ -43,6 +45,39 @@ else:
 
 logger = logging.getLogger(__name__)
 STOCK_MENU_NS = "stkm"
+
+
+def _format_delivery_target(target: dict[str, str] | None) -> str:
+    platform = str((target or {}).get("platform") or "").strip()
+    chat_id = str((target or {}).get("chat_id") or "").strip()
+    if not platform or not chat_id:
+        return "未设置"
+    return f"{platform}:{chat_id}"
+
+
+def _current_delivery_target(ctx: UnifiedContext) -> dict[str, str]:
+    return {
+        "platform": str(ctx.message.platform or "telegram").strip() or "telegram",
+        "chat_id": str(getattr(ctx.message.chat, "id", "") or "").strip(),
+    }
+
+
+async def _ensure_default_stock_delivery_target(
+    ctx: UnifiedContext,
+    user_id: int | str,
+) -> dict[str, str]:
+    current = await get_feature_delivery_target(user_id, "stock")
+    if current:
+        return current
+    target = _current_delivery_target(ctx)
+    if target["platform"] and target["chat_id"]:
+        return await set_feature_delivery_target(
+            user_id,
+            "stock",
+            target["platform"],
+            target["chat_id"],
+        )
+    return {}
 
 
 def _parse_stock_subcommand(text: str) -> tuple[str, str]:
@@ -96,16 +131,19 @@ def _stock_home_ui() -> dict:
                 {"text": "🔄 刷新行情", "callback_data": make_callback(STOCK_MENU_NS, "refresh")},
             ],
             [
-                {"text": "➕ 如何添加", "callback_data": make_callback(STOCK_MENU_NS, "addhelp")},
+                {"text": "📍 设为当前渠道", "callback_data": make_callback(STOCK_MENU_NS, "bind")},
                 {"text": "ℹ️ 帮助", "callback_data": make_callback(STOCK_MENU_NS, "help")},
+            ],
+            [
+                {"text": "➕ 如何添加", "callback_data": make_callback(STOCK_MENU_NS, "addhelp")},
             ],
         ]
     }
 
 
 async def show_stock_menu(ctx: UnifiedContext, user_id: int | str) -> dict:
-    platform = ctx.message.platform if ctx.message.platform else "telegram"
-    watchlist = await get_user_watchlist(user_id, platform=platform)
+    watchlist = await get_user_watchlist(user_id)
+    delivery_target = await get_feature_delivery_target(user_id, "stock")
     names = [str(item.get("stock_name") or "").strip() for item in watchlist[:4] if str(item.get("stock_name") or "").strip()]
     summary = "、".join(names)
     if len(watchlist) > 4:
@@ -118,6 +156,7 @@ async def show_stock_menu(ctx: UnifiedContext, user_id: int | str) -> dict:
             "📈 **自选股管理**\n\n"
             f"当前数量：{len(watchlist)}\n"
             f"当前列表：{summary}\n\n"
+            f"推送渠道：`{_format_delivery_target(delivery_target)}`\n\n"
             "支持直接输入：`/stock add <名称或代码>`、`/stock remove <名称或代码>`。"
         ),
         "ui": _stock_home_ui(),
@@ -261,8 +300,7 @@ async def show_watchlist(
 ) -> str:
     """显示自选股列表"""
     # Note: caller should handle permission if needed
-    platform = ctx.message.platform if ctx.message.platform else "telegram"
-    watchlist = await get_user_watchlist(user_id, platform=platform)
+    watchlist = await get_user_watchlist(user_id)
 
     if not watchlist:
         return {
@@ -310,8 +348,7 @@ async def show_watchlist(
 
 async def remove_stock(ctx: UnifiedContext, user_id: int, stock_name: str) -> str:
     """删除自选股"""
-    platform = ctx.message.platform if ctx.message.platform else "telegram"
-    watchlist = await get_user_watchlist(user_id, platform=platform)
+    watchlist = await get_user_watchlist(user_id)
     for item in watchlist:
         if stock_name.lower() in item["stock_name"].lower():
             await remove_watchlist_stock(user_id, item["stock_code"])
@@ -329,6 +366,7 @@ async def add_multiple_stocks(
     existed_list = []
 
     platform = ctx.message.platform if ctx.message.platform else "telegram"
+    await _ensure_default_stock_delivery_target(ctx, user_id)
 
     for name in stock_names:
         results = await search_stock_by_name(name)
@@ -383,6 +421,7 @@ async def add_single_stock(ctx: UnifiedContext, user_id: int, stock_name: str) -
 
     results = await search_stock_by_name(stock_name)
     platform = ctx.message.platform if ctx.message.platform else "telegram"
+    await _ensure_default_stock_delivery_target(ctx, user_id)
     logger.info(f"Adding single stock for user {user_id} on platform: {platform}")
 
     if not results:
@@ -452,6 +491,22 @@ async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
                     else "📭 您的自选股列表为空，无法刷新。"
                 ),
                 "ui": _stock_home_ui(),
+            }
+        elif action == "bind":
+            target = _current_delivery_target(ctx)
+            updated = await set_feature_delivery_target(
+                user_id,
+                "stock",
+                target["platform"],
+                target["chat_id"],
+            )
+            menu = await show_stock_menu(ctx, user_id)
+            payload = {
+                "text": (
+                    "✅ 已把自选股推送渠道切换到当前聊天 "
+                    f"`{_format_delivery_target(updated)}`。\n\n{menu['text']}"
+                ),
+                "ui": menu.get("ui"),
             }
         elif action == "addhelp":
             payload = _stock_add_help_response()

@@ -11,10 +11,12 @@ from core.state_store import (
     add_scheduled_task,
     add_watchlist_stock,
     create_subscription,
+    get_feature_delivery_target,
     get_all_active_tasks,
     get_pending_reminders,
     get_user_watchlist,
     list_subscriptions,
+    set_feature_delivery_target,
     update_scheduled_task,
 )
 
@@ -59,6 +61,27 @@ async def test_state_store_rows_are_shared_across_runtime_user_ids(tmp_path, mon
         "alpha"
     ]
     assert [row["stock_code"] for row in await get_user_watchlist("2002")] == ["AAA"]
+
+
+@pytest.mark.asyncio
+async def test_feature_delivery_targets_are_shared_across_runtime_user_ids(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    await set_feature_delivery_target("1001", "rss", "weixin", "wx-user-1")
+    await set_feature_delivery_target("1001", "stock", "telegram", "257675041")
+
+    assert await get_feature_delivery_target("2002", "rss") == {
+        "platform": "weixin",
+        "chat_id": "wx-user-1",
+        "updated_at": (await get_feature_delivery_target("1001", "rss"))["updated_at"],
+    }
+    assert await get_feature_delivery_target("2002", "stock") == {
+        "platform": "telegram",
+        "chat_id": "257675041",
+        "updated_at": (await get_feature_delivery_target("1001", "stock"))["updated_at"],
+    }
 
 
 @pytest.mark.asyncio

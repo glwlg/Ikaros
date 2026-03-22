@@ -31,6 +31,20 @@ def _resolve_async_client(model_name: str) -> Any:
     return get_client_for_model(model_name, is_async=True)
 
 
+def _missing_model_error_message(input_type: str) -> str:
+    normalized_input_type = str(input_type or "text").strip().lower() or "text"
+    if normalized_input_type == "image":
+        return (
+            "当前未配置可用的图片识别模型，请在 config/models.json 的 "
+            "model.image / model.vision 与 models.image / models.vision 中配置支持 image 输入的模型"
+        )
+    if normalized_input_type == "voice":
+        return (
+            "当前未配置可用的语音模型，请在 config/models.json 中配置支持 voice 输入的模型"
+        )
+    return "No candidate model available for current request"
+
+
 def _split_text_for_streaming(text: str, max_chars: int) -> list[str]:
     payload = str(text or "")
     if not payload:
@@ -158,7 +172,7 @@ class AiService:
             system_instruction=system_instruction,
         )
         openai_tools = self._build_openai_tools(tools)
-        client = _resolve_async_client(current_model)
+        client = _resolve_async_client(current_model) if current_model else None
 
         try:
 
@@ -174,7 +188,7 @@ class AiService:
                     candidate_models = [current_model]
                 if not candidate_models:
                     raise RuntimeError(
-                        "No candidate model available for current request"
+                        _missing_model_error_message(request_input_type)
                     )
 
                 last_error: Exception | None = None
@@ -238,7 +252,7 @@ class AiService:
 
                 if last_error is not None:
                     raise last_error
-                raise RuntimeError("No candidate model available for current request")
+                raise RuntimeError(_missing_model_error_message(request_input_type))
 
             async def _emit(event: str, payload: dict[str, Any]):
                 if not event_callback:

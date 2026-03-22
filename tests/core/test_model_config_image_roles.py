@@ -3,10 +3,12 @@ from core.model_config import (
     ModelManager,
     ModelsConfig,
     ProviderConfig,
+    get_configured_model,
     update_configured_model,
 )
 import core.model_config as model_config_module
 import json
+import os
 
 
 def test_models_config_splits_vision_and_image_generation():
@@ -64,6 +66,8 @@ def test_model_config_lazy_loads_generation_model_from_file(tmp_path, monkeypatc
     monkeypatch.setattr(model_config_module, "_models_config", None)
     monkeypatch.setattr(model_config_module, "_model_manager", None)
     monkeypatch.setattr(model_config_module, "_primary_model", "")
+    monkeypatch.setattr(model_config_module, "_loaded_config_path", None)
+    monkeypatch.setattr(model_config_module, "_loaded_config_mtime_ns", None)
 
     assert model_config_module.get_image_generation_model() == "demo/image-gen"
 
@@ -102,6 +106,8 @@ def test_model_config_primary_pool_failover_skips_failed_models(monkeypatch):
     monkeypatch.setattr(model_config_module, "_models_config", cfg)
     monkeypatch.setattr(model_config_module, "_model_manager", manager)
     monkeypatch.setattr(model_config_module, "_primary_model", "proxy/gpt-5.4")
+    monkeypatch.setattr(model_config_module, "_loaded_config_path", None)
+    monkeypatch.setattr(model_config_module, "_loaded_config_mtime_ns", None)
 
     assert model_config_module.get_model_candidates_for_input("text") == [
         "proxy/gpt-5.4",
@@ -121,6 +127,32 @@ def test_model_config_primary_pool_failover_skips_failed_models(monkeypatch):
         model_config_module.get_model_for_input("text", pool_type="primary")
         == "proxy/bailian/qwen3.5-flash"
     )
+
+
+def test_model_config_image_request_does_not_fallback_to_primary(monkeypatch):
+    cfg = ModelsConfig(
+        model={"primary": "proxy/gpt-5.4", "image": "proxy/gpt-5.4"},
+        models={"image": {"proxy/gpt-5.4": {}}},
+        providers={
+            "proxy": ProviderConfig(
+                baseUrl="https://example.invalid/v1",
+                apiKey="test-key",
+                models=[
+                    ModelConfig(id="gpt-5.4", name="gpt-5.4", input=["text"]),
+                ],
+            )
+        },
+    )
+    manager = ModelManager(cfg, "proxy/gpt-5.4")
+
+    monkeypatch.setattr(model_config_module, "_models_config", cfg)
+    monkeypatch.setattr(model_config_module, "_model_manager", manager)
+    monkeypatch.setattr(model_config_module, "_primary_model", "proxy/gpt-5.4")
+    monkeypatch.setattr(model_config_module, "_loaded_config_path", None)
+    monkeypatch.setattr(model_config_module, "_loaded_config_mtime_ns", None)
+
+    assert model_config_module.get_model_candidates_for_input("image", "vision") == []
+    assert model_config_module.get_model_for_input("image", pool_type="vision") == ""
 
 
 def test_update_configured_model_preserves_legacy_image_key(tmp_path, monkeypatch):
@@ -152,6 +184,8 @@ def test_update_configured_model_preserves_legacy_image_key(tmp_path, monkeypatc
     monkeypatch.setattr(model_config_module, "_models_config", None)
     monkeypatch.setattr(model_config_module, "_model_manager", None)
     monkeypatch.setattr(model_config_module, "_primary_model", "")
+    monkeypatch.setattr(model_config_module, "_loaded_config_path", None)
+    monkeypatch.setattr(model_config_module, "_loaded_config_mtime_ns", None)
 
     result = update_configured_model("vision", "demo/vision-next")
     saved = json.loads(config_path.read_text(encoding="utf-8"))
@@ -160,3 +194,84 @@ def test_update_configured_model_preserves_legacy_image_key(tmp_path, monkeypatc
     assert saved["model"]["image"] == "demo/vision-next"
     assert "vision" not in saved["model"]
     assert model_config_module.get_configured_model("vision") == "demo/vision-next"
+
+
+def test_model_config_auto_reloads_after_file_change(tmp_path, monkeypatch):
+    config_path = tmp_path / "models.json"
+    config_path.write_text(
+        """
+{
+  "model": {
+    "primary": "demo/text",
+    "vision": "demo/vision-a"
+  },
+  "models": {
+    "primary": {
+      "demo/text": {}
+    },
+    "vision": {
+      "demo/vision-a": {}
+    }
+  },
+  "providers": {
+    "demo": {
+      "baseUrl": "https://example.invalid/v1",
+      "apiKey": "test-key",
+      "models": [
+        {"id": "text", "name": "text", "input": ["text"]},
+        {"id": "vision-a", "name": "vision-a", "input": ["image"]},
+        {"id": "vision-b", "name": "vision-b", "input": ["image"]}
+      ]
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("MODELS_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(model_config_module, "_models_config", None)
+    monkeypatch.setattr(model_config_module, "_model_manager", None)
+    monkeypatch.setattr(model_config_module, "_primary_model", "")
+    monkeypatch.setattr(model_config_module, "_loaded_config_path", None)
+    monkeypatch.setattr(model_config_module, "_loaded_config_mtime_ns", None)
+
+    assert get_configured_model("vision") == "demo/vision-a"
+
+    original_mtime_ns = config_path.stat().st_mtime_ns
+    config_path.write_text(
+        """
+{
+  "model": {
+    "primary": "demo/text",
+    "vision": "demo/vision-b"
+  },
+  "models": {
+    "primary": {
+      "demo/text": {}
+    },
+    "vision": {
+      "demo/vision-b": {}
+    }
+  },
+  "providers": {
+    "demo": {
+      "baseUrl": "https://example.invalid/v1",
+      "apiKey": "test-key",
+      "models": [
+        {"id": "text", "name": "text", "input": ["text"]},
+        {"id": "vision-a", "name": "vision-a", "input": ["image"]},
+        {"id": "vision-b", "name": "vision-b", "input": ["image"]}
+      ]
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    os.utime(
+        config_path,
+        ns=(original_mtime_ns + 1_000_000, original_mtime_ns + 1_000_000),
+    )
+
+    assert get_configured_model("vision") == "demo/vision-b"

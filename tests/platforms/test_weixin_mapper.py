@@ -1,3 +1,4 @@
+from core.platform.models import MessageType
 from platforms.weixin.formatter import markdown_to_weixin_text
 from platforms.weixin.mapper import map_weixin_message
 
@@ -12,7 +13,7 @@ def test_markdown_to_weixin_text_downgrades_links_and_emphasis():
     assert "`" not in rendered
 
 
-def test_map_weixin_message_extracts_text_items_and_placeholders():
+def test_map_weixin_message_extracts_plain_text_items():
     message = map_weixin_message(
         {
             "from_user_id": "wx-user-1",
@@ -21,8 +22,7 @@ def test_map_weixin_message_extracts_text_items_and_placeholders():
             "create_time_ms": 1710000000000,
             "item_list": [
                 {"type": 1, "text_item": {"text": "hello"}},
-                {"type": 2},
-                {"type": 4, "file_item": {"file_name": "report.pdf"}},
+                {"type": 1, "text_item": {"text": "world"}},
             ],
             "context_token": "ctx-1",
         }
@@ -31,4 +31,87 @@ def test_map_weixin_message_extracts_text_items_and_placeholders():
     assert message.platform == "weixin"
     assert message.user.id == "wx-user-1"
     assert message.chat.id == "wx-user-1"
-    assert message.text == "hello\n(image)\n(file: report.pdf)"
+    assert message.type == MessageType.TEXT
+    assert message.text == "hello\nworld"
+
+
+def test_map_weixin_message_promotes_image_to_media_message():
+    message = map_weixin_message(
+        {
+            "from_user_id": "wx-user-1",
+            "from_user_name": "Alice",
+            "client_id": "msg-2",
+            "create_time_ms": 1710000000000,
+            "item_list": [
+                {"type": 1, "text_item": {"text": "帮我看看这个商品"}},
+                {
+                    "type": 2,
+                    "image_item": {
+                        "media": {
+                            "encrypt_query_param": "enc-image-1",
+                            "aes_key": "MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY=",
+                        },
+                        "mid_size": 24576,
+                    },
+                },
+            ],
+            "context_token": "ctx-2",
+        }
+    )
+
+    assert message.type == MessageType.IMAGE
+    assert message.text is None
+    assert message.caption == "帮我看看这个商品"
+    assert message.file_id == "enc-image-1"
+    assert message.file_size == 24576
+    assert message.mime_type == "image/jpeg"
+
+
+def test_map_weixin_message_maps_file_metadata():
+    message = map_weixin_message(
+        {
+            "from_user_id": "wx-user-2",
+            "client_id": "msg-3",
+            "item_list": [
+                {
+                    "type": 4,
+                    "file_item": {
+                        "media": {"encrypt_query_param": "enc-file-1"},
+                        "file_name": "report.pdf",
+                        "len": "12345",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert message.type == MessageType.DOCUMENT
+    assert message.file_id == "enc-file-1"
+    assert message.file_name == "report.pdf"
+    assert message.file_size == 12345
+    assert message.mime_type == "application/octet-stream"
+
+
+def test_map_weixin_message_maps_voice_metadata_from_encode_type():
+    message = map_weixin_message(
+        {
+            "from_user_id": "wx-user-3",
+            "client_id": "msg-4",
+            "item_list": [
+                {
+                    "type": 3,
+                    "voice_item": {
+                        "media": {"encrypt_query_param": "enc-voice-1"},
+                        "encode_type": 8,
+                        "playtime": 2600,
+                        "text": "帮我总结一下",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert message.type == MessageType.VOICE
+    assert message.file_id == "enc-voice-1"
+    assert message.duration == 2600
+    assert message.mime_type == "audio/ogg"

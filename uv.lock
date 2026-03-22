@@ -2561,16 +2561,23 @@ source = { editable = "." }
 [package.dev-dependencies]
 api = [
     { name = "aiosqlite" },
+    { name = "ddgs" },
+    { name = "exa-py" },
     { name = "fastapi" },
     { name = "fastapi-users", extra = ["oauth", "sqlalchemy"] },
+    { name = "feedparser" },
     { name = "httpx" },
+    { name = "openai" },
     { name = "passlib", extra = ["bcrypt"] },
     { name = "pydantic-settings" },
+    { name = "pyotp" },
+    { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "toml" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "yt-dlp" },
 ]
 bot-runtime = [
     { name = "aiosqlite" },
@@ -2593,6 +2600,7 @@ dev = [
 manager = [
     { name = "aiofiles" },
     { name = "aiosqlite" },
+    { name = "cryptography" },
     { name = "ddgs" },
     { name = "dingtalk-stream" },
     { name = "discord-py" },
@@ -2615,6 +2623,7 @@ manager = [
 manager-runtime = [
     { name = "aiofiles" },
     { name = "aiosqlite" },
+    { name = "cryptography" },
     { name = "ddgs" },
     { name = "dingtalk-stream" },
     { name = "discord-py" },
@@ -2694,16 +2703,23 @@ skill-web-optional = [
 [package.metadata.requires-dev]
 api = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "ddgs", specifier = ">=9.10.0" },
+    { name = "exa-py", specifier = ">=2.4.0" },
     { name = "fastapi", specifier = ">=0.109.0" },
     { name = "fastapi-users", extras = ["oauth", "sqlalchemy"], specifier = ">=15.0.3" },
+    { name = "feedparser", specifier = ">=6.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "openai", specifier = ">=2.0.0" },
     { name = "passlib", extras = ["bcrypt"], specifier = ">=1.7.4" },
     { name = "pydantic-settings", specifier = ">=2.0.0,<3.0.0" },
+    { name = "pyotp", specifier = ">=2.9.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "python-multipart", specifier = ">=0.0.20,<0.1.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0,<2.1.0" },
     { name = "toml", specifier = ">=0.10.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0,<0.31.0" },
+    { name = "yt-dlp", specifier = ">=2024.0.0" },
 ]
 bot-runtime = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
@@ -2726,6 +2742,7 @@ dev = [
 manager = [
     { name = "aiofiles", specifier = ">=23.0.0" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "cryptography", specifier = ">=46.0.3" },
     { name = "ddgs", specifier = ">=9.10.0" },
     { name = "dingtalk-stream", specifier = ">=0.24.3" },
     { name = "discord-py", specifier = ">=2.6.4" },
@@ -2748,6 +2765,7 @@ manager = [
 manager-runtime = [
     { name = "aiofiles", specifier = ">=23.0.0" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "cryptography", specifier = ">=46.0.3" },
     { name = "ddgs", specifier = ">=9.10.0" },
     { name = "dingtalk-stream", specifier = ">=0.24.3" },
     { name = "discord-py", specifier = ">=2.6.4" },

@@ -24,6 +24,7 @@ from shared.contracts.proactive_delivery_target import normalize_proactive_platf
 from core.state_store import (
     add_reminder,
     delete_reminder,
+    get_feature_delivery_target,
     get_pending_reminders,
     get_user_watchlist,
     get_all_watchlist_users,
@@ -389,6 +390,8 @@ async def _fetch_feed_updates(
     if not subscriptions:
         return "", [], {}
 
+    rss_delivery_target = await get_feature_delivery_target(SINGLE_USER_SCOPE, "rss")
+
     feed_map: dict[str, list[dict[str, object]]] = {}
     for sub in subscriptions:
         url = str(sub.get("feed_url") or "").strip()
@@ -508,7 +511,18 @@ async def _fetch_feed_updates(
                     )
 
                     uid = SINGLE_USER_SCOPE
-                    plat = str(sub.get("platform") or "telegram")
+                    binding_platform = str(
+                        rss_delivery_target.get("platform")
+                        or sub.get("platform")
+                        or "telegram"
+                    )
+                    binding_chat_id = str(
+                        rss_delivery_target.get("chat_id")
+                        or sub.get("chat_id")
+                        or sub.get("platform_user_id")
+                        or ""
+                    ).strip()
+                    plat = binding_platform
                     key = (plat, uid)
                     user_updates.setdefault(key, []).append(
                         {
@@ -525,24 +539,12 @@ async def _fetch_feed_updates(
                             **(
                                 {
                                     "resource_binding": {
-                                        "platform": plat,
+                                        "platform": binding_platform,
                                         "owner_user_id": uid,
-                                        **{
-                                            binding_key: str(
-                                                sub.get(binding_key) or ""
-                                            ).strip()
-                                            for binding_key in (
-                                                "chat_id",
-                                                "platform_user_id",
-                                            )
-                                            if str(sub.get(binding_key) or "").strip()
-                                        },
+                                        "chat_id": binding_chat_id,
                                     }
                                 }
-                                if any(
-                                    str(sub.get(binding_key) or "").strip()
-                                    for binding_key in ("chat_id", "platform_user_id")
-                                )
+                                if binding_chat_id
                                 else {}
                             ),
                         }
@@ -745,8 +747,8 @@ async def stock_push_job():
 
         for user_id, platform in users_with_platform:
             try:
-                # 获取用户自选股 (filtered by platform)
-                watchlist = await get_user_watchlist(user_id, platform=platform)
+                # 获取用户自选股（全局共享，不再按当前平台切分）
+                watchlist = await get_user_watchlist(user_id)
                 if not watchlist:
                     continue
 
@@ -762,12 +764,29 @@ async def stock_push_job():
                 # 格式化消息
                 message = format_stock_message(quotes)
 
+                stock_delivery_target = await get_feature_delivery_target(
+                    user_id, "stock"
+                )
                 (
                     target_platform,
                     target_chat_id,
                 ) = await _resolve_proactive_delivery_target(
                     user_id,
                     platform,
+                    metadata=(
+                        {
+                            "resource_binding": {
+                                "platform": str(
+                                    stock_delivery_target.get("platform") or platform
+                                ),
+                                "chat_id": str(
+                                    stock_delivery_target.get("chat_id") or ""
+                                ).strip(),
+                            }
+                        }
+                        if str(stock_delivery_target.get("chat_id") or "").strip()
+                        else None
+                    ),
                 )
                 if not target_platform or not target_chat_id:
                     logger.warning(
@@ -859,6 +878,8 @@ async def run_skill_cron_job(
     user_id: int | str = 0,
     platform: str = "telegram",
     need_push: bool = False,
+    chat_id: str = "",
+    session_id: str = "",
 ):
     """
     通用 Skill 定时任务执行器
@@ -950,12 +971,23 @@ async def run_skill_cron_job(
         # Push Notification Logic
         if need_push and user_id_text not in {"", "0"}:
             if full_response:
+                metadata = (
+                    {
+                        "resource_binding": {
+                            "platform": str(platform or "telegram"),
+                            "chat_id": str(chat_id or "").strip(),
+                        }
+                    }
+                    if str(chat_id or "").strip()
+                    else None
+                )
                 (
                     target_platform,
                     target_chat_id,
                 ) = await _resolve_proactive_delivery_target(
                     user_id_text,
                     platform,
+                    metadata=metadata,
                 )
                 if not target_platform or not target_chat_id:
                     logger.warning(
@@ -978,6 +1010,7 @@ async def run_skill_cron_job(
                         user_id_text,
                         target_platform,
                         target_chat_id,
+                        session_id=str(session_id or "").strip(),
                     )
             else:
                 logger.info(f"[Cron] No output to push for {instruction}")
@@ -1017,6 +1050,8 @@ async def reload_scheduler_jobs():
         instruction = task["instruction"]
         user_id = SINGLE_USER_SCOPE
         platform = task.get("platform", "telegram")
+        chat_id = str(task.get("chat_id") or "").strip()
+        session_id = str(task.get("session_id") or "").strip()
         # SQLite stores boolean as 0/1 usually, ensures compat
         need_push = bool(task.get("need_push", True))
 
@@ -1035,7 +1070,7 @@ async def reload_scheduler_jobs():
                     run_skill_cron_job,
                     trigger,
                     id=f"cron_db_{task_id}",
-                    args=[instruction, user_id, platform, need_push],
+                    args=[instruction, user_id, platform, need_push, chat_id, session_id],
                     replace_existing=True,
                 )
                 count += 1
