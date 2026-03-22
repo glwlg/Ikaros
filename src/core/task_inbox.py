@@ -467,6 +467,18 @@ class TaskInbox:
             task = self._tasks.get(key)
             return task if task is not None else None
 
+    async def delete(self, task_id: str) -> bool:
+        await self._ensure_loaded()
+        key = str(task_id or "").strip()
+        if not key:
+            return False
+        async with self._lock:
+            task = self._tasks.get(key)
+            if task is None:
+                return False
+            await self._delete_task_unlocked(key)
+            return True
+
     async def list_pending(
         self,
         *,

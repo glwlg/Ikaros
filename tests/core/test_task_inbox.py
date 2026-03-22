@@ -356,6 +356,23 @@ async def test_task_inbox_deletes_terminal_heartbeat_tasks(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_task_inbox_delete_removes_task_file(tmp_path):
+    inbox = _build_isolated_inbox(tmp_path)
+
+    task = await inbox.submit(
+        source="user_chat",
+        goal="手动删除的任务",
+        user_id="u-delete",
+    )
+
+    ok = await inbox.delete(task.task_id)
+
+    assert ok is True
+    assert await inbox.get(task.task_id) is None
+    assert inbox._task_path(task.task_id).exists() is False
+
+
+@pytest.mark.asyncio
 async def test_task_inbox_caps_task_events_at_fifty(tmp_path):
     inbox = _build_isolated_inbox(tmp_path)
 
