@@ -20,6 +20,11 @@ from core.config import (
     DISCORD_BOT_TOKEN,
     DINGTALK_CLIENT_ID,
     DINGTALK_CLIENT_SECRET,
+    WEIXIN_ENABLE,
+    WEIXIN_BASE_URL,
+    WEIXIN_LOGIN_TIMEOUT_SEC,
+    WEIXIN_LOGIN_POLL_INTERVAL_SEC,
+    WEIXIN_TEXT_CHUNK_LIMIT,
     LOG_LEVEL,
     WAITING_FOR_FEATURE_INPUT,
     CORE_CHAT_EXECUTION_MODE,
@@ -75,6 +80,7 @@ from core.platform.registry import adapter_manager
 from core.platform.models import MessageType
 from platforms.telegram.adapter import TelegramAdapter
 from platforms.discord.adapter import DiscordAdapter
+from platforms.weixin.adapter import WeixinAdapter
 
 # 日志配置
 logging.basicConfig(
@@ -217,6 +223,20 @@ async def main():
         logger.info("✅ DingTalk Adapter enabled (Stream Mode).")
     else:
         logger.info("ℹ️ DingTalk Adapter skipped (missing credentials).")
+
+    # D. Weixin Adapter
+    weixin_adapter = None
+    if WEIXIN_ENABLE:
+        weixin_adapter = WeixinAdapter(
+            base_url=WEIXIN_BASE_URL,
+            login_timeout_sec=WEIXIN_LOGIN_TIMEOUT_SEC,
+            login_poll_interval_sec=WEIXIN_LOGIN_POLL_INTERVAL_SEC,
+            text_chunk_limit=WEIXIN_TEXT_CHUNK_LIMIT,
+        )
+        adapter_manager.register_adapter(weixin_adapter)
+        logger.info("✅ Weixin Adapter enabled (iLink long-poll mode).")
+    else:
+        logger.info("ℹ️ Weixin Adapter skipped (WEIXIN_ENABLE=false).")
 
     # 3. Register Handlers (Unified)
     # Broadcast common commands
@@ -377,6 +397,19 @@ async def main():
         # Generic Button Callback
         common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|skills_|home_|helpm_|hbm_|taskm_|accu_|model_|usagem_|chatlog_|compact_|del_rss_|del_stock_|action_|large_file_).*$"
         dingtalk_adapter.on_callback_query(common_pattern, button_callback)
+
+    # Register Weixin handlers
+    if weixin_adapter:
+
+        async def weixin_router(ctx):
+            await handle_ai_chat(ctx)
+
+        weixin_adapter.register_message_handler(weixin_router)
+        weixin_adapter.on_callback_query("^skill_", handle_skill_callback)
+        weixin_adapter.on_callback_query("^skills_", handle_skill_callback)
+
+        common_pattern = "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|accm_|dlym_|dlm_|skill_|skills_|home_|helpm_|hbm_|taskm_|accu_|model_|usagem_|chatlog_|compact_|del_rss_|del_stock_|action_|large_file_).*$"
+        weixin_adapter.on_callback_query(common_pattern, button_callback)
 
     # 6. Start Engines
     stop_event = asyncio.Event()
