@@ -127,6 +127,17 @@ async def test_resolve_inline_inputs_from_text_fetches_url_images(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_inline_inputs_from_text_ignores_non_image_web_url():
+    url = "https://github.com/public-apis/public-apis"
+
+    resolution = await message_utils.resolve_inline_inputs_from_text(f"看这个 {url}")
+
+    assert resolution.detected_refs == []
+    assert resolution.errors == []
+    assert resolution.inputs == []
+
+
+@pytest.mark.asyncio
 async def test_process_reply_message_prefers_inline_image_inputs_over_web_content(
     monkeypatch,
 ):
@@ -176,3 +187,35 @@ async def test_process_reply_message_prefers_inline_image_inputs_over_web_conten
     assert len(result.inputs) == 1
     assert result.extra_context == ""
     assert result.inputs[0].source_ref == url
+
+
+@pytest.mark.asyncio
+async def test_process_reply_message_fetches_web_content_for_non_image_url(monkeypatch):
+    url = "https://github.com/public-apis/public-apis"
+
+    async def _fake_fetch_webpage_content(_url: str):
+        assert _url == url
+        return "网页正文"
+
+    monkeypatch.setattr(
+        agent_input_module,
+        "fetch_webpage_content",
+        _fake_fetch_webpage_content,
+    )
+
+    ctx = _DummyContext()
+    ctx.message.reply_to_message = SimpleNamespace(
+        id="reply-2",
+        text=url,
+        caption="",
+        type=MessageType.TEXT,
+        entities=[],
+        caption_entities=[],
+    )
+
+    result = await message_utils.process_reply_message(ctx)
+
+    assert result.inputs == []
+    assert result.detected_refs == []
+    assert result.errors == []
+    assert "网页正文" in result.extra_context

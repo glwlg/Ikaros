@@ -19,6 +19,7 @@ if str(SRC_ROOT) not in sys.path:
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
+from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
 from core.state_store import (
     remove_watchlist_stock,
     get_user_watchlist,
@@ -45,6 +46,14 @@ else:
 
 logger = logging.getLogger(__name__)
 STOCK_MENU_NS = "stkm"
+
+
+def _stock_enabled(ctx: UnifiedContext) -> bool:
+    return is_channel_feature_enabled(
+        platform=str(ctx.message.platform or "").strip().lower(),
+        platform_user_id=str(ctx.message.user.id or "").strip(),
+        feature="stock",
+    )
 
 
 def _format_delivery_target(target: dict[str, str] | None) -> str:
@@ -186,6 +195,8 @@ def _stock_add_help_response() -> dict:
 
 async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> str:
     """执行自选股操作"""
+    if not _stock_enabled(ctx):
+        return {"text": channel_feature_denied_text("stock"), "ui": {}}
     from core.scheduler import trigger_manual_stock_check
 
     user_id = ctx.message.user.id
@@ -242,6 +253,8 @@ def register_handlers(adapter_manager):
     async def cmd_stock(ctx):
         if not await is_user_allowed(ctx.message.user.id):
             return
+        if not _stock_enabled(ctx):
+            return {"text": channel_feature_denied_text("stock"), "ui": {}}
         sub, args = _parse_stock_subcommand(ctx.message.text or "")
         user_id = ctx.message.user.id
 
@@ -467,6 +480,9 @@ async def add_single_stock(ctx: UnifiedContext, user_id: int, stock_name: str) -
 
 async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
     """处理用户点击选择股票的回调"""
+    if not _stock_enabled(ctx):
+        await ctx.reply(channel_feature_denied_text("stock"))
+        return
     data = ctx.callback_data
     if not data:
         return

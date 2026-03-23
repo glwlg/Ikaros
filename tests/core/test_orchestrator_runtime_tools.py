@@ -107,7 +107,7 @@ async def test_manager_can_send_local_file_via_dispatcher(tmp_path, monkeypatch)
     )
 
     assert result["ok"] is True
-    assert result["terminal"] is True
+    assert result["terminal"] is False
     assert ctx.documents
 
 

@@ -1008,3 +1008,112 @@ async def test_ai_service_does_not_short_circuit_on_gh_exec_success(
         and payload.get("summary") == "[]"
         for name, payload in events
     )
+
+
+@pytest.mark.asyncio
+async def test_ai_service_continues_after_send_local_file_success(monkeypatch):
+    service = AiService()
+
+    class FakeModels:
+        def __init__(self):
+            self.calls = 0
+
+        async def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(
+                                content="",
+                                tool_calls=[
+                                    SimpleNamespace(
+                                        id="call-1",
+                                        function=SimpleNamespace(
+                                            name="send_local_file",
+                                            arguments=json.dumps(
+                                                {
+                                                    "path": "/tmp/baby_camera_latest.jpg",
+                                                    "caption": "请查收",
+                                                },
+                                                ensure_ascii=False,
+                                            ),
+                                        ),
+                                    )
+                                ],
+                            )
+                        )
+                    ]
+                )
+
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="宝宝在床上，正在安静睡觉。",
+                            tool_calls=[],
+                        )
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(
+        ai_service_module,
+        "openai_async_client",
+        SimpleNamespace(chat=SimpleNamespace(completions=FakeModels())),
+    )
+
+    async def fake_tool_executor(name, args):
+        assert name == "send_local_file"
+        assert args["path"] == "/tmp/baby_camera_latest.jpg"
+        return {
+            "ok": True,
+            "terminal": False,
+            "summary": "Sent local file baby_camera_latest.jpg",
+            "text": "📎 已发送文件：baby_camera_latest.jpg",
+            "payload": {
+                "text": "📎 已发送文件：baby_camera_latest.jpg",
+                "files": [
+                    {
+                        "path": "/tmp/baby_camera_latest.jpg",
+                        "filename": "baby_camera_latest.jpg",
+                        "kind": "photo",
+                    }
+                ],
+            },
+        }
+
+    events = []
+
+    async def event_callback(event, payload):
+        events.append((event, dict(payload)))
+        if event == "tool_call_finished" and payload.get("terminal"):
+            return {
+                "stop": True,
+                "final_text": str(payload.get("terminal_text") or ""),
+            }
+        return None
+
+    chunks = []
+    async for chunk in service.generate_response_stream(
+        message_history=[{"role": "user", "parts": [{"text": "把图发给我并告诉我宝宝状态"}]}],
+        tools=[
+            {
+                "name": "send_local_file",
+                "description": "",
+                "parameters": {"type": "object"},
+            }
+        ],
+        tool_executor=fake_tool_executor,
+        system_instruction="test",
+        event_callback=event_callback,
+    ):
+        chunks.append(chunk)
+
+    assert chunks == ["宝宝在床上，正在安静睡觉。"]
+    assert any(
+        name == "tool_call_finished"
+        and payload.get("name") == "send_local_file"
+        and payload.get("terminal") is False
+        for name, payload in events
+    )

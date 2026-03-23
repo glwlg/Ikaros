@@ -63,12 +63,30 @@ class TelegramAdapter(BotAdapter):
         return InlineKeyboardMarkup(keyboard)
 
     @staticmethod
-    def _is_timeout_error(exc: Exception) -> bool:
+    def _is_retryable_error(exc: Exception) -> bool:
         text = str(exc or "").lower()
-        if "timed out" in text or "timeout" in text:
+        if any(
+            token in text
+            for token in (
+                "timed out",
+                "timeout",
+                "connecterror",
+                "networkerror",
+                "connection reset",
+                "server disconnected",
+                "temporary failure",
+                "tls",
+                "ssl",
+            )
+        ):
             return True
         name = exc.__class__.__name__.lower()
-        return "timeout" in name
+        if any(token in name for token in ("timeout", "connecterror", "networkerror")):
+            return True
+        cause = getattr(exc, "__cause__", None)
+        if isinstance(cause, Exception) and cause is not exc:
+            return TelegramAdapter._is_retryable_error(cause)
+        return False
 
     async def _send_with_retry(
         self,
@@ -86,12 +104,13 @@ class TelegramAdapter(BotAdapter):
                     return await result
                 return result
             except Exception as e:
-                if attempt >= max_attempts or not self._is_timeout_error(e):
+                if attempt >= max_attempts or not self._is_retryable_error(e):
                     raise
                 delay = 0.5 * attempt
                 logger.warning(
-                    "Telegram %s timeout, retrying (%s/%s) in %.1fs",
+                    "Telegram %s transient error (%s), retrying (%s/%s) in %.1fs",
                     label,
+                    e.__class__.__name__,
                     attempt,
                     max_attempts,
                     delay,

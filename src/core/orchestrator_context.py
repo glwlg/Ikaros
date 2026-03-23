@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict
 
+from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
 from core.task_inbox import task_inbox
 from core.task_manager import task_manager
@@ -102,6 +103,14 @@ class OrchestratorRuntimeContext:
     async def append_session_event(self, note: str) -> None:
         if not self.session_state_enabled:
             return
+        if not self.heartbeat_runtime_user and not self.subagent_runtime_user:
+            channel_runtime_store.append_session_event(
+                note,
+                platform=self.platform_name,
+                platform_user_id=self.user_id,
+            )
+            await heartbeat_store.append_session_event(self.user_id, note)
+            return
         await heartbeat_store.append_session_event(self.user_id, note)
 
     def _task_inbox_source(self) -> str:
@@ -176,7 +185,15 @@ class OrchestratorRuntimeContext:
         if clear_active:
             fields["clear_active"] = True
         if fields:
-            await heartbeat_store.update_session_active_task(self.user_id, **fields)
+            if not self.heartbeat_runtime_user and not self.subagent_runtime_user:
+                channel_runtime_store.update_active_task(
+                    platform=self.platform_name,
+                    platform_user_id=self.user_id,
+                    **fields,
+                )
+                await heartbeat_store.update_session_active_task(self.user_id, **fields)
+            else:
+                await heartbeat_store.update_session_active_task(self.user_id, **fields)
 
     async def update_task_inbox_status(
         self,
@@ -211,28 +228,40 @@ class OrchestratorRuntimeContext:
     ) -> None:
         if not self.session_state_enabled:
             return
-        await heartbeat_store.set_session_active_task(
-            self.user_id,
-            {
-                "id": self.task_id,
-                "session_task_id": self.task_inbox_id or self.task_id,
-                "task_inbox_id": self.task_inbox_id,
-                "goal": task_goal,
-                "status": "running",
-                "source": self._task_inbox_source(),
-                "result_summary": "",
-                "needs_confirmation": False,
-                "confirmation_deadline": "",
-                "stage_index": 0,
-                "stage_total": 0,
-                "stage_id": "",
-                "stage_title": "",
-                "attempt_index": 0,
-                "last_blocking_reason": "",
-                "resume_instruction_preview": "",
-                "adjustments_count": 0,
-            },
-        )
+        payload = {
+            "id": self.task_id,
+            "session_task_id": self.task_inbox_id or self.task_id,
+            "task_inbox_id": self.task_inbox_id,
+            "goal": task_goal,
+            "status": "running",
+            "source": self._task_inbox_source(),
+            "result_summary": "",
+            "needs_confirmation": False,
+            "confirmation_deadline": "",
+            "stage_index": 0,
+            "stage_total": 0,
+            "stage_id": "",
+            "stage_title": "",
+            "attempt_index": 0,
+            "last_blocking_reason": "",
+            "resume_instruction_preview": "",
+            "adjustments_count": 0,
+        }
+        if not self.heartbeat_runtime_user and not self.subagent_runtime_user:
+            channel_runtime_store.set_active_task(
+                payload,
+                platform=self.platform_name,
+                platform_user_id=self.user_id,
+            )
+            await heartbeat_store.set_session_active_task(
+                self.user_id,
+                payload,
+            )
+        else:
+            await heartbeat_store.set_session_active_task(
+                self.user_id,
+                payload,
+            )
         task_manager.set_heartbeat_path(
             self.user_id, str(heartbeat_store.heartbeat_path(self.user_id))
         )

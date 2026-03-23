@@ -44,6 +44,7 @@ WEIXIN_CDN_BASE_URL = os.getenv(
 WEIXIN_LOGIN_TIMEOUT_SEC = _env_int("WEIXIN_LOGIN_TIMEOUT_SEC", 300)
 WEIXIN_LOGIN_POLL_INTERVAL_SEC = _env_int("WEIXIN_LOGIN_POLL_INTERVAL_SEC", 3)
 WEIXIN_TEXT_CHUNK_LIMIT = _env_int("WEIXIN_TEXT_CHUNK_LIMIT", 2000)
+WEIXIN_DEBUG_UPDATES = os.getenv("WEIXIN_DEBUG_UPDATES", "false").lower() == "true"
 
 # 日志配置
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -125,7 +126,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gpt-4o-mini")
 # 用户访问控制
 # ============================================================================
 
-ADMIN_USER_IDS_STR = os.getenv("ADMIN_USER_IDS") or os.getenv("ALLOWED_USER_IDS", "")
+ADMIN_USER_IDS_STR = os.getenv("ADMIN_USER_IDS", "")
 ADMIN_USER_IDS = set()
 if ADMIN_USER_IDS_STR.strip():
     ADMIN_USER_IDS = {
@@ -137,10 +138,20 @@ async def is_user_allowed(user_id: int | str) -> bool:
     """
     检查用户是否有权限使用 Bot。
 
-    当前运行模式为私人 Bot：仅允许 `ADMIN_USER_IDS` 中配置的用户。
+    管理员仅来自 `ADMIN_USER_IDS`；
+    普通可用用户来自持久化 allow-list。
     """
     uid_str = str(user_id).strip()
-    return bool(uid_str) and uid_str in ADMIN_USER_IDS
+    if not uid_str:
+        return False
+    if uid_str in ADMIN_USER_IDS:
+        return True
+    try:
+        from core.state_store import check_user_allowed_in_db
+
+        return await check_user_allowed_in_db(uid_str)
+    except Exception:
+        return False
 
 
 def is_user_admin(user_id: int | str) -> bool:

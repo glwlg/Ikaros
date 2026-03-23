@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qsl, urlparse
 
 from core.file_artifacts import extract_file_rows_from_text
 from core.platform.models import MessageType, UnifiedContext
@@ -20,6 +21,33 @@ from services.web_summary_service import extract_urls, fetch_webpage_content
 logger = logging.getLogger(__name__)
 
 MAX_INLINE_IMAGE_INPUTS = 5
+_IMAGE_URL_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".tif",
+    ".tiff",
+    ".ico",
+    ".heic",
+    ".heif",
+    ".avif",
+}
+_IMAGE_URL_HINT_KEYS = {
+    "ext",
+    "extension",
+    "format",
+    "fm",
+    "mime",
+    "content_type",
+    "content-type",
+}
+_IMAGE_URL_HINT_VALUES = {
+    ext.lstrip(".") for ext in _IMAGE_URL_EXTENSIONS
+} | {f"image/{ext.lstrip('.')}" for ext in _IMAGE_URL_EXTENSIONS}
 
 
 @dataclass
@@ -199,6 +227,31 @@ def _build_inline_input(
     )
 
 
+def _looks_like_image_url(url: str) -> bool:
+    safe_url = str(url or "").strip()
+    if not safe_url:
+        return False
+
+    try:
+        parsed = urlparse(safe_url)
+    except Exception:
+        return False
+
+    path = str(parsed.path or "").lower()
+    if any(path.endswith(ext) for ext in _IMAGE_URL_EXTENSIONS):
+        return True
+
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        safe_key = str(key or "").strip().lower()
+        if safe_key not in _IMAGE_URL_HINT_KEYS:
+            continue
+        normalized = str(value or "").strip().lower().lstrip(".")
+        if normalized in _IMAGE_URL_HINT_VALUES:
+            return True
+
+    return False
+
+
 def _sorted_inline_candidates(text: str, *, limit_hint: int) -> list[_InlineInputCandidate]:
     raw_text = str(text or "")
     if not raw_text:
@@ -207,6 +260,8 @@ def _sorted_inline_candidates(text: str, *, limit_hint: int) -> list[_InlineInpu
     candidates: list[_InlineInputCandidate] = []
     search_start = 0
     for url in extract_urls(raw_text):
+        if not _looks_like_image_url(url):
+            continue
         start = raw_text.find(url, search_start)
         if start >= 0:
             search_start = start + len(url)
@@ -296,7 +351,7 @@ async def resolve_inline_inputs_from_urls(
 
     for url in list(urls or []):
         safe_url = str(url or "").strip()
-        if not safe_url or safe_url in seen_refs:
+        if not safe_url or safe_url in seen_refs or not _looks_like_image_url(safe_url):
             continue
         seen_refs.add(safe_url)
         resolution.detected_refs.append(safe_url)

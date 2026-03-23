@@ -1,6 +1,7 @@
 import logging
 from core.platform.models import UnifiedContext, CONVERSATION_END
 from core.config import is_user_allowed
+from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,15 @@ def get_effective_user_id(context: UnifiedContext) -> str:
     return ""
 
 
+def get_effective_platform(context: UnifiedContext) -> str:
+    message = getattr(context, "message", None)
+    return str(getattr(message, "platform", "") or "").strip().lower()
+
+
+def get_platform_identity(context: UnifiedContext) -> tuple[str, str]:
+    return get_effective_platform(context), get_effective_user_id(context)
+
+
 async def check_permission_unified(context: UnifiedContext) -> bool:
     """Unified permission check"""
     user_id = get_effective_user_id(context)
@@ -28,6 +38,20 @@ async def check_permission_unified(context: UnifiedContext) -> bool:
         logger.info("Ignoring unauthorized message from user_id=%s", user_id)
         return False
     return True
+
+
+async def require_feature_access(context: UnifiedContext, feature: str) -> bool:
+    platform, user_id = get_platform_identity(context)
+    if not platform or not user_id:
+        return False
+    if is_channel_feature_enabled(
+        platform=platform,
+        platform_user_id=user_id,
+        feature=feature,
+    ):
+        return True
+    await context.reply(channel_feature_denied_text(feature))
+    return False
 
 
 async def edit_callback_message(

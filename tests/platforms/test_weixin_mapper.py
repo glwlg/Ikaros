@@ -115,3 +115,29 @@ def test_map_weixin_message_maps_voice_metadata_from_encode_type():
     assert message.file_id == "enc-voice-1"
     assert message.duration == 2600
     assert message.mime_type == "audio/ogg"
+
+
+def test_map_weixin_message_extracts_link_card_as_text():
+    message = map_weixin_message(
+        {
+            "from_user_id": "wx-user-4",
+            "from_user_name": "Alice",
+            "client_id": "msg-5",
+            "create_time_ms": 1710000000000,
+            "item_list": [
+                {
+                    "type": 6,
+                    "link_item": {
+                        "title": "GitHub",
+                        "description": "A collective list of free APIs",
+                        "url": "https://github.com/public-apis/public-apis",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert message.type == MessageType.TEXT
+    assert "GitHub" in str(message.text)
+    assert "free APIs" in str(message.text)
+    assert "https://github.com/public-apis/public-apis" in str(message.text)

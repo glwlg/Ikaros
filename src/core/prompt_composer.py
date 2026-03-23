@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from core.channel_access import is_channel_feature_enabled
+from core.channel_user_store import channel_user_store
 from core.config import DATA_DIR
+from core.config import is_user_admin
 from core.prompts import (
     DEFAULT_SYSTEM_PROMPT,
     MANAGER_CORE_PROMPT,
@@ -57,7 +60,8 @@ class PromptComposer:
     1) default system prompt
     2) manager AGENTS (manager only)
     3) SOUL
-    4) tool inventory
+    4) USER
+    5) tool inventory
     """
 
     def __init__(self) -> None:
@@ -98,6 +102,34 @@ class PromptComposer:
             return ""
 
     @staticmethod
+    def _runtime_platform_user(runtime_user_id: str, platform: str) -> tuple[str, str]:
+        safe_platform = str(platform or "").strip().lower()
+        safe_user_id = str(runtime_user_id or "").strip()
+        if not safe_platform or not safe_user_id:
+            return "", ""
+        if safe_platform == "subagent_kernel" or safe_user_id.startswith("subagent::"):
+            return "", ""
+        return safe_platform, safe_user_id
+
+    def _load_user_identity_doc(
+        self,
+        *,
+        runtime_user_id: str,
+        platform: str,
+    ) -> str:
+        resolved_platform, platform_user_id = self._runtime_platform_user(
+            runtime_user_id,
+            platform,
+        )
+        if not resolved_platform or not platform_user_id:
+            return ""
+        return channel_user_store.load_user_md(
+            platform=resolved_platform,
+            platform_user_id=platform_user_id,
+            is_admin=is_user_admin(platform_user_id),
+        )
+
+    @staticmethod
     def _build_manager_session_context_contract() -> str:
         return (
             "【当前会话上下文约束】\n"
@@ -131,6 +163,12 @@ class PromptComposer:
             parts.append(self._build_manager_session_context_contract())
 
         parts.append("【SOUL】\n" + soul_payload.content.strip())
+        user_identity_doc = self._load_user_identity_doc(
+            runtime_user_id=runtime_user_id,
+            platform=platform,
+        )
+        if user_identity_doc:
+            parts.append("【USER】\n" + user_identity_doc.strip())
 
         # 如果是 manager 模式，添加 Manager 核心 Prompt
         if str(mode or "").strip().lower() == "manager":
@@ -149,9 +187,25 @@ class PromptComposer:
         elif str(mode or "").strip().lower() == "subagent":
             parts.append("\n" + SUBAGENT_CORE_PROMPT)
         elif str(mode or "").strip().lower() == "media_image":
-            parts.append(
-                "\n【当前任务要求】\n这是一次图片分析请求。你需要保持你的角色语气，结合图片与用户指令完成任务。\n如果用户明确要求记账/入账，请优先调用 `quick_accounting` 完成真实入账；其他场景优先直接给出分析结论，避免无关工具调用。"
+            resolved_platform, platform_user_id = self._runtime_platform_user(
+                runtime_user_id,
+                platform,
             )
+            accounting_enabled = bool(
+                resolved_platform
+                and platform_user_id
+                and is_channel_feature_enabled(
+                    platform=resolved_platform,
+                    platform_user_id=platform_user_id,
+                    feature="accounting",
+                )
+            )
+            text = (
+                "\n【当前任务要求】\n这是一次图片分析请求。你需要保持你的角色语气，结合图片与用户指令完成任务。"
+            )
+            if accounting_enabled:
+                text += "\n如果用户明确要求记账/入账，请优先调用 `quick_accounting` 完成真实入账；其他场景优先直接给出分析结论，避免无关工具调用。"
+            parts.append(text)
 
         # 注入 Skill 目录与 load_skill 使用引导
         skill_catalog = self._build_skill_catalog(

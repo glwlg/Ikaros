@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List
 
+from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
 from core.task_inbox import TaskEnvelope, task_inbox
 
@@ -184,7 +185,11 @@ class SessionTaskStore:
         safe_user_id = _safe_text(user_id, limit=80)
         if not safe_user_id:
             return None
-        active_task = await heartbeat_store.get_session_active_task(safe_user_id)
+        active_task = channel_runtime_store.get_active_task(
+            platform_user_id=safe_user_id,
+        )
+        if not isinstance(active_task, dict):
+            active_task = await heartbeat_store.get_session_active_task(safe_user_id)
         if not isinstance(active_task, dict):
             return None
         task_inbox_id = _safe_text(

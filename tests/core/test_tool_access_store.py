@@ -133,8 +133,8 @@ def test_regular_user_runtime_uses_core_manager_policy(tmp_path):
         tool_name="ext_stock_watch",
         kind="tool",
     )
-    assert denied_finance_skill is True
-    assert finance_skill_detail["reason"] == "allowed"
+    assert denied_finance_skill is False
+    assert finance_skill_detail["reason"] == "channel_feature_disabled:stock"
 
 
 def test_subagent_runtime_uses_manager_policy_without_management_loops(tmp_path):

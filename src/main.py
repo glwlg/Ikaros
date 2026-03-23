@@ -75,6 +75,7 @@ from handlers.skill_handlers import (
 )
 from handlers.voice_handler import handle_voice_message
 from handlers.document_handler import handle_document
+from handlers.weixin_bind_handlers import weixin_bind_command
 
 # Multi-Channel Imports
 from core.platform.registry import adapter_manager
@@ -402,6 +403,7 @@ async def main():
 
     # Register Weixin handlers
     if weixin_adapter:
+        weixin_adapter.on_command("wxbind", weixin_bind_command, description="微信多绑定")
 
         async def weixin_router(ctx):
             msg_type = ctx.message.type

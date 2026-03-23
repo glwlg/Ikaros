@@ -1,4 +1,5 @@
 import logging
+from core.channel_user_store import DEFAULT_ACCESS
 from core.platform.models import UnifiedContext
 from core.skill_menu import make_callback, parse_callback
 from core.session_task_store import session_task_store
@@ -7,7 +8,9 @@ from .base_handlers import (
     check_permission_unified,
     CONVERSATION_END,
     edit_callback_message,
+    get_effective_platform,
     get_effective_user_id,
+    require_feature_access,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,30 +27,56 @@ WELCOME_MESSAGE = (
 )
 
 
-def get_main_menu_ui() -> dict:
-    return {
-        "actions": [
-            [
-                {"text": "ℹ️ 使用帮助", "callback_data": make_callback(HOME_MENU_NS, "help")},
-                {"text": "🧩 Skills", "callback_data": make_callback(HOME_MENU_NS, "skills")},
-            ],
-            [
-                {"text": "🤖 模型", "callback_data": make_callback(HOME_MENU_NS, "model")},
-                {"text": "📊 用量", "callback_data": make_callback(HOME_MENU_NS, "usage")},
-            ],
-            [
-                {"text": "💓 Heartbeat", "callback_data": make_callback(HOME_MENU_NS, "heartbeat")},
-                {"text": "🧾 任务", "callback_data": make_callback(HOME_MENU_NS, "task")},
-            ],
-            [
-                {"text": "📚 记账", "callback_data": make_callback(HOME_MENU_NS, "accounting")},
-                {"text": "🔎 检索", "callback_data": make_callback(HOME_MENU_NS, "chatlog")},
-            ],
-            [
-                {"text": "🗜️ 压缩", "callback_data": make_callback(HOME_MENU_NS, "compact")},
-            ],
+def _access_flags(ctx: UnifiedContext) -> dict[str, bool]:
+    from core.channel_access import is_channel_feature_enabled
+
+    platform = get_effective_platform(ctx)
+    user_id = get_effective_user_id(ctx)
+    flags = dict(DEFAULT_ACCESS)
+    if not platform or not user_id:
+        return flags
+    for feature in flags:
+        flags[feature] = is_channel_feature_enabled(
+            platform=platform,
+            platform_user_id=user_id,
+            feature=feature,
+        )
+    return flags
+
+
+def get_main_menu_ui(access: dict[str, bool] | None = None) -> dict:
+    flags = dict(DEFAULT_ACCESS)
+    flags.update(dict(access or {}))
+    actions = [
+        [
+            {"text": "ℹ️ 使用帮助", "callback_data": make_callback(HOME_MENU_NS, "help")},
+            {"text": "🧩 Skills", "callback_data": make_callback(HOME_MENU_NS, "skills")},
+        ],
+        [
+            {"text": "🤖 模型", "callback_data": make_callback(HOME_MENU_NS, "model")},
+            {"text": "📊 用量", "callback_data": make_callback(HOME_MENU_NS, "usage")},
+        ],
+    ]
+    third_row = [{"text": "🧾 任务", "callback_data": make_callback(HOME_MENU_NS, "task")}]
+    if flags.get("heartbeat"):
+        third_row.insert(
+            0,
+            {"text": "💓 Heartbeat", "callback_data": make_callback(HOME_MENU_NS, "heartbeat")},
+        )
+    actions.append(third_row)
+    fourth_row = [{"text": "🔎 检索", "callback_data": make_callback(HOME_MENU_NS, "chatlog")}]
+    if flags.get("accounting"):
+        fourth_row.insert(
+            0,
+            {"text": "📚 记账", "callback_data": make_callback(HOME_MENU_NS, "accounting")},
+        )
+    actions.append(fourth_row)
+    actions.append(
+        [
+            {"text": "🗜️ 压缩", "callback_data": make_callback(HOME_MENU_NS, "compact")},
         ]
-    }
+    )
+    return {"actions": actions}
 
 
 def _help_categories_ui() -> dict:
@@ -68,8 +97,14 @@ def _help_categories_ui() -> dict:
     }
 
 
-def _build_help_payload(section: str = "home") -> tuple[str, dict]:
+def _build_help_payload(
+    section: str = "home",
+    *,
+    access: dict[str, bool] | None = None,
+) -> tuple[str, dict]:
     normalized = str(section or "home").strip().lower()
+    flags = dict(DEFAULT_ACCESS)
+    flags.update(dict(access or {}))
     if normalized == "chat":
         return (
             "🚀 **对话与多模态**\n\n"
@@ -87,12 +122,22 @@ def _build_help_payload(section: str = "home") -> tuple[str, dict]:
             },
         )
     if normalized == "skills":
-        return (
-            "🧩 **技能与工具**\n\n"
-            "• `/skills` 浏览已安装技能。\n"
-            "• `/stock` `/rss` `/deploy` `/download` 都支持菜单。\n"
-            "• `/daily` 可查天气、时间、汇率、币价。\n"
+        lines = [
+            "🧩 **技能与工具**\n\n",
+            "• `/skills` 浏览已安装技能。\n",
+            "• `/daily` 可查天气、时间、汇率、币价。\n",
             "• `/account` 管理账号凭据。",
+        ]
+        if flags.get("stock"):
+            lines.insert(2, "• `/stock` 支持查看和管理自选股。\n")
+        if flags.get("rss"):
+            lines.insert(2, "• `/rss` 支持订阅和刷新 RSS。\n")
+        if flags.get("scheduler"):
+            lines.insert(2, "• `/schedule` 支持查看和删除定时任务。\n")
+        if flags.get("accounting"):
+            lines.insert(2, "• `/acc` 支持快捷记账。\n")
+        return (
+            "".join(lines),
             {
                 "actions": [
                     [
@@ -122,18 +167,24 @@ def _build_help_payload(section: str = "home") -> tuple[str, dict]:
             },
         )
     if normalized == "automation":
+        lines = ["⏰ **自动化与任务**\n\n"]
+        if flags.get("heartbeat"):
+            lines.append("• `/heartbeat` 管理巡检节奏和 checklist。\n")
+        if flags.get("scheduler"):
+            lines.append("• `/schedule` 查看和删除定时任务。\n")
+        lines.append("• `/task` 查看最近任务和未完成任务。\n")
+        lines.append("• `/stop` 可中断当前任务。")
+        action_row = [{"text": "任务", "callback_data": make_callback(HOME_MENU_NS, "task")}]
+        if flags.get("heartbeat"):
+            action_row.insert(
+                0,
+                {"text": "Heartbeat", "callback_data": make_callback(HOME_MENU_NS, "heartbeat")},
+            )
         return (
-            "⏰ **自动化与任务**\n\n"
-            "• `/remind 10m 喝水` 设置一次性提醒。\n"
-            "• `/heartbeat` 管理巡检节奏和 checklist。\n"
-            "• `/task` 查看最近任务和未完成任务。\n"
-            "• `/stop` 可中断当前任务。",
+            "".join(lines),
             {
                 "actions": [
-                    [
-                        {"text": "Heartbeat", "callback_data": make_callback(HOME_MENU_NS, "heartbeat")},
-                        {"text": "任务", "callback_data": make_callback(HOME_MENU_NS, "task")},
-                    ],
+                    action_row,
                     [
                         {"text": "返回帮助", "callback_data": make_callback(HELP_MENU_NS, "home")},
                     ],
@@ -152,7 +203,7 @@ async def start(ctx: UnifiedContext) -> None:
     if not await check_permission_unified(ctx):
         return
 
-    await ctx.reply(WELCOME_MESSAGE, ui=get_main_menu_ui())
+    await ctx.reply(WELCOME_MESSAGE, ui=get_main_menu_ui(_access_flags(ctx)))
 
 
 async def handle_new_command(ctx: UnifiedContext) -> None:
@@ -186,6 +237,7 @@ async def stop_command(ctx: UnifiedContext) -> None:
 
     user_id = ctx.message.user.id
 
+    from core.channel_runtime_store import channel_runtime_store
     from core.task_manager import task_manager
     from core.heartbeat_store import heartbeat_store
     from core.subagent_supervisor import subagent_supervisor
@@ -200,8 +252,14 @@ async def stop_command(ctx: UnifiedContext) -> None:
     )
     session_snapshot = await session_task_store.get_active(str(user_id))
     if not active_task_id:
+        channel_active = channel_runtime_store.get_active_task(
+            platform=str(ctx.message.platform or "").strip().lower(),
+            platform_user_id=str(user_id),
+        )
+        if channel_active:
+            active_task_id = str(channel_active.get("id") or "")
         hb_active = await heartbeat_store.get_session_active_task(str(user_id))
-        if hb_active:
+        if hb_active and not active_task_id:
             active_task_id = str(hb_active.get("id") or "")
             heartbeat_path = str(heartbeat_store.heartbeat_path(str(user_id)))
     if session_snapshot is None and active_task_id:
@@ -221,6 +279,15 @@ async def stop_command(ctx: UnifiedContext) -> None:
     subagent_cancelled_total = int(subagent_cancel.get("cancelled") or 0)
 
     if active_task_id:
+        channel_runtime_store.update_active_task(
+            platform=str(ctx.message.platform or "").strip().lower(),
+            platform_user_id=str(user_id),
+            status="cancelled",
+            needs_confirmation=False,
+            confirmation_deadline="",
+            clear_active=True,
+            result_summary="Cancelled by /stop command.",
+        )
         await heartbeat_store.update_session_active_task(
             str(user_id),
             status="cancelled",
@@ -272,7 +339,7 @@ async def help_command(ctx: UnifiedContext) -> None:
     if not await check_permission_unified(ctx):
         return
 
-    payload, ui = _build_help_payload("home")
+    payload, ui = _build_help_payload("home", access=_access_flags(ctx))
     await ctx.reply(payload, ui=ui)
 
 
@@ -292,17 +359,21 @@ async def _dispatch_home_callback_data(ctx: UnifiedContext, data: str) -> int:
     if not action:
         action, parts = parse_callback(data, HELP_MENU_NS)
         if action:
-            payload, ui = _build_help_payload(action)
+            payload, ui = _build_help_payload(action, access=_access_flags(ctx))
             await edit_callback_message(ctx, payload, ui=ui)
             return CONVERSATION_END
         return CONVERSATION_END
 
     try:
         if action == "main":
-            await edit_callback_message(ctx, WELCOME_MESSAGE, ui=get_main_menu_ui())
+            await edit_callback_message(
+                ctx,
+                WELCOME_MESSAGE,
+                ui=get_main_menu_ui(_access_flags(ctx)),
+            )
             return CONVERSATION_END
         if action == "help":
-            payload, ui = _build_help_payload("home")
+            payload, ui = _build_help_payload("home", access=_access_flags(ctx))
             await edit_callback_message(ctx, payload, ui=ui)
             return CONVERSATION_END
         if action == "skills":
@@ -324,6 +395,8 @@ async def _dispatch_home_callback_data(ctx: UnifiedContext, data: str) -> int:
             await edit_callback_message(ctx, payload, ui=ui)
             return CONVERSATION_END
         if action == "heartbeat":
+            if not await require_feature_access(ctx, "heartbeat"):
+                return CONVERSATION_END
             from handlers.heartbeat_handlers import _build_heartbeat_payload
 
             payload, ui = await _build_heartbeat_payload(get_effective_user_id(ctx))
@@ -336,6 +409,8 @@ async def _dispatch_home_callback_data(ctx: UnifiedContext, data: str) -> int:
             await edit_callback_message(ctx, payload, ui=ui)
             return CONVERSATION_END
         if action == "accounting":
+            if not await require_feature_access(ctx, "accounting"):
+                return CONVERSATION_END
             from handlers.accounting_handlers import _build_accounting_info_payload
 
             payload, ui = await _build_accounting_info_payload(ctx)
@@ -401,11 +476,17 @@ async def button_callback(ctx: UnifiedContext) -> int:
 
     try:
         if data in {"task_continue", "task_stop"}:
+            from core.channel_runtime_store import channel_runtime_store
             from core.heartbeat_store import heartbeat_store
             from manager.relay.closure_service import manager_closure_service
 
             hb_user_id = str(ctx.callback_user_id or ctx.message.user.id)
-            active_task = await heartbeat_store.get_session_active_task(hb_user_id)
+            active_task = channel_runtime_store.get_active_task(
+                platform=str(ctx.message.platform or "").strip().lower(),
+                platform_user_id=hb_user_id,
+            )
+            if not active_task:
+                active_task = await heartbeat_store.get_session_active_task(hb_user_id)
             if not active_task or active_task.get("status") != "waiting_user":
                 await ctx.reply("ℹ️ 当前没有等待确认的任务。")
                 return CONVERSATION_END
@@ -430,6 +511,15 @@ async def button_callback(ctx: UnifiedContext) -> int:
                         )
                     )
             else:
+                channel_runtime_store.update_active_task(
+                    platform=str(ctx.message.platform or "").strip().lower(),
+                    platform_user_id=hb_user_id,
+                    status="cancelled",
+                    needs_confirmation=False,
+                    confirmation_deadline="",
+                    clear_active=True,
+                    result_summary="Cancelled during confirmation stage.",
+                )
                 await heartbeat_store.update_session_active_task(
                     hb_user_id,
                     status="cancelled",

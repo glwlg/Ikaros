@@ -46,6 +46,71 @@ def test_prompt_composer_includes_manager_agents_before_soul(monkeypatch):
     assert text.index("【AGENTS】") < text.index("【SOUL】")
 
 
+def test_prompt_composer_includes_user_identity_doc(monkeypatch):
+    monkeypatch.setattr(
+        prompt_composer,
+        "_load_manager_agents_doc",
+        lambda: "",
+    )
+    monkeypatch.setattr(
+        "core.prompt_composer.soul_store.resolve_for_runtime_user",
+        lambda _user_id: SoulPayload(
+            agent_kind="core-manager",
+            agent_id="core-manager",
+            path="/tmp/SOUL.MD",
+            content="# Core Manager SOUL\n- tone: warm",
+            updated_at="2026-03-13T00:00:00+08:00",
+            latest_version_id="",
+        ),
+    )
+    monkeypatch.setattr(
+        "core.prompt_composer.channel_user_store.load_user_md",
+        lambda **_kwargs: "# USER\n- 称呼偏好: 老板",
+    )
+    monkeypatch.setattr(prompt_composer, "_build_skill_catalog", lambda **_kwargs: "")
+
+    text = prompt_composer.compose_base(
+        runtime_user_id="wx-user-1",
+        platform="weixin",
+    )
+
+    assert "【USER】" in text
+    assert "称呼偏好: 老板" in text
+
+
+def test_prompt_composer_media_image_hides_accounting_hint_when_disabled(monkeypatch):
+    monkeypatch.setattr(prompt_composer, "_load_manager_agents_doc", lambda: "")
+    monkeypatch.setattr(
+        "core.prompt_composer.soul_store.resolve_for_runtime_user",
+        lambda _user_id: SoulPayload(
+            agent_kind="core-manager",
+            agent_id="core-manager",
+            path="/tmp/SOUL.MD",
+            content="# Core Manager SOUL\n- tone: warm",
+            updated_at="2026-03-13T00:00:00+08:00",
+            latest_version_id="",
+        ),
+    )
+    monkeypatch.setattr(
+        "core.prompt_composer.channel_user_store.load_user_md",
+        lambda **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        "core.prompt_composer.is_channel_feature_enabled",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(prompt_composer, "_build_skill_catalog", lambda **_kwargs: "")
+
+    text = prompt_composer.compose_base(
+        runtime_user_id="wx-user-1",
+        platform="weixin",
+        mode="media_image",
+    )
+
+    assert "这是一次图片分析请求" in text
+    assert "quick_accounting" not in text
+
+
 def test_prompt_composer_does_not_inject_manager_agents_for_subagent(monkeypatch):
     monkeypatch.setattr(
         prompt_composer,

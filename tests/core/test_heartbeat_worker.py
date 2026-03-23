@@ -6,6 +6,8 @@ import core.agent_input as agent_input_module
 import core.heartbeat_worker as heartbeat_worker_module
 from core.heartbeat_store import heartbeat_store
 from core.heartbeat_worker import HeartbeatWorker
+from core.local_file_delivery import send_local_file
+from core.runtime_callbacks import get_runtime_callback
 
 
 @pytest.mark.asyncio
@@ -105,6 +107,233 @@ async def test_heartbeat_worker_manual_run_pushes_non_ok(monkeypatch, tmp_path):
     assert "紧急邮件" in result
     assert sent and sent[0][0] == "99"
     assert "紧急邮件" in sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_worker_delivers_tool_files_from_terminal_payload(
+    monkeypatch, tmp_path
+):
+    runtime_root = (tmp_path / "runtime_tasks").resolve()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(heartbeat_store, "root", runtime_root)
+    heartbeat_store._locks.clear()
+
+    user_id = "worker_u_file"
+    image_path = (tmp_path / "baby_camera_latest.jpg").resolve()
+    image_path.write_bytes(b"fake-image")
+
+    await heartbeat_store.set_heartbeat_spec(
+        user_id,
+        every="30m",
+        active_start="00:00",
+        active_end="23:59",
+        paused=False,
+    )
+    await heartbeat_store.set_delivery_target(user_id, "telegram", "257675041")
+
+    async def fake_handle_message(ctx, message_history):
+        _ = message_history
+        callback = get_runtime_callback(ctx, "manager_progress_callback")
+        if callable(callback):
+            await callback(
+                {
+                    "event": "tool_call_finished",
+                    "name": "send_local_file",
+                    "ok": True,
+                    "summary": "Sent local file baby_camera_latest.jpg",
+                    "terminal_payload": {
+                        "text": "📎 已发送文件：baby_camera_latest.jpg",
+                        "files": [
+                            {
+                                "path": str(image_path),
+                                "filename": "baby_camera_latest.jpg",
+                                "kind": "photo",
+                            }
+                        ],
+                    },
+                }
+            )
+        yield "📎 已发送文件：baby_camera_latest.jpg"
+
+    monkeypatch.setattr(
+        heartbeat_worker_module,
+        "agent_orchestrator",
+        type("FakeOrchestrator", (), {"handle_message": fake_handle_message})(),
+    )
+
+    sent_messages = []
+    sent_photos = []
+
+    class _FakeAdapter:
+        async def send_message(self, chat_id, text, **kwargs):
+            sent_messages.append((chat_id, text, kwargs))
+            return SimpleNamespace(id="sent")
+
+        async def send_photo(self, chat_id, photo, caption=None, **kwargs):
+            sent_photos.append((chat_id, photo, caption, kwargs))
+            return SimpleNamespace(id="photo")
+
+    monkeypatch.setattr(
+        heartbeat_worker_module.adapter_manager,
+        "get_adapter",
+        lambda _platform: _FakeAdapter(),
+    )
+
+    worker = HeartbeatWorker()
+    worker.enabled = True
+    worker.suppress_ok = True
+
+    result = await worker.run_user_now(user_id)
+
+    assert "baby_camera_latest.jpg" in result
+    assert sent_messages
+    assert sent_messages[0][0] == "257675041"
+    assert sent_photos
+    assert sent_photos[0][0] == "257675041"
+    assert sent_photos[0][1] == str(image_path)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_worker_delivers_buffered_heartbeat_files(
+    monkeypatch, tmp_path
+):
+    runtime_root = (tmp_path / "runtime_tasks").resolve()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(heartbeat_store, "root", runtime_root)
+    heartbeat_store._locks.clear()
+
+    user_id = "worker_u_file_buffer"
+    image_path = (tmp_path / "baby_camera_latest.jpg").resolve()
+    image_path.write_bytes(b"fake-image")
+
+    await heartbeat_store.set_heartbeat_spec(
+        user_id,
+        every="30m",
+        active_start="00:00",
+        active_end="23:59",
+        paused=False,
+    )
+    await heartbeat_store.set_delivery_target(user_id, "telegram", "257675041")
+
+    async def fake_handle_message(ctx, message_history):
+        _ = message_history
+        await send_local_file(
+            ctx,
+            path=str(image_path),
+            filename="baby_camera_latest.jpg",
+            caption="宝宝监控最新图片",
+            kind="photo",
+            task_workspace_root=str(tmp_path),
+        )
+        yield "宝宝在床上，正在安静睡觉。"
+
+    monkeypatch.setattr(
+        heartbeat_worker_module,
+        "agent_orchestrator",
+        type("FakeOrchestrator", (), {"handle_message": fake_handle_message})(),
+    )
+
+    sent_messages = []
+    sent_photos = []
+
+    class _FakeAdapter:
+        async def send_message(self, chat_id, text, **kwargs):
+            sent_messages.append((chat_id, text, kwargs))
+            return SimpleNamespace(id="sent")
+
+        async def send_photo(self, chat_id, photo, caption=None, **kwargs):
+            sent_photos.append((chat_id, photo, caption, kwargs))
+            return SimpleNamespace(id="photo")
+
+    monkeypatch.setattr(
+        heartbeat_worker_module.adapter_manager,
+        "get_adapter",
+        lambda _platform: _FakeAdapter(),
+    )
+
+    worker = HeartbeatWorker()
+    worker.enabled = True
+    worker.suppress_ok = True
+
+    result = await worker.run_user_now(user_id)
+
+    assert "宝宝在床上" in result
+    assert sent_messages
+    assert sent_messages[0][0] == "257675041"
+    assert sent_photos
+    assert sent_photos[0][0] == "257675041"
+    assert sent_photos[0][1] == str(image_path)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_worker_manual_run_still_delivers_files_when_push_suppressed(
+    monkeypatch, tmp_path
+):
+    runtime_root = (tmp_path / "runtime_tasks").resolve()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(heartbeat_store, "root", runtime_root)
+    heartbeat_store._locks.clear()
+
+    user_id = "worker_u_file_manual"
+    image_path = (tmp_path / "baby_camera_latest.jpg").resolve()
+    image_path.write_bytes(b"fake-image")
+
+    await heartbeat_store.set_heartbeat_spec(
+        user_id,
+        every="30m",
+        active_start="00:00",
+        active_end="23:59",
+        paused=False,
+    )
+    await heartbeat_store.set_delivery_target(user_id, "telegram", "257675041")
+
+    async def fake_handle_message(ctx, message_history):
+        _ = message_history
+        await send_local_file(
+            ctx,
+            path=str(image_path),
+            filename="baby_camera_latest.jpg",
+            caption="宝宝监控最新图片",
+            kind="photo",
+            task_workspace_root=str(tmp_path),
+        )
+        yield "宝宝在床上，正在安静睡觉。"
+
+    monkeypatch.setattr(
+        heartbeat_worker_module,
+        "agent_orchestrator",
+        type("FakeOrchestrator", (), {"handle_message": fake_handle_message})(),
+    )
+
+    sent_messages = []
+    sent_photos = []
+
+    class _FakeAdapter:
+        async def send_message(self, chat_id, text, **kwargs):
+            sent_messages.append((chat_id, text, kwargs))
+            return SimpleNamespace(id="sent")
+
+        async def send_photo(self, chat_id, photo, caption=None, **kwargs):
+            sent_photos.append((chat_id, photo, caption, kwargs))
+            return SimpleNamespace(id="photo")
+
+    monkeypatch.setattr(
+        heartbeat_worker_module.adapter_manager,
+        "get_adapter",
+        lambda _platform: _FakeAdapter(),
+    )
+
+    worker = HeartbeatWorker()
+    worker.enabled = True
+    worker.suppress_ok = True
+
+    result = await worker.run_user_now(user_id, suppress_push=True)
+
+    assert "宝宝在床上" in result
+    assert sent_messages == []
+    assert sent_photos
+    assert sent_photos[0][0] == "257675041"
+    assert sent_photos[0][1] == str(image_path)
 
 
 @pytest.mark.asyncio

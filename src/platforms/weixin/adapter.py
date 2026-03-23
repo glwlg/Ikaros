@@ -7,7 +7,10 @@ import hashlib
 import json
 import logging
 import re
+import struct
 import time
+import zlib
+from datetime import datetime
 from os import urandom
 from pathlib import Path
 from secrets import randbits, token_hex
@@ -17,7 +20,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-from core.config import ADMIN_USER_IDS, DATA_DIR
+from core.config import DATA_DIR, WEIXIN_DEBUG_UPDATES
 from core.platform.adapter import BotAdapter
 from core.platform.exceptions import MediaDownloadUnavailableError, MessageSendError
 from core.platform.models import UnifiedContext
@@ -85,7 +88,7 @@ class WeixinAdapter(BotAdapter):
         )
 
         self.state_dir = Path(DATA_DIR) / "weixin"
-        self.credentials_path = self.state_dir / "credentials.json"
+        self.bindings_path = self.state_dir / "bindings.json"
         self.sync_buf_path = self.state_dir / "sync_buf.txt"
         self.context_tokens_path = self.state_dir / "context_tokens.json"
         self.media_temp_dir = self.state_dir / "tmp"
@@ -104,6 +107,8 @@ class WeixinAdapter(BotAdapter):
         self._context_tokens = self._load_context_tokens()
         self._typing_ticket_cache: Dict[str, Tuple[str, float]] = {}
         self._typing_cancel_tasks: Dict[str, asyncio.Task] = {}
+        self._binding_tasks: Dict[str, asyncio.Task] = {}
+        self.debug_updates = bool(WEIXIN_DEBUG_UPDATES)
 
     @property
     def can_update_message(self) -> bool:
@@ -148,25 +153,202 @@ class WeixinAdapter(BotAdapter):
         )
         tmp_path.replace(path)
 
+    def _default_bindings_payload(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "session": {
+                "token": "",
+                "baseUrl": self.base_url,
+                "cdnBaseUrl": self.cdn_base_url,
+                "accountId": "",
+                "updated_at": "",
+            },
+            "bound_users": {},
+        }
+
+    def _normalize_bound_users(self, payload: Any) -> dict[str, dict[str, str]]:
+        if not isinstance(payload, dict):
+            return {}
+        rows: dict[str, dict[str, str]] = {}
+        for raw_user_id, raw_item in payload.items():
+            user_id = self._safe_text(raw_user_id)
+            if not user_id or not isinstance(raw_item, dict):
+                continue
+            rows[user_id] = {
+                "status": self._safe_text(raw_item.get("status") or "active") or "active",
+                "source": self._safe_text(raw_item.get("source")),
+                "bound_at": self._safe_text(raw_item.get("bound_at")),
+                "bound_by": self._safe_text(raw_item.get("bound_by")),
+            }
+        return rows
+
+    def _load_bindings(self) -> dict[str, Any]:
+        payload = self._load_json(self.bindings_path)
+        default = self._default_bindings_payload()
+        if not isinstance(payload, dict):
+            return default
+        session = dict(default.get("session") or {})
+        session.update(dict(payload.get("session") or {}))
+        session["token"] = self._safe_text(session.get("token"))
+        session["baseUrl"] = self._normalize_base_url(session.get("baseUrl") or self.base_url)
+        session["cdnBaseUrl"] = normalize_cdn_base_url(
+            session.get("cdnBaseUrl") or self.cdn_base_url
+        )
+        session["accountId"] = self._safe_text(session.get("accountId"))
+        session["updated_at"] = self._safe_text(session.get("updated_at"))
+        return {
+            "version": 1,
+            "session": session,
+            "bound_users": self._normalize_bound_users(payload.get("bound_users") or {}),
+        }
+
     def _load_credentials(self) -> dict[str, str] | None:
-        payload = self._load_json(self.credentials_path)
+        payload = self._load_bindings()
+        session = payload.get("session") or {}
         if not isinstance(payload, dict):
             return None
-        token = self._safe_text(payload.get("token"))
+        token = self._safe_text(session.get("token"))
         if not token:
             return None
         normalized = {
             "token": token,
             "baseUrl": self._normalize_base_url(
-                payload.get("baseUrl") or self.base_url
+                session.get("baseUrl") or self.base_url
             ),
             "cdnBaseUrl": normalize_cdn_base_url(
-                payload.get("cdnBaseUrl") or self.cdn_base_url
+                session.get("cdnBaseUrl") or self.cdn_base_url
             ),
-            "accountId": self._safe_text(payload.get("accountId")),
-            "userId": self._safe_text(payload.get("userId")),
+            "accountId": self._safe_text(session.get("accountId")),
         }
         return normalized
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now().astimezone().isoformat(timespec="seconds")
+
+    async def _persist_binding(
+        self,
+        payload: dict[str, Any],
+        *,
+        source: str,
+        bound_by: str = "",
+    ) -> dict[str, str]:
+        token = self._safe_text(payload.get("bot_token"))
+        if not token:
+            raise MessageSendError("Weixin login succeeded but bot_token is missing.")
+
+        bound_user_id = self._safe_text(payload.get("ilink_user_id"))
+        bindings = self._load_bindings()
+        bindings["session"] = {
+            "token": token,
+            "baseUrl": self._normalize_base_url(payload.get("baseurl") or self.base_url),
+            "cdnBaseUrl": normalize_cdn_base_url(
+                payload.get("cdn_baseurl") or self.cdn_base_url
+            ),
+            "accountId": self._safe_text(payload.get("ilink_bot_id")),
+            "updated_at": self._now_iso(),
+        }
+        if bound_user_id:
+            bound_users = self._normalize_bound_users(bindings.get("bound_users") or {})
+            bound_users[bound_user_id] = {
+                "status": "active",
+                "source": self._safe_text(source),
+                "bound_at": self._now_iso(),
+                "bound_by": self._safe_text(bound_by),
+            }
+            bindings["bound_users"] = bound_users
+        self._write_json(self.bindings_path, bindings)
+
+        credentials = {
+            "token": self._safe_text(bindings["session"].get("token")),
+            "baseUrl": self._safe_text(bindings["session"].get("baseUrl")),
+            "cdnBaseUrl": self._safe_text(bindings["session"].get("cdnBaseUrl")),
+            "accountId": self._safe_text(bindings["session"].get("accountId")),
+        }
+        self._credentials = credentials
+        self.base_url = self._normalize_base_url(credentials["baseUrl"] or self.base_url)
+        self.cdn_base_url = normalize_cdn_base_url(
+            credentials["cdnBaseUrl"] or self.cdn_base_url
+        )
+
+        if bound_user_id:
+            from core.channel_user_store import channel_user_store
+            from core.config import is_user_admin
+            from core.state_store import add_allowed_user
+
+            await add_allowed_user(
+                bound_user_id,
+                added_by=bound_by or bound_user_id,
+                description=f"weixin:{self._safe_text(source) or 'bind'}",
+            )
+            if not is_user_admin(bound_user_id):
+                channel_user_store.ensure_user(
+                    platform="weixin",
+                    platform_user_id=bound_user_id,
+                )
+        return {
+            "user_id": bound_user_id,
+            "account_id": credentials["accountId"],
+            "base_url": credentials["baseUrl"],
+            "cdn_base_url": credentials["cdnBaseUrl"],
+        }
+
+    def list_bound_users(self) -> list[dict[str, str]]:
+        bindings = self._load_bindings()
+        bound_users = self._normalize_bound_users(bindings.get("bound_users") or {})
+        rows = [
+            {"user_id": user_id, **dict(item or {})}
+            for user_id, item in bound_users.items()
+        ]
+        rows.sort(key=lambda item: str(item.get("bound_at") or ""), reverse=True)
+        return rows
+
+    async def _watch_additional_binding(
+        self,
+        *,
+        requester_user_id: str,
+        qrcode_token: str,
+    ) -> None:
+        notification = ""
+        try:
+            payload = await self._poll_qr_until_confirmed(qrcode_token)
+            result = await self._persist_binding(
+                payload,
+                source="wxbind_qr",
+                bound_by=requester_user_id,
+            )
+            bound_user_id = self._safe_text(result.get("user_id"))
+            if bound_user_id:
+                notification = (
+                    f"✅ 微信绑定完成：`{bound_user_id}` 已加入 allow-list。"
+                )
+            else:
+                notification = "✅ 微信绑定完成，但未拿到扫码用户 ID。"
+        except Exception as exc:
+            notification = f"❌ 绑定二维码已失效或绑定失败：{exc}"
+        finally:
+            self._binding_tasks.pop(self._safe_text(qrcode_token), None)
+
+        with contextlib.suppress(Exception):
+            await self.send_message(requester_user_id, notification)
+
+    async def start_additional_binding(self, *, requester_user_id: str) -> dict[str, str]:
+        qrcode_token, qr_url = await self._fetch_login_qr()
+        existing = self._binding_tasks.pop(qrcode_token, None)
+        if existing is not None:
+            existing.cancel()
+        self._binding_tasks[qrcode_token] = asyncio.create_task(
+            self._watch_additional_binding(
+                requester_user_id=self._safe_text(requester_user_id),
+                qrcode_token=qrcode_token,
+            ),
+            name=f"weixin-bind-{qrcode_token}",
+        )
+        return {
+            "qrcode_token": qrcode_token,
+            "qr_content": qr_url,
+            "qr_url": qr_url,
+        }
 
     def _load_context_tokens(self) -> dict[str, str]:
         payload = self._load_json(self.context_tokens_path)
@@ -694,6 +876,82 @@ class WeixinAdapter(BotAdapter):
             lines.append(line.rstrip())
         return "\n".join(lines)
 
+    @staticmethod
+    def _png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
+        chunk = bytes(chunk_type or b"") + bytes(payload or b"")
+        return (
+            struct.pack(">I", len(payload))
+            + chunk
+            + struct.pack(">I", zlib.crc32(chunk) & 0xFFFFFFFF)
+        )
+
+    @classmethod
+    def _matrix_to_png_bytes(
+        cls,
+        matrix: list[list[bool]],
+        *,
+        scale: int = 8,
+    ) -> bytes:
+        rows = [list(row or []) for row in matrix if row]
+        if not rows:
+            return b""
+
+        safe_scale = max(1, int(scale or 1))
+        width_modules = len(rows[0])
+        if width_modules <= 0:
+            return b""
+
+        expanded_width = width_modules * safe_scale
+        image_rows = bytearray()
+        for row in rows:
+            if len(row) != width_modules:
+                return b""
+            expanded = bytearray()
+            for cell in row:
+                pixel = 0 if bool(cell) else 255
+                expanded.extend([pixel] * safe_scale)
+            expanded_bytes = bytes(expanded)
+            for _ in range(safe_scale):
+                image_rows.append(0)
+                image_rows.extend(expanded_bytes)
+
+        expanded_height = len(rows) * safe_scale
+        ihdr = struct.pack(
+            ">IIBBBBB",
+            expanded_width,
+            expanded_height,
+            8,
+            0,
+            0,
+            0,
+            0,
+        )
+        compressed = zlib.compress(bytes(image_rows), level=9)
+        return b"".join(
+            [
+                b"\x89PNG\r\n\x1a\n",
+                cls._png_chunk(b"IHDR", ihdr),
+                cls._png_chunk(b"IDAT", compressed),
+                cls._png_chunk(b"IEND", b""),
+            ]
+        )
+
+    @staticmethod
+    def render_qr_png(data: str) -> bytes:
+        safe_data = str(data or "").strip()
+        if not safe_data:
+            return b""
+        try:
+            import qrcode
+
+            qr = qrcode.QRCode(border=4, box_size=8)
+            qr.add_data(safe_data)
+            qr.make(fit=True)
+            return WeixinAdapter._matrix_to_png_bytes(qr.get_matrix(), scale=8)
+        except Exception:
+            logger.warning("Failed to render Weixin QR PNG.", exc_info=True)
+            return b""
+
     async def _poll_qr_until_confirmed(self, qrcode_token: str) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + self.login_timeout_sec
         scan_notified = False
@@ -742,8 +1000,8 @@ class WeixinAdapter(BotAdapter):
 
         while not self._stop_event.is_set():
             logger.warning(
-                "Weixin credentials not found at %s. Starting QR login flow.",
-                self.credentials_path,
+                "Weixin bindings not found at %s. Starting QR login flow.",
+                self.bindings_path,
             )
             qrcode_token, qr_url = await self._fetch_login_qr()
             qr_ascii = self._render_qr_ascii(qr_url)
@@ -757,37 +1015,17 @@ class WeixinAdapter(BotAdapter):
                 logger.warning("%s Requesting a new Weixin QR code...", exc)
                 continue
 
-            credentials = {
-                "token": self._safe_text(payload.get("bot_token")),
-                "baseUrl": self._normalize_base_url(
-                    payload.get("baseurl") or self.base_url
-                ),
-                "cdnBaseUrl": normalize_cdn_base_url(
-                    payload.get("cdn_baseurl") or self.cdn_base_url
-                ),
-                "accountId": self._safe_text(payload.get("ilink_bot_id")),
-                "userId": self._safe_text(payload.get("ilink_user_id")),
-            }
-            if not credentials["token"]:
-                raise MessageSendError(
-                    "Weixin login succeeded but bot_token is missing."
-                )
-
-            self._credentials = credentials
-            self.base_url = credentials["baseUrl"]
-            self.cdn_base_url = credentials["cdnBaseUrl"]
-            self._write_json(self.credentials_path, credentials)
+            result = await self._persist_binding(
+                payload,
+                source="bootstrap_qr",
+                bound_by=self._safe_text(payload.get("ilink_user_id")),
+            )
             logger.info(
                 "Weixin login confirmed. account_id=%s user_id=%s cdn_base_url=%s",
-                credentials["accountId"] or "-",
-                credentials["userId"] or "-",
-                credentials["cdnBaseUrl"],
+                self._safe_text(result.get("account_id")) or "-",
+                self._safe_text(result.get("user_id")) or "-",
+                self._safe_text(result.get("cdn_base_url")) or "-",
             )
-            if credentials["userId"] and credentials["userId"] not in ADMIN_USER_IDS:
-                logger.warning(
-                    "Remember to add this Weixin ilink_user_id to ADMIN_USER_IDS: %s",
-                    credentials["userId"],
-                )
             return
 
         raise MessageSendError("Weixin login aborted before credentials were obtained.")
@@ -803,7 +1041,12 @@ class WeixinAdapter(BotAdapter):
                 timeout=35.0,
             )
         except httpx.ReadTimeout:
-            return {"ret": 0, "msgs": [], "get_updates_buf": cursor}
+            return {
+                "ret": 0,
+                "msgs": [],
+                "sync_buf": cursor,
+                "get_updates_buf": cursor,
+            }
 
     def _build_client_id(self) -> str:
         return f"x-bot-weixin-{int(time.time() * 1000)}-{token_hex(4)}"
@@ -983,19 +1226,65 @@ class WeixinAdapter(BotAdapter):
 
         return False
 
+    def _item_types_label(self, raw_message: dict[str, Any]) -> str:
+        return (
+            ",".join(
+                str(item.get("type"))
+                for item in (raw_message.get("item_list") or [])
+                if isinstance(item, dict)
+            )
+            or "none"
+        )
+
+    def _log_updates_summary(self, payload: dict[str, Any]) -> None:
+        if not self.debug_updates:
+            return
+
+        msgs = payload.get("msgs") or []
+        sample = ""
+        if msgs:
+            first = msgs[0]
+            if isinstance(first, dict):
+                sample = json.dumps(first, ensure_ascii=False)[:1200]
+
+        logger.info(
+            "Weixin getupdates summary msg_count=%s sync_buf_len=%s get_updates_buf_len=%s sample=%s",
+            len(msgs),
+            len(self._safe_text(payload.get("sync_buf"))),
+            len(self._safe_text(payload.get("get_updates_buf"))),
+            sample or "-",
+        )
+
+    def _should_process_inbound_message(self, raw_message: dict[str, Any]) -> bool:
+        if not any(
+            isinstance(item, dict) for item in (raw_message.get("item_list") or [])
+        ):
+            return False
+        message_type = raw_message.get("message_type")
+        if message_type in (None, 1, "1"):
+            return True
+
+        from_user_id = self._safe_text(raw_message.get("from_user_id"))
+        account_id = self._safe_text((self._credentials or {}).get("accountId"))
+        if from_user_id and account_id and from_user_id == account_id:
+            return False
+        to_user_id = self._safe_text(raw_message.get("to_user_id"))
+        if from_user_id:
+            return True
+        if not from_user_id and to_user_id:
+            return False
+        return False
+
     async def _handle_incoming_message(self, raw_message: dict[str, Any]) -> None:
         message_type = raw_message.get("message_type")
-        if message_type not in (None, 1, "1"):
+        item_types = self._item_types_label(raw_message)
+        if not self._should_process_inbound_message(raw_message):
             logger.info(
-                "Weixin inbound skipped from=%s message_type=%s item_types=%s",
+                "Weixin inbound skipped from=%s to=%s message_type=%s item_types=%s",
                 self._safe_text(raw_message.get("from_user_id")) or "-",
+                self._safe_text(raw_message.get("to_user_id")) or "-",
                 message_type,
-                ",".join(
-                    str(item.get("type"))
-                    for item in (raw_message.get("item_list") or [])
-                    if isinstance(item, dict)
-                )
-                or "none",
+                item_types,
             )
             return
 
@@ -1005,13 +1294,26 @@ class WeixinAdapter(BotAdapter):
             unified_msg.user.id,
             unified_msg.type.value,
             message_type,
-            ",".join(
-                str(item.get("type"))
-                for item in (raw_message.get("item_list") or [])
-                if isinstance(item, dict)
-            )
-            or "none",
+            item_types,
         )
+        if message_type not in (None, 1, "1"):
+            logger.info(
+                "Weixin inbound accepted non-standard message_type=%s from=%s item_types=%s",
+                message_type,
+                unified_msg.user.id,
+                item_types,
+            )
+        if (
+            unified_msg.type.value == "text"
+            and self._safe_text(unified_msg.text) == "(empty message)"
+        ):
+            logger.warning(
+                "Weixin inbound could not be mapped to text/media. from=%s message_type=%s item_types=%s raw=%s",
+                unified_msg.user.id,
+                message_type,
+                item_types,
+                json.dumps(raw_message, ensure_ascii=False)[:1200],
+            )
         context_token = self._safe_text(raw_message.get("context_token"))
         if context_token:
             self._remember_context_token(unified_msg.user.id, context_token)
@@ -1167,6 +1469,7 @@ class WeixinAdapter(BotAdapter):
         while not self._stop_event.is_set():
             try:
                 payload = await self._get_updates(cursor)
+                self._log_updates_summary(payload)
                 ret = payload.get("ret")
                 if ret not in (None, 0):
                     failures += 1
@@ -1187,7 +1490,9 @@ class WeixinAdapter(BotAdapter):
                     continue
 
                 failures = 0
-                next_cursor = self._safe_text(payload.get("get_updates_buf"))
+                next_cursor = self._safe_text(payload.get("sync_buf")) or self._safe_text(
+                    payload.get("get_updates_buf")
+                )
                 if next_cursor:
                     cursor = next_cursor
                     self._save_sync_cursor(cursor)
@@ -1236,6 +1541,13 @@ class WeixinAdapter(BotAdapter):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._poll_task
         self._poll_task = None
+        binding_tasks = list(self._binding_tasks.values())
+        self._binding_tasks.clear()
+        for task in binding_tasks:
+            task.cancel()
+        for task in binding_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         typing_cancel_tasks = list(self._typing_cancel_tasks.values())
         self._typing_cancel_tasks.clear()
         for task in typing_cancel_tasks:

@@ -4,6 +4,7 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
 from core.platform.models import UnifiedContext
 from core.skill_menu import (
@@ -106,7 +107,9 @@ def _resolve_task_action_ref(
 
 
 async def _active_confirmation_row(user_id: str) -> list[dict[str, str]]:
-    active_task = await heartbeat_store.get_session_active_task(user_id)
+    active_task = channel_runtime_store.get_active_task(platform_user_id=user_id)
+    if not active_task:
+        active_task = await heartbeat_store.get_session_active_task(user_id)
     if not active_task or str(active_task.get("status") or "") != "waiting_user":
         return []
     return [
@@ -330,7 +333,9 @@ async def _delete_task_from_menu(
 
     cleared_active = False
     try:
-        active = await heartbeat_store.get_session_active_task(user_id)
+        active = channel_runtime_store.get_active_task(platform_user_id=user_id)
+        if not active:
+            active = await heartbeat_store.get_session_active_task(user_id)
         active_ids = {
             str((active or {}).get("id") or "").strip(),
             str((active or {}).get("task_inbox_id") or "").strip(),
@@ -338,6 +343,14 @@ async def _delete_task_from_menu(
         }
         active_ids.discard("")
         if safe_task_id in active_ids:
+            channel_runtime_store.update_active_task(
+                platform_user_id=user_id,
+                status="cancelled",
+                result_summary="Deleted from /task menu.",
+                needs_confirmation=False,
+                confirmation_deadline="",
+                clear_active=True,
+            )
             await heartbeat_store.update_session_active_task(
                 user_id,
                 status="cancelled",

@@ -6,6 +6,7 @@ import re
 import time
 from typing import Any, Dict, List, cast
 
+from core.channel_runtime_store import channel_runtime_store
 from core.config import (
     X_DEPLOYMENT_STAGING_PATH,
     AUTO_RECOVERY_MAX_ATTEMPTS,
@@ -291,6 +292,7 @@ class AgentOrchestrator:
             extension_candidates,
             intent_text=routing_text or last_user_text,
             runtime_user_id=user_id_str,
+            platform_name=runtime_ctx.platform_name,
             runtime_policy_ctx=runtime_policy_ctx,
             tools=tools,
             allowed_skill_names_override=allowed_skill_names,
@@ -552,6 +554,7 @@ class AgentOrchestrator:
                     extension_candidates,
                     intent_text=routing_text or last_user_text,
                     runtime_user_id=user_id_str,
+                    platform_name=runtime_ctx.platform_name,
                     runtime_policy_ctx=runtime_policy_ctx,
                     tools=tools,
                     allowed_skill_names_override=allowed_skill_names,
@@ -586,7 +589,12 @@ class AgentOrchestrator:
         if not event_handler.flags.blocked and not event_handler.flags.completed:
             todo_session.mark_completed("Conversation loop completed.")
             if runtime_ctx.session_state_active:
-                current = await heartbeat_store.get_session_active_task(str(user_id))
+                current = channel_runtime_store.get_active_task(
+                    platform=runtime_ctx.platform_name,
+                    platform_user_id=str(user_id),
+                )
+                if not current:
+                    current = await heartbeat_store.get_session_active_task(str(user_id))
                 current_status = str((current or {}).get("status", "")).strip().lower()
                 if current_status == "waiting_external":
                     await update_session_task(
@@ -684,6 +692,7 @@ class AgentOrchestrator:
         extension_candidates: list,
         intent_text: str = "",
         runtime_user_id: str = "",
+        platform_name: str = "",
         runtime_policy_ctx: Dict[str, Any] | None = None,
         tools: List[Dict[str, Any]] | None = None,
         allowed_skill_names_override: set[str] | None = None,
@@ -713,7 +722,7 @@ class AgentOrchestrator:
         )
         return prompt_composer.compose_base(
             runtime_user_id=runtime_user_id,
-            platform="subagent_kernel" if agent_kind == "subagent" else "",
+            platform="subagent_kernel" if agent_kind == "subagent" else platform_name,
             tools=tools or [],
             runtime_policy_ctx=runtime_policy_ctx or {},
             mode=mode,
