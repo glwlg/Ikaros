@@ -14,6 +14,7 @@ from services.openai_adapter import generate_text
 from user_context import add_message, bind_delivery_target
 from core.platform.models import UnifiedContext, MessageType
 from .ai_handlers import _acknowledge_received
+from .base_handlers import require_feature_access
 from .media_utils import extract_media_input
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ async def handle_document(ctx: UnifiedContext) -> None:
 
     # 检查用户权限
     if not await is_user_allowed(user_id):
+        return
+    if not await require_feature_access(ctx, "chat"):
         return
 
     await _acknowledge_received(ctx)

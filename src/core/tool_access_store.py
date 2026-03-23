@@ -3,6 +3,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Tuple
 
+from core.channel_access import feature_for_tool_name, is_channel_feature_enabled
 from core.config import DATA_DIR
 
 
@@ -424,6 +425,23 @@ class ToolAccessStore:
             tool_name=normalized_name,
             groups=groups,
         )
+        safe_platform = str(platform or "").strip().lower()
+        safe_runtime_user_id = str(runtime_user_id or "").strip()
+        feature = feature_for_tool_name(normalized_name)
+        if (
+            allowed
+            and feature
+            and safe_platform
+            and safe_platform != "subagent_kernel"
+            and safe_runtime_user_id
+        ):
+            if not is_channel_feature_enabled(
+                platform=safe_platform,
+                platform_user_id=safe_runtime_user_id,
+                feature=feature,
+            ):
+                allowed = False
+                reason = f"channel_feature_disabled:{feature}"
         detail = {
             "agent_kind": resolved.get("agent_kind"),
             "agent_id": resolved.get("agent_id"),

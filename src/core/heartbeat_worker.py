@@ -4,15 +4,18 @@ import inspect
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from core.agent_input import MAX_INLINE_IMAGE_INPUTS, build_agent_message_history
 from core.agent_orchestrator import agent_orchestrator
 from core.background_delivery import push_background_text, split_background_chunks
+from core.file_artifacts import extract_saved_file_rows, merge_file_rows, normalize_file_rows
 from core.heartbeat_store import heartbeat_store
 from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
 from core.platform.registry import adapter_manager
+from core.runtime_callbacks import pop_runtime_callback, set_runtime_callback
 from core.task_manager import task_manager
 
 logger = logging.getLogger(__name__)
@@ -242,11 +245,28 @@ class HeartbeatWorker:
             if final_text.strip() == "HEARTBEAT_OK" and self.suppress_ok:
                 return "HEARTBEAT_OK"
 
-            if suppress_push:
-                return final_text
-
             level = str(heartbeat_meta.get("last_level", level)).upper()
             deliveries = list(batch_result.get("deliveries") or [])
+            logger.info(
+                "Heartbeat push planning user=%s suppress_push=%s deliveries=%s details=%s",
+                user_id,
+                bool(suppress_push),
+                len(deliveries),
+                [
+                    {
+                        "platform": str(item.get("platform") or "").strip(),
+                        "chat_id": str(item.get("chat_id") or "").strip(),
+                        "text_len": len(str(item.get("text") or "").strip()),
+                        "raw_files": (
+                            len(item.get("files"))
+                            if isinstance(item.get("files"), list)
+                            else 0
+                        ),
+                    }
+                    for item in deliveries
+                    if isinstance(item, dict)
+                ],
+            )
             if not deliveries:
                 logger.info(
                     "Heartbeat result skipped push: no delivery target for user=%s",
@@ -258,6 +278,17 @@ class HeartbeatWorker:
                 platform = str(target.get("platform") or "").strip()
                 chat_id = str(target.get("chat_id") or "").strip()
                 text_to_push = str(target.get("text") or "").strip()
+                raw_files = target.get("files")
+                files = normalize_file_rows(raw_files)
+                logger.info(
+                    "Heartbeat delivery target user=%s platform=%s chat=%s text_len=%s raw_files=%s normalized_files=%s",
+                    user_id,
+                    platform,
+                    chat_id,
+                    len(text_to_push),
+                    len(raw_files) if isinstance(raw_files, list) else 0,
+                    len(files),
+                )
                 session_id = ""
                 if (
                     platform
@@ -266,16 +297,30 @@ class HeartbeatWorker:
                     and chat_id == str(delivery_target.get("chat_id", "") or "").strip()
                 ):
                     session_id = str(delivery_target.get("session_id", "") or "").strip()
-                if not platform or not chat_id or not text_to_push:
+                if not platform or not chat_id or (not text_to_push and not files):
                     continue
-                pushed = await self._push_to_target(
-                    platform=platform,
-                    chat_id=chat_id,
-                    text=text_to_push,
-                    user_id=user_id,
-                    session_id=session_id,
-                )
-                if not pushed:
+                pushed = False
+                attempted = False
+                if text_to_push and not suppress_push:
+                    attempted = True
+                    pushed = await self._push_to_target(
+                        platform=platform,
+                        chat_id=chat_id,
+                        text=text_to_push,
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+                if files:
+                    attempted = True
+                    pushed = (
+                        await self._push_files_to_target(
+                            platform=platform,
+                            chat_id=chat_id,
+                            files=files,
+                        )
+                        or pushed
+                    )
+                if attempted and not pushed:
                     logger.warning(
                         "Heartbeat result push failed. user=%s platform=%s chat=%s",
                         user_id,
@@ -350,6 +395,24 @@ class HeartbeatWorker:
         if body not in bucket:
             bucket.append(body)
 
+    @classmethod
+    def _append_delivery_files(
+        cls,
+        deliveries: dict[tuple[str, str], list[dict[str, str]]],
+        target: dict[str, str] | None,
+        files: list[dict[str, str]],
+    ) -> None:
+        normalized_target = cls._normalize_delivery_target(target)
+        key = cls._target_key(normalized_target)
+        if not key[0] or not key[1]:
+            return
+        merged = merge_file_rows(
+            deliveries.get(key, []),
+            normalize_file_rows(files),
+        )
+        if merged:
+            deliveries[key] = merged
+
     async def _run_heartbeat_task_batch_details(
         self,
         *,
@@ -377,6 +440,7 @@ class HeartbeatWorker:
 
         sections: list[str] = []
         routed_sections: dict[tuple[str, str], list[str]] = {}
+        routed_files: dict[tuple[str, str], list[dict[str, str]]] = {}
         rss_refresh_attempted = False
         rss_refresh_available = False
         rss_refresh_text = ""
@@ -442,6 +506,7 @@ class HeartbeatWorker:
             ctx.user_data.pop("pending_ui", None)
             ctx.user_data.pop("subagent_progress_steps", None)
             ctx.user_data.pop("subagent_progress_final_preview", None)
+            ctx.user_data.pop("heartbeat_pending_files", None)
             prompt = self._build_heartbeat_task_prompt(
                 task_id=task_id,
                 goal=goal,
@@ -474,11 +539,32 @@ class HeartbeatWorker:
             message_history = list(prepared_input.message_history)
 
             chunks: list[str] = []
-            stream = self._create_orchestrator_stream(ctx, message_history)
-            async for chunk in stream:
-                if chunk:
-                    chunks.append(str(chunk))
-                await heartbeat_store.refresh_lock(user_id, owner=owner)
+            pending_spec_files: list[dict[str, str]] = []
+
+            async def _manager_progress_callback(snapshot: dict[str, Any]) -> None:
+                payload = dict(snapshot or {})
+                if str(payload.get("event") or "").strip().lower() != "tool_call_finished":
+                    return
+                terminal_payload = payload.get("terminal_payload")
+                if not isinstance(terminal_payload, dict):
+                    return
+                pending_spec_files[:] = merge_file_rows(
+                    pending_spec_files,
+                    normalize_file_rows(terminal_payload.get("files")),
+                    extract_saved_file_rows(
+                        str(terminal_payload.get("text") or "").strip()
+                    ),
+                )
+
+            set_runtime_callback(ctx, "manager_progress_callback", _manager_progress_callback)
+            try:
+                stream = self._create_orchestrator_stream(ctx, message_history)
+                async for chunk in stream:
+                    if chunk:
+                        chunks.append(str(chunk))
+                    await heartbeat_store.refresh_lock(user_id, owner=owner)
+            finally:
+                pop_runtime_callback(ctx, "manager_progress_callback")
 
             stream_text = "\n".join(chunks).strip()
 
@@ -496,13 +582,36 @@ class HeartbeatWorker:
             if "已派发给" in text and "完成后会自动把结果发给你" in text:
                 text = "HEARTBEAT_OK"
 
+            pending_spec_files = merge_file_rows(
+                pending_spec_files,
+                normalize_file_rows(ctx.user_data.pop("heartbeat_pending_files", [])),
+                extract_saved_file_rows(text),
+            )
+            if pending_spec_files:
+                logger.info(
+                    "Heartbeat collected delivery files user=%s task=%s target=%s/%s count=%s",
+                    user_id,
+                    task_id,
+                    spec_target.get("platform", ""),
+                    spec_target.get("chat_id", ""),
+                    len(pending_spec_files),
+                )
+                self._append_delivery_files(
+                    routed_files,
+                    spec_target,
+                    pending_spec_files,
+                )
+
             if text.strip() == "HEARTBEAT_OK":
                 continue
 
             sections.append(text.strip())
             self._append_delivery_section(routed_sections, spec_target, text.strip())
 
-        if not sections:
+        delivery_keys = list(
+            dict.fromkeys([*routed_sections.keys(), *routed_files.keys()])
+        )
+        if not sections and not delivery_keys:
             return {"text": "HEARTBEAT_OK", "deliveries": []}
         return {
             "text": "\n\n".join(sections),
@@ -510,10 +619,18 @@ class HeartbeatWorker:
                 {
                     "platform": platform,
                     "chat_id": chat_id,
-                    "text": "\n\n".join(items),
+                    "text": "\n\n".join(routed_sections.get((platform, chat_id), [])),
+                    "files": routed_files.get((platform, chat_id), []),
                 }
-                for (platform, chat_id), items in routed_sections.items()
-                if platform and chat_id and items
+                for (platform, chat_id) in delivery_keys
+                if (
+                    platform
+                    and chat_id
+                    and (
+                        routed_sections.get((platform, chat_id))
+                        or routed_files.get((platform, chat_id))
+                    )
+                )
             ],
         }
 
@@ -765,6 +882,109 @@ class HeartbeatWorker:
                 exc,
             )
             return False
+
+    async def _push_files_to_target(
+        self,
+        *,
+        platform: str,
+        chat_id: str,
+        files: list[dict[str, str]],
+    ) -> bool:
+        safe_files = normalize_file_rows(files)
+        if not safe_files:
+            logger.info(
+                "Heartbeat file delivery skipped: no normalized files. platform=%s chat=%s",
+                platform,
+                chat_id,
+            )
+            return False
+        try:
+            adapter = adapter_manager.get_adapter(platform)
+        except Exception:
+            logger.warning(
+                "Heartbeat file delivery skipped: adapter unavailable. platform=%s chat=%s",
+                platform,
+                chat_id,
+            )
+            return False
+
+        logger.info(
+            "Heartbeat pushing %s file(s). platform=%s chat=%s",
+            len(safe_files),
+            platform,
+            chat_id,
+        )
+        delivered = False
+        for item in safe_files:
+            path_text = str(item.get("path") or "").strip()
+            if not path_text:
+                continue
+            path_obj = Path(path_text).expanduser().resolve()
+            if not path_obj.exists() or not path_obj.is_file():
+                continue
+            kind = str(item.get("kind") or "document").strip().lower() or "document"
+            caption = str(item.get("caption") or "").strip() or None
+            filename = (
+                str(item.get("filename") or path_obj.name).strip() or path_obj.name
+            )
+            logger.info(
+                "Heartbeat file delivery attempt platform=%s chat=%s kind=%s path=%s filename=%s",
+                platform,
+                chat_id,
+                kind,
+                str(path_obj),
+                filename,
+            )
+            sender = None
+            kwargs: dict[str, Any] = {"chat_id": chat_id}
+            if kind == "photo":
+                sender = getattr(adapter, "send_photo", None)
+                kwargs["photo"] = str(path_obj)
+            elif kind == "video":
+                sender = getattr(adapter, "send_video", None)
+                kwargs["video"] = str(path_obj)
+            elif kind == "audio":
+                sender = getattr(adapter, "send_audio", None)
+                kwargs["audio"] = str(path_obj)
+            if not callable(sender):
+                sender = getattr(adapter, "send_document", None)
+                document: str | bytes = str(path_obj)
+                output_name = filename
+                if filename.lower().endswith(".md"):
+                    try:
+                        from services.md_converter import adapt_md_file_for_platform
+
+                        document, output_name = adapt_md_file_for_platform(
+                            file_bytes=path_obj.read_bytes(),
+                            filename=filename,
+                            platform=platform,
+                        )
+                    except Exception:
+                        document = str(path_obj)
+                kwargs = {
+                    "chat_id": chat_id,
+                    "document": document,
+                    "filename": output_name,
+                }
+            if not callable(sender):
+                continue
+            if caption:
+                kwargs["caption"] = caption
+            try:
+                result_obj = sender(**kwargs)
+                if inspect.isawaitable(result_obj):
+                    await result_obj
+                delivered = True
+            except Exception as exc:
+                logger.error(
+                    "Heartbeat file delivery failed. platform=%s chat=%s kind=%s path=%s err=%s",
+                    platform,
+                    chat_id,
+                    kind,
+                    str(path_obj),
+                    exc,
+                )
+        return delivered
 
     @staticmethod
     def _create_orchestrator_stream(ctx: UnifiedContext, message_history: list):

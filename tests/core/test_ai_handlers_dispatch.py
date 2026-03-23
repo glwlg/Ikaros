@@ -759,6 +759,69 @@ async def test_handle_ai_chat_injects_inline_image_inputs_from_text(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_handle_ai_chat_does_not_fail_fast_for_plain_web_url(monkeypatch):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    captured_history: list[dict] = []
+
+    async def _fake_handle_message(_ctx, message_history):
+        captured_history.extend(message_history)
+        yield "已分析"
+
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(
+        heartbeat_module.heartbeat_store,
+        "set_delivery_target",
+        _noop,
+    )
+    monkeypatch.setattr(ai_handlers, "add_message", _noop)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "is_cancelled", lambda _uid: False
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "unregister_task", lambda _uid: None
+    )
+
+    ctx = _DummyChatContext()
+    ctx.message.text = "https://github.com/public-apis/public-apis"
+
+    await ai_handlers.handle_ai_chat(ctx)
+
+    assert not any(
+        "没有成功加载任何图片" in str(payload)
+        for payload, _kwargs in ctx.replies
+    )
+    assert captured_history[-1]["parts"] == [{"text": ctx.message.text}]
+
+
+@pytest.mark.asyncio
 async def test_handle_ai_chat_limits_inline_inputs_to_five(monkeypatch):
     import core.agent_input as agent_input_module
     import core.config as config_module

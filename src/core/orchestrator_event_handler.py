@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict
 
+from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
 from core.task_inbox import task_inbox
 from core.task_manager import task_manager
@@ -353,7 +354,11 @@ class OrchestratorEventHandler:
                 )
 
         if self.session_state_active:
-            current = await heartbeat_store.get_session_active_task(str(self.user_id))
+            current = channel_runtime_store.get_active_task(
+                platform_user_id=str(self.user_id),
+            )
+            if not current:
+                current = await heartbeat_store.get_session_active_task(str(self.user_id))
             current_status = str((current or {}).get("status", "")).strip().lower()
             if current_status == "waiting_external":
                 await self.update_session_task(

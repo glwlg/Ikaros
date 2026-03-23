@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
 from core.platform.models import UnifiedContext
 from core.skill_cli import (
     add_common_arguments,
@@ -182,6 +183,20 @@ def _parse_record_time(record_time_str: str) -> datetime:
 
 async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> Dict[str, Any]:
     """Execute quick accounting from parsed LLM parameters."""
+    denied_text = channel_feature_denied_text("accounting")
+    if not is_channel_feature_enabled(
+        platform=str(ctx.message.platform or "").strip().lower(),
+        platform_user_id=str(getattr(ctx.message.user, "id", "") or "").strip(),
+        feature="accounting",
+    ):
+        return {
+            "success": False,
+            "error_code": "feature_disabled",
+            "text": denied_text,
+            "terminal": True,
+            "payload": {"text": denied_text},
+            "ui": {},
+        }
     platform, platform_user_id = _resolve_binding_identity(ctx)
     forced_user_id, forced_book_id = _extract_forced_ids(ctx)
 

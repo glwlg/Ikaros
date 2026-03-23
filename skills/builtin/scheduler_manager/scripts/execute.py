@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
 from core.platform.models import UnifiedContext
 from core.skill_menu import make_callback, parse_callback
 from core.skill_cli import (
@@ -33,6 +34,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 SCHEDULE_MENU_NS = "schm"
+
+
+def _scheduler_enabled(ctx: UnifiedContext) -> bool:
+    message = getattr(ctx, "message", None)
+    platform = str(getattr(message, "platform", "") or "").strip().lower()
+    user = getattr(message, "user", None)
+    platform_user_id = str(getattr(user, "id", "") or "").strip()
+    return is_channel_feature_enabled(
+        platform=platform,
+        platform_user_id=platform_user_id,
+        feature="scheduler",
+    )
 
 
 def _format_delivery_target(task: dict) -> str:
@@ -156,6 +169,8 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
     """
     Execute scheduler management operations.
     """
+    if not _scheduler_enabled(ctx):
+        return {"text": channel_feature_denied_text("scheduler"), "ui": {}}
     action = params.get("action", "list")
     user_id = ctx.message.user.id if ctx.message and ctx.message.user else "0"
     platform = (
@@ -227,6 +242,8 @@ def register_handlers(adapter_manager):
     async def cmd_schedule(ctx):
         if not await is_user_allowed(ctx.message.user.id):
             return
+        if not _scheduler_enabled(ctx):
+            return {"text": channel_feature_denied_text("scheduler"), "ui": {}}
 
         sub, args = _parse_schedule_subcommand(ctx.message.text or "")
         if sub == "menu":
@@ -347,6 +364,9 @@ async def show_delete_menu(
 
 async def handle_task_delete_callback(ctx: UnifiedContext):
     """处理删除按钮回调"""
+    if not _scheduler_enabled(ctx):
+        await ctx.reply(channel_feature_denied_text("scheduler"))
+        return
     data = ctx.callback_data
     if not data:
         return

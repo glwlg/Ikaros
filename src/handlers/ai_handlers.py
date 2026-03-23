@@ -28,6 +28,7 @@ from stats import increment_stat
 from core.prompt_composer import prompt_composer
 from .media_utils import extract_media_input
 from .message_utils import process_and_send_code_files
+from .base_handlers import require_feature_access
 
 logger = logging.getLogger(__name__)
 
@@ -692,11 +693,17 @@ async def _try_handle_waiting_confirmation(
     if not str(user_message or "").strip():
         return False
 
+    from core.channel_runtime_store import channel_runtime_store
     from core.heartbeat_store import heartbeat_store
     from manager.relay.closure_service import manager_closure_service
 
     user_id = str(ctx.message.user.id)
-    active_task = await heartbeat_store.get_session_active_task(user_id)
+    active_task = channel_runtime_store.get_active_task(
+        platform=str(getattr(ctx.message, "platform", "") or "").strip().lower(),
+        platform_user_id=user_id,
+    )
+    if not active_task:
+        active_task = await heartbeat_store.get_session_active_task(user_id)
     if not active_task or active_task.get("status") != "waiting_user":
         return False
 
@@ -789,6 +796,8 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
 
     if not await is_user_allowed(user_id):
         logger.info("Ignoring unauthorized AI chat from user_id=%s", user_id)
+        return
+    if not await require_feature_access(ctx, "chat"):
         return
 
     await _acknowledge_received(ctx)
@@ -1361,6 +1370,8 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
     if not await is_user_allowed(user_id):
         logger.info("Ignoring unauthorized image message from user_id=%s", user_id)
         return
+    if not await require_feature_access(ctx, "chat"):
+        return
 
     await _acknowledge_received(ctx)
 
@@ -1535,6 +1546,8 @@ async def handle_ai_video(ctx: UnifiedContext) -> None:
     if not await is_user_allowed(user_id):
         logger.info("Ignoring unauthorized video message from user_id=%s", user_id)
         return
+    if not await require_feature_access(ctx, "chat"):
+        return
 
     await _acknowledge_received(ctx)
 
@@ -1662,6 +1675,8 @@ async def handle_sticker_message(ctx: UnifiedContext) -> None:
     if not await is_user_allowed(user_id):
         logger.info("Ignoring unauthorized sticker message from user_id=%s", user_id)
         return  # Silent ignore for stickers if unauthorized? Or reply?
+    if not await require_feature_access(ctx, "chat"):
+        return
 
     await _acknowledge_received(ctx)
 

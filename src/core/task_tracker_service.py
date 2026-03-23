@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Dict
 
 from core.background_delivery import push_background_text
+from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
 from core.task_inbox import TaskEnvelope, task_inbox
 
@@ -224,7 +225,9 @@ class TaskTrackerService:
         status: str,
         result_summary: str,
     ) -> None:
-        active = await heartbeat_store.get_session_active_task(user_id)
+        active = channel_runtime_store.get_active_task(platform_user_id=user_id)
+        if not active:
+            active = await heartbeat_store.get_session_active_task(user_id)
         summary_to_store = str(result_summary or "").strip()
         if not summary_to_store:
             summary_to_store = str((active or {}).get("result_summary") or "").strip()
@@ -241,6 +244,14 @@ class TaskTrackerService:
         session_status = "done" if status == "completed" else status
         should_clear = session_status in {"done", "failed", "cancelled", "timed_out"}
         if active and task_id in {active_task_id, session_task_id}:
+            channel_runtime_store.update_active_task(
+                platform_user_id=user_id,
+                status=session_status,
+                result_summary=summary_to_store,
+                needs_confirmation=False,
+                confirmation_deadline="",
+                clear_active=should_clear,
+            )
             await heartbeat_store.update_session_active_task(
                 user_id,
                 status=session_status,
@@ -255,6 +266,33 @@ class TaskTrackerService:
             return
 
         metadata = dict(task.metadata or {})
+        channel_runtime_store.set_active_task(
+            {
+                "id": task_id,
+                "session_task_id": str(
+                    metadata.get("session_task_id") or task_id
+                ).strip()
+                or task_id,
+                "task_inbox_id": task_id,
+                "goal": str(task.goal or "").strip(),
+                "status": "waiting_external",
+                "source": str(task.source or "").strip(),
+                "result_summary": summary_to_store,
+                "needs_confirmation": False,
+                "confirmation_deadline": "",
+                "stage_index": int(metadata.get("stage_index") or 0),
+                "stage_total": int(metadata.get("stage_total") or 0),
+                "stage_id": str(metadata.get("stage_id") or "").strip(),
+                "stage_title": str(metadata.get("stage_title") or "").strip(),
+                "attempt_index": int(metadata.get("attempt_index") or 0),
+                "delivery_state": str(metadata.get("delivery_state") or "").strip(),
+                "last_user_visible_summary": summary_to_store,
+                "resume_window_until": str(
+                    metadata.get("resume_window_until") or ""
+                ).strip(),
+            },
+            platform_user_id=user_id,
+        )
         await heartbeat_store.set_session_active_task(
             user_id,
             {

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from telegram.error import NetworkError
 
 from core.platform.exceptions import MessageSendError
 from platforms.telegram.adapter import TelegramAdapter
@@ -87,6 +88,33 @@ async def test_telegram_adapter_send_message_retries_timeout(monkeypatch):
             self.calls += 1
             if self.calls < 3:
                 raise TimeoutError("timed out")
+            return SimpleNamespace(id="tg-ok")
+
+    async def _fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("platforms.telegram.adapter.asyncio.sleep", _fast_sleep)
+
+    flaky_bot = _FlakyBot()
+    app = SimpleNamespace(bot=flaky_bot)
+    adapter = TelegramAdapter(app)
+    result = await adapter.send_message(chat_id=100, text="hello")
+
+    assert result.id == "tg-ok"
+    assert flaky_bot.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_telegram_adapter_send_message_retries_connect_errors(monkeypatch):
+    class _FlakyBot:
+        def __init__(self):
+            self.calls = 0
+
+        async def send_message(self, **kwargs):
+            _ = kwargs
+            self.calls += 1
+            if self.calls < 3:
+                raise NetworkError("httpx.ConnectError:")
             return SimpleNamespace(id="tg-ok")
 
     async def _fast_sleep(_seconds):

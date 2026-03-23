@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 from core.file_artifacts import classify_file_kind
 from core.platform.models import UnifiedContext
 
+logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_FILE_BYTES = max(
     1,
@@ -216,13 +218,40 @@ async def send_local_file(
         }
 
     summary_text = f"📎 已发送文件：{delivered_name}"
+    file_payload = {
+        "path": str(path_obj),
+        "filename": delivered_name,
+        "kind": delivery_kind,
+        "caption": safe_caption or "",
+    }
+    try:
+        platform_name = str(getattr(getattr(ctx, "message", None), "platform", "") or "")
+        if platform_name.strip().lower() == "heartbeat_daemon":
+            pending_rows = ctx.user_data.get("heartbeat_pending_files")
+            if not isinstance(pending_rows, list):
+                pending_rows = []
+            pending_rows.append(dict(file_payload))
+            ctx.user_data["heartbeat_pending_files"] = pending_rows
+            logger.info(
+                "Buffered heartbeat file delivery user=%s path=%s kind=%s filename=%s total=%s",
+                str(getattr(getattr(getattr(ctx, "message", None), "user", None), "id", "") or ""),
+                str(path_obj),
+                delivery_kind,
+                delivered_name,
+                len(pending_rows),
+            )
+    except Exception:
+        pass
     return {
         "ok": True,
-        "terminal": True,
-        "task_outcome": "done",
+        "terminal": False,
         "summary": f"Sent local file {delivered_name}",
         "text": summary_text,
-        "payload": {"text": summary_text},
+        "payload": {
+            "text": summary_text,
+            "files": [file_payload],
+        },
+        "files": [file_payload],
         "data": {
             "path": str(path_obj),
             "filename": delivered_name,

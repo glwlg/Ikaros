@@ -28,16 +28,72 @@ def _as_datetime(raw_ms: Any) -> datetime:
     return datetime.now()
 
 
+def _append_unique_text(parts: list[str], value: Any) -> None:
+    text = _safe_text(value)
+    if text and text not in parts:
+        parts.append(text)
+
+
+def _collect_textish_payload(payload: Any, *, depth: int = 1) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+
+    parts: list[str] = []
+    for key in (
+        "text",
+        "title",
+        "desc",
+        "description",
+        "digest",
+        "summary",
+        "url",
+        "link_url",
+        "web_url",
+        "jump_url",
+        "jumpUrl",
+        "link",
+    ):
+        _append_unique_text(parts, payload.get(key))
+
+    if depth <= 0:
+        return parts
+
+    for key, value in payload.items():
+        if not isinstance(value, dict):
+            continue
+        safe_key = _safe_text(key).lower()
+        if safe_key.endswith("_item") or safe_key in {
+            "article",
+            "link",
+            "page",
+            "share",
+            "source",
+            "target",
+            "webpage",
+        }:
+            for text in _collect_textish_payload(value, depth=depth - 1):
+                _append_unique_text(parts, text)
+    return parts
+
+
 def _collect_text_parts(raw_message: dict[str, Any]) -> list[str]:
     items = raw_message.get("item_list") or []
     parts: list[str] = []
     for item in items:
-        if not isinstance(item, dict) or item.get("type") != 1:
+        if not isinstance(item, dict):
             continue
-        text_item = item.get("text_item") or {}
-        text = _safe_text(text_item.get("text"))
-        if text:
-            parts.append(text)
+        item_type = item.get("type")
+        if item_type == 1:
+            text_item = item.get("text_item") or {}
+            _append_unique_text(parts, text_item.get("text"))
+            continue
+        if item_type in (2, 3, 4, 5):
+            continue
+        for key, value in item.items():
+            if key == "type" or not isinstance(value, dict):
+                continue
+            for text in _collect_textish_payload(value):
+                _append_unique_text(parts, text)
     return parts
 
 

@@ -12,6 +12,7 @@ from .base_handlers import (
     check_permission_unified,
     edit_callback_message,
     get_effective_user_id,
+    require_feature_access,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,6 +226,8 @@ async def _switch_book_payload(
 async def accounting_command(ctx: UnifiedContext) -> None:
     if not await check_permission_unified(ctx):
         return
+    if not await require_feature_access(ctx, "accounting"):
+        return
 
     text = ctx.message.text or ""
 
@@ -269,6 +272,8 @@ async def accounting_command(ctx: UnifiedContext) -> None:
 
 
 async def handle_accounting_callback(ctx: UnifiedContext) -> None:
+    if not await require_feature_access(ctx, "accounting"):
+        return
     data = ctx.callback_data
     if not data:
         return

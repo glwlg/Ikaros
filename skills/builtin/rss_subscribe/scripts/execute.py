@@ -17,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 
 import feedparser
 import httpx
+from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
 from core.platform.models import UnifiedContext
 from core.skill_menu import make_callback, parse_callback
 from core.skill_cli import (
@@ -40,6 +41,14 @@ from stats import increment_stat
 
 logger = logging.getLogger(__name__)
 RSS_MENU_NS = "rssm"
+
+
+def _rss_enabled(ctx: UnifiedContext) -> bool:
+    return is_channel_feature_enabled(
+        platform=str(ctx.message.platform or "").strip().lower(),
+        platform_user_id=str(ctx.message.user.id or "").strip(),
+        feature="rss",
+    )
 
 
 def _format_delivery_target(target: dict[str, str] | None) -> str:
@@ -223,6 +232,8 @@ def _extract_target(params: dict) -> str:
 
 
 async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
+    if not _rss_enabled(ctx):
+        return {"text": channel_feature_denied_text("rss"), "ui": {}}
     action = _normalize_action(str(params.get("action") or ""))
     raw_target = str(
         params.get("url")
@@ -291,6 +302,8 @@ def register_handlers(adapter_manager):
     async def cmd_rss(ctx):
         if not await is_user_allowed(ctx.message.user.id):
             return
+        if not _rss_enabled(ctx):
+            return {"text": channel_feature_denied_text("rss"), "ui": {}}
 
         sub, args = _parse_rss_subcommand(ctx.message.text or "")
         if sub == "menu":
@@ -480,6 +493,9 @@ async def remove_subscription_by_target(ctx: UnifiedContext, target: str) -> dic
 
 
 async def handle_unsubscribe_callback(ctx: UnifiedContext):
+    if not _rss_enabled(ctx):
+        await ctx.reply(channel_feature_denied_text("rss"))
+        return
     data = ctx.callback_data
     if not data:
         return

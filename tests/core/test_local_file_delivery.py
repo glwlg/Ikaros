@@ -11,6 +11,7 @@ from core.local_file_delivery import send_local_file
 class _FakeCtx:
     def __init__(self, platform: str = "telegram"):
         self.message = SimpleNamespace(platform=platform)
+        self.user_data = {}
         self.documents: list[dict[str, object]] = []
         self.photos: list[dict[str, object]] = []
         self.videos: list[dict[str, object]] = []
@@ -73,11 +74,14 @@ async def test_send_local_file_sends_existing_relative_document(tmp_path):
     )
 
     assert result["ok"] is True
-    assert result["terminal"] is True
+    assert result["terminal"] is False
     assert ctx.documents
     assert ctx.documents[0]["document"] == str(target)
     assert ctx.documents[0]["filename"] == "report.txt"
     assert ctx.documents[0]["caption"] == "请查收"
+    assert result["payload"]["files"][0]["path"] == str(target)
+    assert result["payload"]["files"][0]["filename"] == "report.txt"
+    assert result["payload"]["files"][0]["kind"] == "document"
 
 
 @pytest.mark.asyncio
@@ -136,3 +140,24 @@ async def test_send_local_file_allows_readable_absolute_path_outside_workspace(t
     assert result["ok"] is True
     assert ctx.photos
     assert ctx.photos[0]["photo"] == str(external)
+
+
+@pytest.mark.asyncio
+async def test_send_local_file_buffers_heartbeat_delivery_files(tmp_path):
+    target = (tmp_path / "baby_latest.jpg").resolve()
+    target.write_bytes(b"fake-image")
+    ctx = _FakeCtx(platform="heartbeat_daemon")
+
+    result = await send_local_file(
+        ctx,
+        path=str(target),
+        filename="baby_camera_latest.jpg",
+        task_workspace_root=str(tmp_path),
+    )
+
+    assert result["ok"] is True
+    assert ctx.user_data["heartbeat_pending_files"][0]["path"] == str(target)
+    assert (
+        ctx.user_data["heartbeat_pending_files"][0]["filename"]
+        == "baby_camera_latest.jpg"
+    )

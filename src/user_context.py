@@ -7,7 +7,7 @@ import uuid
 import logging
 from typing import Any, Literal, TYPE_CHECKING
 
-from core.heartbeat_store import heartbeat_store
+from core.channel_runtime_store import channel_runtime_store
 from core.state_store import (
     save_message,
     get_session_messages,
@@ -49,28 +49,58 @@ async def get_or_create_session_id(
 
     if SESSION_ID_KEY in store:
         session_id = str(store[SESSION_ID_KEY])
+        platform = _context_platform(context)
+        if platform and str(user_id or "").strip():
+            channel_runtime_store.set_session_id(
+                session_id=session_id,
+                platform=platform,
+                platform_user_id=str(user_id),
+            )
         set_current_llm_usage_session_id(session_id)
         return session_id
 
-    session_id = await _resolve_preferred_session_id(user_id)
+    session_id = await _resolve_preferred_session_id(context, user_id)
     store[SESSION_ID_KEY] = session_id
     set_current_llm_usage_session_id(session_id)
     return session_id
 
 
-async def _resolve_preferred_session_id(user_id: int | str) -> str:
+def _context_platform(context: TelegramContext | UnifiedContext) -> str:
+    message = getattr(context, "message", None)
+    return str(getattr(message, "platform", "") or "").strip().lower()
+
+
+async def _resolve_preferred_session_id(
+    context: TelegramContext | UnifiedContext,
+    user_id: int | str,
+) -> str:
     safe_user_id = str(user_id or "").strip()
     if not safe_user_id:
         return str(uuid.uuid4())
 
     try:
+        session_id = channel_runtime_store.get_session_id(
+            platform=_context_platform(context),
+            platform_user_id=safe_user_id,
+        )
+        if session_id:
+            return session_id
+    except Exception:
+        logger.debug(
+            "Failed to read delivery target while resolving session user=%s",
+            safe_user_id,
+            exc_info=True,
+        )
+    try:
+        from core.heartbeat_store import heartbeat_store
+
         target = await heartbeat_store.get_delivery_target(safe_user_id)
         session_id = str(target.get("session_id") or "").strip()
         if session_id:
             return session_id
     except Exception:
         logger.debug(
-            "Failed to read delivery target while resolving session user=%s",
+            "Failed to read legacy heartbeat delivery target while resolving session user=%s",
             safe_user_id,
             exc_info=True,
         )
@@ -234,10 +264,10 @@ async def bind_delivery_target(
         return session_id
 
     try:
-        await heartbeat_store.set_delivery_target(
-            safe_user_id,
-            platform,
-            chat_id,
+        channel_runtime_store.set_delivery_target(
+            platform=platform,
+            platform_user_id=safe_user_id,
+            chat_id=chat_id,
             session_id=session_id,
         )
     except Exception:
@@ -285,6 +315,16 @@ def clear_context(context: TelegramContext | UnifiedContext) -> None:
         setattr(context, "user_data", {})
         store = getattr(context, "user_data", {})
     store[SESSION_ID_KEY] = new_session_id
+    message = getattr(context, "message", None)
+    platform = str(getattr(message, "platform", "") or "").strip().lower()
+    user = getattr(message, "user", None)
+    user_id = str(getattr(user, "id", "") or "").strip()
+    if platform and user_id:
+        channel_runtime_store.set_session_id(
+            session_id=new_session_id,
+            platform=platform,
+            platform_user_id=user_id,
+        )
     logger.info(f"Started new session: {new_session_id}")
 
 

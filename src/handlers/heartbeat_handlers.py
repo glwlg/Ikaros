@@ -5,7 +5,11 @@ from core.heartbeat_store import heartbeat_store
 from core.heartbeat_worker import heartbeat_worker
 from core.platform.models import UnifiedContext
 from core.skill_menu import make_callback, parse_callback
-from .base_handlers import check_permission_unified, edit_callback_message
+from .base_handlers import (
+    check_permission_unified,
+    edit_callback_message,
+    require_feature_access,
+)
 
 logger = logging.getLogger(__name__)
 HEARTBEAT_MENU_NS = "hbm"
@@ -201,6 +205,8 @@ async def heartbeat_command(ctx: UnifiedContext) -> None:
     """管理心跳清单与策略: /heartbeat [list|add|remove|pause|resume|run|every|hours]"""
     if not await check_permission_unified(ctx):
         return
+    if not await require_feature_access(ctx, "heartbeat"):
+        return
 
     user_id = str(ctx.message.user.id)
     text = ctx.message.text or ""
@@ -316,6 +322,8 @@ async def heartbeat_command(ctx: UnifiedContext) -> None:
 
 
 async def handle_heartbeat_callback(ctx: UnifiedContext) -> None:
+    if not await require_feature_access(ctx, "heartbeat"):
+        return
     data = ctx.callback_data
     if not data:
         return
