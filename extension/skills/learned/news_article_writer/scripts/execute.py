@@ -155,12 +155,12 @@ def _resolve_article_author(
             if value:
                 return value
     resolved = str(fallback_author or "").strip()
-    return resolved or "X-Bot"
+    return resolved or "Ikaros"
 
 
 def _author_watermark(author: str) -> str:
     safe_author = str(author or "").strip().lstrip("@")
-    return f"@{safe_author or 'X-Bot'}"
+    return f"@{safe_author or 'Ikaros'}"
 
 
 def _augment_image_prompt(prompt: str, author: str) -> str:
@@ -518,7 +518,7 @@ class WeChatPublisher:
         title: str,
         content_html: str,
         thumb_media_id: str,
-        author: str = "X-Bot",
+        author: str = "Ikaros",
         digest: str = "",
     ) -> str:
         token = await self.get_access_token()

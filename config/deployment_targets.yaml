@@ -1,7 +1,7 @@
 targets:
   manager:
-    service: x-bot
-    image: x-bot-manager
+    service: ikaros
+    image: ikaros-manager
   api:
-    service: x-bot-api
-    image: x-bot-api
+    service: ikaros-api
+    image: ikaros-api

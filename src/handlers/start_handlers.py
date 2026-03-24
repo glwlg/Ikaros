@@ -18,7 +18,7 @@ HOME_MENU_NS = "home"
 HELP_MENU_NS = "helpm"
 
 WELCOME_MESSAGE = (
-    "👋 **欢迎使用 X-Bot！**\n\n"
+    "👋 **欢迎使用 Ikaros！**\n\n"
     "我是您的全能 AI 助手，支持 **自然语言交互** 与 **多模态分析**。\n\n"
     "💬 **直接对话**：你可以像朋友一样跟我聊天。\n"
     "🛠️ **执行任务**：下载视频、监控股票、阅读PDF、生成播客等。\n"
@@ -192,7 +192,7 @@ def _build_help_payload(
             },
         )
     return (
-        "ℹ️ **X-Bot 使用指南**\n\n"
+        "ℹ️ **Ikaros 使用指南**\n\n"
         "按类别查看最常用功能和命令：",
         _help_categories_ui(),
     )

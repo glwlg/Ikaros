@@ -1,4 +1,4 @@
-# X-Bot DEVELOPMENT
+# Ikaros DEVELOPMENT
 
 更新时间：2026-03-24  
 状态：`ACTIVE`
@@ -7,10 +7,10 @@
 
 ## 1. 当前系统形态
 
-X-Bot 当前的主运行形态是两类进程：
+Ikaros 当前的主运行形态是两类进程：
 
-- `x-bot`：唯一用户可见的 Core Manager
-- `x-bot-api`：FastAPI + SPA
+- `ikaros`：唯一用户可见的 Core Manager
+- `ikaros-api`：FastAPI + SPA
 
 Manager 运行在宿主机或单容器内，必要时在同进程内启动受控 `subagent` 做并发执行。  
 `subagent` 不是独立部署单元，也不是直接对用户交付结果的 agent。
@@ -74,7 +74,7 @@ Manager 侧常用 direct tool：
 
 ### 2.3 API Service
 
-`x-bot-api` 负责：
+`ikaros-api` 负责：
 
 - `/api/v1/*` 路由
 - auth、binding、accounting 等 Web/API 能力

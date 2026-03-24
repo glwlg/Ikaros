@@ -477,7 +477,7 @@ async def _search_repo_candidates_via_github(
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "x-bot-deployment-manager",
+        "User-Agent": "ikaros-deployment-manager",
     }
     token = os.getenv("GITHUB_TOKEN", "").strip()
     if token:

@@ -297,7 +297,7 @@ class DingTalkAdapter(BotAdapter):
             # 运行在线程池中，避免阻塞主循环
             await asyncio.to_thread(
                 handler.reply_markdown,
-                title="X-Bot Reply",
+                title="Ikaros Reply",
                 text=text,
                 incoming_message=incoming_message,
             )

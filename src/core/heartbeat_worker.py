@@ -73,9 +73,6 @@ class HeartbeatWorker:
 
         self.suppress_ok = os.getenv("HEARTBEAT_SUPPRESS_OK", "true").lower() == "true"
         self.mode = os.getenv("HEARTBEAT_MODE", "execute").strip().lower() or "execute"
-        self.readonly_dispatch = (
-            os.getenv("HEARTBEAT_READONLY_DISPATCH", "false").lower() == "true"
-        )
         self.enable_rss_signal = (
             os.getenv("HEARTBEAT_RSS_SIGNAL_ENABLED", "true").lower() == "true"
         )

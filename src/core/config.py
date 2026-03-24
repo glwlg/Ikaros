@@ -215,9 +215,6 @@ HEARTBEAT_TIMEZONE = os.getenv("HEARTBEAT_TIMEZONE", "")
 HEARTBEAT_TICK_SEC = int(os.getenv("HEARTBEAT_TICK_SEC", "30"))
 HEARTBEAT_SUPPRESS_OK = os.getenv("HEARTBEAT_SUPPRESS_OK", "true").lower() == "true"
 HEARTBEAT_MODE = os.getenv("HEARTBEAT_MODE", "readonly").strip().lower() or "readonly"
-HEARTBEAT_READONLY_DISPATCH = (
-    os.getenv("HEARTBEAT_READONLY_DISPATCH", "false").lower() == "true"
-)
 
 
 def _as_int(value: str, default: int) -> int:
@@ -236,10 +233,6 @@ def _as_float(value: str, default: float) -> float:
 
 # Auto recovery budget for terminal/recoverable failures in orchestrator loop
 AUTO_RECOVERY_MAX_ATTEMPTS = int(os.getenv("AUTO_RECOVERY_MAX_ATTEMPTS", "3"))
-
-USERLAND_ROOT = os.getenv(
-    "USERLAND_ROOT", os.path.join(DATA_DIR, "userland", "subagents")
-)
 
 # Core chat execution policy:
 # - manager_only: manager handles the request directly

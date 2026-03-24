@@ -245,7 +245,7 @@ async def _create_with_codex_session(
     spec_path = _skill_spec_path()
     spec_hint = _to_project_rel(spec_path)
     instruction = (
-        "你是 X-Bot 的技能工程师。请在当前工作目录创建一个新技能。\n"
+        "你是 Ikaros 的技能工程师。请在当前工作目录创建一个新技能。\n"
         f"当前工作目录: {target_dir}\n"
         f"目标技能名: {target_name}\n"
         f"开始前先阅读技能规范: {spec_hint}\n"
@@ -343,7 +343,7 @@ async def _modify_with_codex_session(
     spec_path = _skill_spec_path()
     spec_hint = _to_project_rel(spec_path)
     cli_instruction = (
-        "你是 X-Bot 的技能维护工程师，请修改一个已有技能。\n"
+        "你是 Ikaros 的技能维护工程师，请修改一个已有技能。\n"
         f"目标技能: {skill_name}\n"
         f"当前工作目录: {skill_dir}\n"
         f"开始前先阅读技能规范: {spec_hint}\n"

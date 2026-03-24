@@ -8,8 +8,8 @@ def test_deployment_targets_loads_external_config(tmp_path: Path):
     config_path.write_text(
         """targets:
   api:
-    service: x-bot-api-blue
-    image: x-bot-api-blue
+    service: ikaros-api-blue
+    image: ikaros-api-blue
 """,
         encoding="utf-8",
     )
@@ -19,10 +19,10 @@ def test_deployment_targets_loads_external_config(tmp_path: Path):
     api = targets.get("api")
 
     assert manager == {
-        "service": "x-bot",
-        "image": "x-bot-manager",
+        "service": "ikaros",
+        "image": "ikaros-manager",
     }
     assert api == {
-        "service": "x-bot-api-blue",
-        "image": "x-bot-api-blue",
+        "service": "ikaros-api-blue",
+        "image": "ikaros-api-blue",
     }

@@ -395,7 +395,7 @@ def test_manager_agents_doc_does_not_expose_auto_loaded_core_files():
     text = agents_path.read_text(encoding="utf-8")
 
     assert "Ikaros" in text
-    assert "X-Bot" in text
+    assert "X-Bot" not in text
     assert "subagent" in text
     assert "Worker" not in text
     assert "`data/SOUL.MD`" not in text

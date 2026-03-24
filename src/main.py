@@ -1,5 +1,5 @@
 """
-X-Bot 主程序入口
+Ikaros 主程序入口
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ async def init_services():
 
 
 async def main():
-    logger.info("Starting X-Bot (Extension Runtime Mode)...")
+    logger.info("Starting Ikaros (Extension Runtime Mode)...")
     runtime = await init_services()
     await heartbeat_worker.start()
 

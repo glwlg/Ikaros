@@ -24,10 +24,6 @@ def prepare_default_env(repo_root: Path) -> None:
     os.environ.setdefault("DATA_DIR", str(data_dir))
     os.environ["MODELS_CONFIG_PATH"] = str(models_config_path)
     os.environ.setdefault(
-        "MANAGER_DISPATCH_ROOT",
-        str((data_dir / "system" / "dispatch").resolve()),
-    )
-    os.environ.setdefault(
         "X_DEPLOYMENT_STAGING_PATH",
         str((data_dir / "system" / "deployment_staging").resolve()),
     )

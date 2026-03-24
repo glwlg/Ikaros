@@ -26,7 +26,7 @@
         "vector_store": {
           "provider": "qdrant",
           "config": {
-            "collection_name": "x-bot-memory",
+            "collection_name": "ikaros-memory",
             "embedding_model_dims": 1536,
             "url": "http://localhost:6333",
             "token": "YOUR_VECTOR_STORE_TOKEN"

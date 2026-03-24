@@ -1,9 +1,9 @@
-# X-Bot
+# Ikaros
 
-X-Bot 是一个 Python 多平台 AI Bot，当前采用 `Core Manager + API Service + Extension Runtime` 架构。
+Ikaros 是一个 Python 多平台 AI Bot，当前采用 `Core Manager + API Service + Extension Runtime` 架构。
 
-- `x-bot`：唯一用户可见的 Core Manager，负责请求编排、任务治理、模型路由、心跳、状态访问和 extension runtime
-- `x-bot-api`：FastAPI + SPA，提供 Web/API 能力
+- `ikaros`：唯一用户可见的 Core Manager，负责请求编排、任务治理、模型路由、心跳、状态访问和 extension runtime
+- `ikaros-api`：FastAPI + SPA，提供 Web/API 能力
 
 运行时状态统一落在 `data/` 下，主体仍是文件系统优先；需要聚合查询的部分使用 `data/bot_data.db` 做 SQLite 存储。
 
@@ -38,7 +38,7 @@ Manager 是系统统一入口，负责：
 
 ### 2. API Service
 
-`x-bot-api` 负责：
+`ikaros-api` 负责：
 
 - `/api/v1/*` 路由
 - Web 认证、绑定、记账等 API 能力
@@ -211,8 +211,8 @@ Docker 方式：
 
 ```bash
 docker compose up --build -d
-docker compose logs -f x-bot
-docker compose logs -f x-bot-api
+docker compose logs -f ikaros
+docker compose logs -f ikaros-api
 ```
 
 ## 聊天内管理命令

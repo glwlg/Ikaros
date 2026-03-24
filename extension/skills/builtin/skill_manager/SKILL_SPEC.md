@@ -1,4 +1,4 @@
-# X-Bot Skill Specification
+# Ikaros Skill Specification
 
 This file is the coding contract for creating or modifying skills under `skills/learned/*`.
 

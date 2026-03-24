@@ -1348,7 +1348,7 @@ class WeixinAdapter(BotAdapter):
             }
 
     def _build_client_id(self) -> str:
-        return f"x-bot-weixin-{int(time.time() * 1000)}-{token_hex(4)}"
+        return f"ikaros-weixin-{int(time.time() * 1000)}-{token_hex(4)}"
 
     async def _send_text_to_user(
         self,

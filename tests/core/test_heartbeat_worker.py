@@ -101,7 +101,6 @@ async def test_heartbeat_worker_manual_run_pushes_non_ok(monkeypatch, tmp_path):
     worker = HeartbeatWorker()
     worker.enabled = True
     worker.suppress_ok = True
-    worker.readonly_dispatch = False
 
     result = await worker.run_user_now("worker_u2")
     assert "紧急邮件" in result
@@ -499,7 +498,6 @@ async def test_heartbeat_worker_readonly_action_does_not_dispatch_to_worker(
     worker = HeartbeatWorker()
     worker.enabled = True
     worker.mode = "readonly"
-    worker.readonly_dispatch = True
     worker.suppress_ok = True
 
     result = await worker.run_user_now("worker_u3")

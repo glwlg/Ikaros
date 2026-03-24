@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
 RUNNER_PATH="${PROJECT_DIR}/scripts/run_manager.sh"
 
-SERVICE_NAME="x-bot"
+SERVICE_NAME="ikaros"
 INSTALL_MODE="system"
 TARGET_USER=""
 PRINT_ONLY=0
@@ -21,7 +21,7 @@ Options:
   --system               Install a system service under /etc/systemd/system (default)
   --user                 Install a user service under ~/.config/systemd/user
   --target-user USER     Override the inferred runtime user for --system mode
-  --service-name NAME    Override the unit name (default: x-bot)
+  --service-name NAME    Override the unit name (default: ikaros)
   --print-unit           Print the rendered unit file instead of installing it
   --no-start             Install the unit but do not enable/start it
   -h, --help             Show this help text
@@ -80,7 +80,7 @@ render_system_unit() {
 
     cat <<EOF
 [Unit]
-Description=X-Bot Manager
+Description=Ikaros Manager
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -102,7 +102,7 @@ EOF
 render_user_unit() {
     cat <<EOF
 [Unit]
-Description=X-Bot Manager
+Description=Ikaros Manager
 After=network-online.target
 Wants=network-online.target
 

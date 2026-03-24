@@ -9,6 +9,7 @@ import pytest
 def _load_module():
     path = (
         Path(__file__).resolve().parents[2]
+        / "extension"
         / "skills"
         / "learned"
         / "news_article_writer"
@@ -84,7 +85,7 @@ async def test_news_article_writer_calls_web_search_with_expected_params(monkeyp
         return json.dumps(
             {
                 "title": "测试标题",
-                "author": "X-Bot",
+                "author": "Ikaros",
                 "digest": "测试摘要",
                 "cover_prompt": None,
                 "sections": [

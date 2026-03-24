@@ -29,7 +29,7 @@ entrypoint: scripts/execute.py
 ## 关键约束
 
 - 用户自选股存储由 `core.state_store` 内部管理，数据落在 Bot 自己的数据目录中。
-- **禁止** 自行创建 `~/.x-bot/stocks.json`、临时 SQLite、Markdown 或其他自定义持久化文件。
+- **禁止** 自行创建 `~/.ikaros/stocks.json`、临时 SQLite、Markdown 或其他自定义持久化文件。
 - 当前用户默认从运行时注入的 `X_BOT_RUNTIME_USER_ID` 读取；只有注入缺失时才手工传 `--user-id`。
 - 当前平台默认从 `X_BOT_RUNTIME_PLATFORM` 读取；为空或为 `subagent_kernel` 时自动回落到 `telegram`。
 
