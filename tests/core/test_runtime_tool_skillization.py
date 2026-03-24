@@ -208,7 +208,7 @@ async def test_load_skill_sets_bash_cwd_for_relative_entrypoint(monkeypatch):
     async def append_event(_event: str):
         return None
 
-    skill_dir = "/tmp/skills/daily_query"
+    skill_dir = "/tmp/extension/skills/daily_query"
     monkeypatch.setattr(
         runtime_tools_module.skill_loader,
         "get_skill",
@@ -277,7 +277,7 @@ async def test_load_skill_blocks_manager_only_skill_for_subagent(monkeypatch):
             "allowed_roles": ["manager"],
             "contract": {"runtime_target": "manager"},
             "skill_md_content": "# Skill Manager",
-            "skill_dir": "/tmp/skills/skill_manager",
+            "skill_dir": "/tmp/extension/skills/skill_manager",
             "entrypoint": "scripts/execute.py",
         },
     )

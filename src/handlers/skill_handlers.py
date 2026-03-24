@@ -10,7 +10,7 @@ from core.platform.models import UnifiedContext
 from core.skill_menu import button_rows, cache_items, get_cached_item, make_callback, parse_callback
 
 from core.config import is_user_admin
-from core.skill_loader import skill_loader
+from extension.skills.registry import skill_registry as skill_loader
 from handlers.base_handlers import (
     check_permission_unified,
     CONVERSATION_END,

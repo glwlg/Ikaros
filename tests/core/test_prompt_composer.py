@@ -140,7 +140,7 @@ def test_prompt_composer_does_not_inject_manager_agents_for_subagent(monkeypatch
 
 def test_prompt_composer_filters_skill_catalog_by_runtime_policy(monkeypatch):
     monkeypatch.setattr(
-        "core.skill_loader.skill_loader.get_skills_summary",
+        "extension.skills.registry.skill_registry.get_skills_summary",
         lambda: [
             {
                 "name": "stock_watch",
@@ -184,7 +184,7 @@ def test_prompt_composer_filters_skill_catalog_by_runtime_policy(monkeypatch):
 
 def test_prompt_composer_hides_manager_only_roles_from_subagent(monkeypatch):
     monkeypatch.setattr(
-        "core.skill_loader.skill_loader.get_skills_summary",
+        "extension.skills.registry.skill_registry.get_skills_summary",
         lambda: [
             {
                 "name": "stock_watch",
@@ -220,7 +220,7 @@ def test_prompt_composer_hides_manager_only_roles_from_subagent(monkeypatch):
 
 def test_prompt_composer_filters_skill_catalog_by_allowed_skill_names(monkeypatch):
     monkeypatch.setattr(
-        "core.skill_loader.skill_loader.get_skills_summary",
+        "extension.skills.registry.skill_registry.get_skills_summary",
         lambda: [
             {
                 "name": "stock_watch",
@@ -266,7 +266,7 @@ def test_prompt_composer_builds_manager_tool_guidance_from_skill_metadata(
         ],
     )
     monkeypatch.setattr(
-        "core.skill_loader.skill_loader.get_tool_export",
+        "extension.skills.registry.skill_registry.get_tool_export",
         lambda name: {
             "repo_workspace": {
                 "prompt_hint": "开发任务先准备 `repo_workspace`。",
@@ -391,10 +391,12 @@ def test_prompt_composer_manager_contract_blocks_default_memory_file_reads(monke
 
 
 def test_manager_agents_doc_does_not_expose_auto_loaded_core_files():
-    agents_path = Path(__file__).resolve().parents[2] / "data" / "AGENTS.md"
+    agents_path = Path(__file__).resolve().parents[2] / "config" / "AGENTS.md"
     text = agents_path.read_text(encoding="utf-8")
 
-    assert "每轮对话必须全量加载" not in text
+    assert "Ikaros" in text
+    assert "X-Bot" in text
+    assert "subagent" in text
+    assert "Worker" not in text
     assert "`data/SOUL.MD`" not in text
     assert "`data/AGENTS.md`" not in text
-    assert "系统上下文注入" in text

@@ -1,6 +1,6 @@
 from core.platform.models import MessageType
-from platforms.weixin.formatter import markdown_to_weixin_text
-from platforms.weixin.mapper import map_weixin_message
+from extension.channels.weixin.formatter import markdown_to_weixin_text
+from extension.channels.weixin.mapper import map_weixin_message
 
 
 def test_markdown_to_weixin_text_downgrades_links_and_emphasis():

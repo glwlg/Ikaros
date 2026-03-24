@@ -411,7 +411,7 @@ async def _dispatch_home_callback_data(ctx: UnifiedContext, data: str) -> int:
         if action == "accounting":
             if not await require_feature_access(ctx, "accounting"):
                 return CONVERSATION_END
-            from core.skill_loader import skill_loader
+            from extension.skills.registry import skill_registry as skill_loader
 
             module = skill_loader.import_skill_module("quick_accounting")
             builder = getattr(module, "build_accounting_info_payload", None)

@@ -5,10 +5,10 @@ import pytest
 
 from core.platform.exceptions import MediaDownloadUnavailableError
 from core.platform.models import MessageType
-from platforms.dingtalk.adapter import DingTalkAdapter
-from platforms.dingtalk.mapper import map_chatbot_message, map_dingtalk_message
-from platforms.discord.adapter import DiscordAdapter
-from platforms.telegram.mapper import map_telegram_message, map_update_to_message
+from extension.channels.dingtalk.adapter import DingTalkAdapter
+from extension.channels.dingtalk.mapper import map_chatbot_message, map_dingtalk_message
+from extension.channels.discord.adapter import DiscordAdapter
+from extension.channels.telegram.mapper import map_telegram_message, map_update_to_message
 
 
 class _FakeTelegramObject:

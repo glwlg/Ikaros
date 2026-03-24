@@ -1,6 +1,7 @@
+import types
 from pathlib import Path
 
-from core.skill_loader import SkillLoader
+from extension.skills.registry import SkillRegistry
 
 
 def test_skill_loader_infers_schema_from_parameter_table(tmp_path: Path):
@@ -33,7 +34,7 @@ entrypoint: scripts/execute.py
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     indexed = loader.scan_skills()
     schema = indexed["web_demo"]["input_schema"]
 
@@ -75,7 +76,7 @@ entrypoint: scripts/execute.py
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     indexed = loader.scan_skills()
     schema = indexed["search_demo"]["input_schema"]
     properties = schema.get("properties") or {}
@@ -101,7 +102,7 @@ allowed-tools:
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     indexed = loader.scan_skills()
     info = indexed["playwright-cli"]
 
@@ -134,7 +135,7 @@ entrypoint: scripts/execute.py
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     indexed = loader.scan_skills()
     contract = indexed["demo_contract"]["contract"]
 
@@ -181,7 +182,7 @@ entrypoint: scripts/execute.py
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     indexed = loader.scan_skills()
     contract = indexed["ops_contract"]["contract"]
 
@@ -220,7 +221,7 @@ tool_exports:
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     indexed = loader.scan_skills()
     exports = indexed["manager_ops"]["tool_exports"]
 
@@ -256,7 +257,7 @@ entrypoint: scripts/execute.py
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     indexed = loader.scan_skills()
     info = indexed["media_ops"]
 
@@ -264,7 +265,7 @@ entrypoint: scripts/execute.py
     assert info["platform_handlers"] is True
 
 
-def test_skill_loader_register_skill_handlers_is_explicit_opt_in(tmp_path: Path):
+def test_skill_registry_registers_only_skill_extension_subclasses(tmp_path: Path):
     enabled_dir = tmp_path / "skills" / "builtin" / "enabled_skill"
     enabled_dir.mkdir(parents=True, exist_ok=True)
     (enabled_dir / "scripts").mkdir(parents=True, exist_ok=True)
@@ -280,8 +281,10 @@ entrypoint: scripts/execute.py
         encoding="utf-8",
     )
     (enabled_dir / "scripts" / "execute.py").write_text(
-        "def register_handlers(adapter_manager):\n"
-        "    adapter_manager.on_command('enabled', lambda *args, **kwargs: None)\n",
+        "from core.extension_base import SkillExtension\n"
+        "class EnabledSkill(SkillExtension):\n"
+        "    def register(self, runtime):\n"
+        "        runtime.adapter_manager.on_command('enabled', lambda *args, **kwargs: None)\n",
         encoding="utf-8",
     )
 
@@ -312,17 +315,23 @@ entrypoint: scripts/execute.py
             _ = (handler, description)
             self.commands.append(str(command))
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     loader.scan_skills()
     adapter = _AdapterManager()
+    loader._register_skill_management = lambda runtime: None
 
-    loader.register_skill_handlers(adapter)
+    loader.register_extensions(
+        types.SimpleNamespace(
+            adapter_manager=adapter,
+            scheduler=object(),
+        )
+    )
 
     assert adapter.commands == ["enabled"]
 
 
 def test_builtin_command_skills_remain_opted_in_for_platform_handlers():
-    loader = SkillLoader()
+    loader = SkillRegistry()
     indexed = loader.scan_skills()
 
     assert indexed["account_manager"]["platform_handlers"] is True
@@ -356,7 +365,7 @@ entrypoint: scripts/execute.py
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(tmp_path / "skills"))
+    loader = SkillRegistry(skills_dir=str(tmp_path / "skills"))
     loader.scan_skills()
 
     assert loader.get_skill("union_search_skill")["name"] == "union_search_skill"
@@ -384,7 +393,7 @@ entrypoint: scripts/execute.py
         encoding="utf-8",
     )
 
-    loader = SkillLoader(skills_dir=str(root))
+    loader = SkillRegistry(skills_dir=str(root))
     assert loader.get_skill("first_skill")["name"] == "first_skill"
     assert loader.get_skill("second_skill") is None
 

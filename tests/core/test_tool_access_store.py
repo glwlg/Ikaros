@@ -45,7 +45,7 @@ def test_tool_access_dynamic_skill_export_inherits_parent_skill_groups(
     store._write_unlocked()
 
     monkeypatch.setattr(
-        "core.skill_loader.skill_loader.get_tool_export",
+        "extension.skills.registry.skill_registry.get_tool_export",
         lambda name: (
             {
                 "name": "queue_status",
@@ -69,7 +69,7 @@ def test_tool_access_ext_skill_prefers_frontmatter_policy_groups(tmp_path, monke
     store._write_unlocked()
 
     monkeypatch.setattr(
-        "core.skill_loader.skill_loader.get_skill",
+        "extension.skills.registry.skill_registry.get_skill",
         lambda name: (
             {"policy_groups": ["group:media"]} if name == "download_video" else {}
         ),

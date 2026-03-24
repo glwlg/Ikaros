@@ -8,7 +8,7 @@ from typing import Any, Dict, List, cast
 
 from core.config import get_client_for_model
 from core.model_config import get_current_model
-from core.skill_loader import skill_loader
+from extension.skills.registry import skill_registry as skill_loader
 
 logger = logging.getLogger(__name__)
 

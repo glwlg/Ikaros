@@ -229,7 +229,7 @@ class ToolAccessStore:
         if not safe_skill:
             return []
         try:
-            from core.skill_loader import skill_loader
+            from extension.skills.registry import skill_registry as skill_loader
 
             info = skill_loader.get_skill(safe_skill) or {}
             groups = self._normalize_group_entries(info.get("policy_groups"))
@@ -271,7 +271,7 @@ class ToolAccessStore:
             for item in dynamic_skill_groups:
                 groups.add(item)
         try:
-            from core.skill_loader import skill_loader
+            from extension.skills.registry import skill_registry as skill_loader
 
             exported = skill_loader.get_tool_export(name)
         except Exception:

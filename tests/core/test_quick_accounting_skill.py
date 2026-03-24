@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from sqlalchemy import MetaData
 
 from api.core.database import Base
-from core.skill_loader import skill_loader
+from extension.skills.registry import skill_registry as skill_loader
 
 
 def test_quick_accounting_skill_import_registers_users_table():

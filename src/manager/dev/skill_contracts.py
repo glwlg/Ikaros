@@ -32,11 +32,11 @@ def resolve_skill_target_dir(
     safe_skill = sanitize_skill_name(skill_name)
 
     try:
-        from core.skill_loader import skill_loader
+        from extension.skills.registry import skill_registry as skill_loader
 
         skills_root = str(getattr(skill_loader, "skills_dir", "") or "").strip()
         if not skills_root:
-            skills_root = os.path.abspath(os.path.join(os.getcwd(), "skills"))
+            skills_root = os.path.abspath(os.path.join(os.getcwd(), "extension", "skills"))
 
         if safe_action == "skill_modify":
             if not safe_skill:
@@ -52,7 +52,7 @@ def resolve_skill_target_dir(
         target_name = safe_skill or f"skill_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         return os.path.abspath(os.path.join(skills_root, "learned", target_name))
     except Exception:
-        fallback_root = os.path.abspath(os.path.join(os.getcwd(), "skills", "learned"))
+        fallback_root = os.path.abspath(os.path.join(os.getcwd(), "extension", "skills", "learned"))
         target_name = safe_skill or f"skill_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         return os.path.abspath(os.path.join(fallback_root, target_name))
 
@@ -64,7 +64,7 @@ def resolve_skill_contract(
     cwd: str,
 ) -> Dict[str, Any]:
     try:
-        from core.skill_loader import skill_loader
+        from extension.skills.registry import skill_registry as skill_loader
 
         safe_action = str(action or "").strip().lower()
         safe_skill_name = sanitize_skill_name(skill_name)
@@ -76,7 +76,7 @@ def resolve_skill_contract(
             contract.setdefault("source", str(info.get("source") or ""))
             return contract
 
-        change_level = "builtin" if "/skills/builtin/" in safe_cwd else "learned"
+        change_level = "builtin" if "/extension/skills/builtin/" in safe_cwd else "learned"
         runtime_target = "manager"
         rollout_target = "manager"
         return {

@@ -10,7 +10,7 @@ import pytest
 from core.state_file import parse_state_payload
 from core.platform.models import Chat, UnifiedContext, UnifiedMessage, User
 from core.platform.models import MessageType
-from platforms.weixin.adapter import (
+from extension.channels.weixin.adapter import (
     WEIXIN_TYPING_STATUS_CANCEL,
     WEIXIN_TYPING_STATUS_TYPING,
     WeixinAdapter,
@@ -124,7 +124,7 @@ async def test_send_chat_action_reuses_cached_typing_ticket_and_can_cancel():
 
 @pytest.mark.asyncio
 async def test_persist_binding_writes_bindings_and_allow_list(tmp_path, monkeypatch):
-    monkeypatch.setattr("platforms.weixin.adapter.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("extension.channels.weixin.adapter.DATA_DIR", str(tmp_path))
     monkeypatch.setattr("core.config.DATA_DIR", str(tmp_path))
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
@@ -156,7 +156,7 @@ async def test_persist_binding_writes_bindings_and_allow_list(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_persist_binding_keeps_existing_sessions(tmp_path, monkeypatch):
-    monkeypatch.setattr("platforms.weixin.adapter.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("extension.channels.weixin.adapter.DATA_DIR", str(tmp_path))
     monkeypatch.setattr("core.config.DATA_DIR", str(tmp_path))
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 

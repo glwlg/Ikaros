@@ -55,29 +55,29 @@ def test_heartbeat_default_subcommands():
 
 def test_stock_rss_schedule_deploy_subcommand_parsers():
     stock = _load_module(
-        "skills/builtin/stock_watch/scripts/execute.py", "stock_watch_subcmd_test"
+        "extension/skills/learned/stock_watch/scripts/execute.py", "stock_watch_subcmd_test"
     )
     rss = _load_module(
-        "skills/builtin/rss_subscribe/scripts/execute.py", "rss_subcmd_test"
+        "extension/skills/learned/rss_subscribe/scripts/execute.py", "rss_subcmd_test"
     )
     schedule = _load_module(
-        "skills/builtin/scheduler_manager/scripts/execute.py",
+        "extension/skills/builtin/scheduler_manager/scripts/execute.py",
         "schedule_subcmd_test",
     )
     deploy = _load_module(
-        "skills/builtin/deployment_manager/scripts/execute.py", "deploy_subcmd_test"
+        "extension/skills/builtin/deployment_manager/scripts/execute.py", "deploy_subcmd_test"
     )
     account = _load_module(
-        "skills/builtin/account_manager/scripts/execute.py", "account_subcmd_test"
+        "extension/skills/builtin/account_manager/scripts/execute.py", "account_subcmd_test"
     )
     daily = _load_module(
-        "skills/learned/daily_query/scripts/execute.py", "daily_subcmd_test"
+        "extension/skills/learned/daily_query/scripts/execute.py", "daily_subcmd_test"
     )
     remind = _load_module(
-        "skills/learned/reminder/scripts/execute.py", "remind_subcmd_test"
+        "extension/skills/learned/reminder/scripts/execute.py", "remind_subcmd_test"
     )
     download = _load_module(
-        "skills/builtin/download_video/scripts/execute.py", "download_subcmd_test"
+        "extension/skills/builtin/download_video/scripts/execute.py", "download_subcmd_test"
     )
 
     assert stock._parse_stock_subcommand("/stock") == ("menu", "")
@@ -132,28 +132,28 @@ def test_stock_rss_schedule_deploy_subcommand_parsers():
 
 def test_skill_command_registration_is_converged():
     stock = _load_module(
-        "skills/builtin/stock_watch/scripts/execute.py", "stock_watch_register_test"
+        "extension/skills/learned/stock_watch/scripts/execute.py", "stock_watch_register_test"
     )
     rss = _load_module(
-        "skills/builtin/rss_subscribe/scripts/execute.py", "rss_register_test"
+        "extension/skills/learned/rss_subscribe/scripts/execute.py", "rss_register_test"
     )
     schedule = _load_module(
-        "skills/builtin/scheduler_manager/scripts/execute.py", "schedule_register_test"
+        "extension/skills/builtin/scheduler_manager/scripts/execute.py", "schedule_register_test"
     )
     deploy = _load_module(
-        "skills/builtin/deployment_manager/scripts/execute.py", "deploy_register_test"
+        "extension/skills/builtin/deployment_manager/scripts/execute.py", "deploy_register_test"
     )
     account = _load_module(
-        "skills/builtin/account_manager/scripts/execute.py", "account_register_test"
+        "extension/skills/builtin/account_manager/scripts/execute.py", "account_register_test"
     )
     daily = _load_module(
-        "skills/learned/daily_query/scripts/execute.py", "daily_register_test"
+        "extension/skills/learned/daily_query/scripts/execute.py", "daily_register_test"
     )
     remind = _load_module(
-        "skills/learned/reminder/scripts/execute.py", "remind_register_test"
+        "extension/skills/learned/reminder/scripts/execute.py", "remind_register_test"
     )
     download = _load_module(
-        "skills/builtin/download_video/scripts/execute.py", "download_register_test"
+        "extension/skills/builtin/download_video/scripts/execute.py", "download_register_test"
     )
 
     stock_manager = _FakeAdapterManager()

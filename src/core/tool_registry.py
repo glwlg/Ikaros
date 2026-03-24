@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List
 
-from core.skill_loader import skill_loader
+from extension.skills.registry import skill_registry as skill_loader
 
 
 CORE_TOOLS: List[Dict[str, Any]] = [

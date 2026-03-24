@@ -5,7 +5,7 @@ from telegram.error import NetworkError
 from telegram.ext import CommandHandler
 
 from core.platform.exceptions import MessageSendError
-from platforms.telegram.adapter import TelegramAdapter
+from extension.channels.telegram.adapter import TelegramAdapter
 
 
 class _FakeBot:
@@ -94,7 +94,7 @@ async def test_telegram_adapter_send_message_retries_timeout(monkeypatch):
     async def _fast_sleep(_seconds):
         return None
 
-    monkeypatch.setattr("platforms.telegram.adapter.asyncio.sleep", _fast_sleep)
+    monkeypatch.setattr("extension.channels.telegram.adapter.asyncio.sleep", _fast_sleep)
 
     flaky_bot = _FlakyBot()
     app = SimpleNamespace(bot=flaky_bot)
@@ -121,7 +121,7 @@ async def test_telegram_adapter_send_message_retries_connect_errors(monkeypatch)
     async def _fast_sleep(_seconds):
         return None
 
-    monkeypatch.setattr("platforms.telegram.adapter.asyncio.sleep", _fast_sleep)
+    monkeypatch.setattr("extension.channels.telegram.adapter.asyncio.sleep", _fast_sleep)
 
     flaky_bot = _FlakyBot()
     app = SimpleNamespace(bot=flaky_bot)

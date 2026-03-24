@@ -9,7 +9,7 @@ from core.local_file_delivery import send_local_file
 from core.skill_tool_handlers import skill_tool_handler_registry
 from core.tool_registry import tool_registry
 
-from core.skill_loader import skill_loader
+from extension.skills.registry import skill_registry as skill_loader
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

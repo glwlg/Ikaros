@@ -1,6 +1,6 @@
 import base64
 
-from platforms.weixin.media import (
+from extension.channels.weixin.media import (
     UploadedWeixinMedia,
     aes_ecb_padded_size,
     build_file_message_item,

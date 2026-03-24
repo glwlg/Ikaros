@@ -171,7 +171,7 @@ async def test_manager_allows_loaded_skill_cli_bash_when_request_mentions_code()
         ctx=SimpleNamespace(
             message=SimpleNamespace(text="这个技能有问题，帮我看日志并修复代码"),
             user_data={
-                "last_loaded_skill_dir": "/app/skills/builtin/deployment_manager",
+                "last_loaded_skill_dir": "/app/extension/skills/builtin/deployment_manager",
                 "last_loaded_skill_entrypoint": "scripts/execute.py",
             },
         ),
@@ -189,7 +189,7 @@ async def test_manager_allows_loaded_skill_cli_bash_when_request_mentions_code()
         name="bash",
         args={
             "command": (
-                "cd /app/skills/builtin/deployment_manager "
+                "cd /app/extension/skills/builtin/deployment_manager "
                 "&& python scripts/execute.py help"
             )
         },
@@ -310,7 +310,7 @@ async def test_manager_allows_write_to_repo_code_path_when_policy_allows():
 
     result = await dispatcher.execute(
         name="write",
-        args={"path": "skills/builtin/web_search/SKILL.md", "content": "# patched"},
+        args={"path": "extension/skills/builtin/web_search/SKILL.md", "content": "# patched"},
         execution_policy=None,
         started=time.perf_counter(),
     )

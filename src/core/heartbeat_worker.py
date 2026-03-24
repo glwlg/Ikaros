@@ -480,7 +480,7 @@ class HeartbeatWorker:
                 if not rss_refresh_attempted:
                     rss_refresh_attempted = True
                     try:
-                        from core.skill_loader import skill_loader
+                        from extension.skills.registry import skill_registry as skill_loader
 
                         rss_module = skill_loader.import_skill_module("rss_subscribe")
                         trigger_manual_rss_check = getattr(
@@ -773,7 +773,7 @@ class HeartbeatWorker:
             and not has_stock_focus
         ):
             with contextlib.suppress(Exception):
-                from core.skill_loader import skill_loader
+                from extension.skills.registry import skill_registry as skill_loader
                 from core.state_store import get_user_watchlist
 
                 stock_module = skill_loader.import_skill_module("stock_watch")

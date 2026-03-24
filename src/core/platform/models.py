@@ -386,7 +386,7 @@ class UnifiedContext:
         This provides a programmatic way for skills to compose other skills.
         """
         try:
-            from core.skill_loader import skill_loader
+            from extension.skills.registry import skill_registry as skill_loader
             import inspect
 
             # 1. Get Module

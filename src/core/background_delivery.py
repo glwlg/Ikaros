@@ -185,7 +185,7 @@ async def _send_text_chunk(
         if platform == "telegram" and bot is not None:
             html_payload = text
             with contextlib.suppress(Exception):
-                from platforms.telegram.formatter import markdown_to_telegram_html
+                from extension.channels.telegram.formatter import markdown_to_telegram_html
 
                 html_payload = markdown_to_telegram_html(text)
             result = bot.send_message(

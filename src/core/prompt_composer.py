@@ -5,7 +5,6 @@ from typing import Any, Dict, Iterable, List
 
 from core.channel_access import is_channel_feature_enabled
 from core.channel_user_store import channel_user_store
-from core.config import DATA_DIR
 from core.config import is_user_admin
 from core.prompts import (
     DEFAULT_SYSTEM_PROMPT,
@@ -93,7 +92,9 @@ class PromptComposer:
             return ""
 
     def _load_manager_agents_doc(self) -> str:
-        return self._read_cached_text_file((Path(DATA_DIR) / "AGENTS.md").resolve())
+        return self._read_cached_text_file(
+            (Path(__file__).resolve().parents[2] / "config" / "AGENTS.md").resolve()
+        )
 
     def _load_manager_memory_snapshot(self, *, max_chars: int = 1200) -> str:
         try:
@@ -249,7 +250,7 @@ class PromptComposer:
     ) -> str:
         """构建可用技能目录，引导 LLM 按需加载 SOP。"""
         try:
-            from core.skill_loader import skill_loader
+            from extension.skills.registry import skill_registry as skill_loader
             from core.tool_access_store import tool_access_store
 
             skills = skill_loader.get_skills_summary()
@@ -315,7 +316,7 @@ class PromptComposer:
         platform: str,
     ) -> str:
         try:
-            from core.skill_loader import skill_loader
+            from extension.skills.registry import skill_registry as skill_loader
             from core.tool_access_store import tool_access_store
 
             lines: List[str] = [
