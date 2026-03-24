@@ -7,7 +7,7 @@ Ikaros 是一个 Python 多平台 AI Bot，当前采用 `Core Manager + API Serv
 
 运行时状态统一落在 `data/` 下，主体仍是文件系统优先；需要聚合查询的部分使用 `data/bot_data.db` 做 SQLite 存储。
 
-![logo](logo.png)
+![logo](logo.jpg)
 
 ## 当前能力
 
