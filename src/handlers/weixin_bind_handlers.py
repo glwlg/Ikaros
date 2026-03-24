@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from core.config import is_user_admin
 from core.platform.models import UnifiedContext
+from core.platform.registry import adapter_manager
 
 
 def _parse_subcommand(text: str) -> tuple[str, str]:
@@ -33,13 +34,10 @@ async def weixin_bind_command(ctx: UnifiedContext) -> None:
         await ctx.reply("⛔ 仅管理员可使用 `/wxbind`。")
         return
 
-    adapter = getattr(ctx, "_adapter", None)
-    if (
-        adapter is None
-        or str(getattr(ctx.message, "platform", "") or "").strip().lower()
-        != "weixin"
-    ):
-        await ctx.reply("⛔ `/wxbind` 仅支持微信渠道。")
+    try:
+        adapter = adapter_manager.get_adapter("weixin")
+    except Exception:
+        await ctx.reply("⛔ 微信适配器未启用，无法使用 `/wxbind`。")
         return
 
     sub, _args = _parse_subcommand(ctx.message.text or "")
@@ -56,13 +54,24 @@ async def weixin_bind_command(ctx: UnifiedContext) -> None:
         for item in rows:
             lines.append(
                 f"- `{item.get('user_id')}` | {item.get('status') or 'active'} | "
+                f"bot={item.get('account_id') or '-'} | "
                 f"{item.get('source') or '-'} | {item.get('bound_at') or '-'}"
             )
         await ctx.reply("\n".join(lines))
         return
 
     if sub == "qr":
-        payload = await adapter.start_additional_binding(requester_user_id=user_id)
+        requester_platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
+        requester_chat_id = str(getattr(getattr(ctx.message, "chat", None), "id", "") or "").strip()
+        requester_account_id = str(
+            ((getattr(ctx.message, "raw_data", None) or {}).get("to_user_id") or "")
+        ).strip()
+        payload = await adapter.start_additional_binding(
+            requester_user_id=user_id,
+            requester_account_id=requester_account_id,
+            notification_platform=requester_platform,
+            notification_chat_id=requester_chat_id or user_id,
+        )
         qr_content = str(
             payload.get("qr_content") or payload.get("qr_url") or ""
         ).strip()

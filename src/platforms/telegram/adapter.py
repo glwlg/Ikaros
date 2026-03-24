@@ -588,7 +588,13 @@ class TelegramAdapter(BotAdapter):
             logger.error(f"Telegram download_file failed: {e}")
             raise MessageSendError(f"Failed to download file: {e}")
 
-    def on_command(self, command: str, handler_func: Callable, description: str = None):
+    def on_command(
+        self,
+        command: str,
+        handler_func: Callable,
+        description: str = None,
+        group: int = 0,
+    ):
         """Register a command handler safely wrapping it"""
 
         # Store for menu sync
@@ -614,7 +620,7 @@ class TelegramAdapter(BotAdapter):
             except Exception as e:
                 logger.error(f"Error in unified handler wrapper: {e}", exc_info=True)
 
-        self.application.add_handler(CommandHandler(command, wrapper))
+        self.application.add_handler(CommandHandler(command, wrapper), group=group)
 
     def on_message(self, filters_obj: Any, handler_func: Callable):
         """Register a message handler safely wrapping it"""

@@ -259,6 +259,13 @@ async def main():
     adapter_manager.on_command("acc", accounting_command, description="快捷记账助手")
     adapter_manager.on_command("model", model_command, description="查看和切换模型")
     adapter_manager.on_command("usage", usage_command, description="查看 LLM 用量")
+    if tg_adapter and weixin_adapter:
+        tg_adapter.on_command(
+            "wxbind",
+            weixin_bind_command,
+            description="微信多绑定",
+            group=-2,
+        )
     adapter_manager.on_callback_query("^home_", handle_home_callback)
     adapter_manager.on_callback_query("^helpm_", handle_home_callback)
     adapter_manager.on_callback_query("^hbm_", handle_heartbeat_callback)

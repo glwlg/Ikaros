@@ -90,13 +90,16 @@ class WeixinAdapter(BotAdapter):
         self.state_dir = Path(DATA_DIR) / "weixin"
         self.bindings_path = self.state_dir / "bindings.json"
         self.sync_buf_path = self.state_dir / "sync_buf.txt"
+        self.sync_bufs_path = self.state_dir / "sync_bufs.json"
         self.context_tokens_path = self.state_dir / "context_tokens.json"
         self.media_temp_dir = self.state_dir / "tmp"
 
         self._client: httpx.AsyncClient | None = None
         self._poll_task: asyncio.Task | None = None
+        self._poll_tasks: Dict[str, asyncio.Task] = {}
         self._stop_event = asyncio.Event()
         self._credentials: dict[str, str] | None = None
+        self._session_records: Dict[str, Dict[str, str]] = {}
 
         self._message_handler: Optional[Callable[[UnifiedContext], Any]] = None
         self._command_handlers: Dict[str, Callable[[UnifiedContext], Any]] = {}
@@ -104,6 +107,7 @@ class WeixinAdapter(BotAdapter):
             Tuple[re.Pattern, Callable[[UnifiedContext], Any]]
         ] = []
         self._user_data_store: Dict[str, Dict[str, Any]] = {}
+        self._sync_cursors = self._load_sync_cursors()
         self._context_tokens = self._load_context_tokens()
         self._typing_ticket_cache: Dict[str, Tuple[str, float]] = {}
         self._typing_cancel_tasks: Dict[str, asyncio.Task] = {}
@@ -153,18 +157,59 @@ class WeixinAdapter(BotAdapter):
         )
         tmp_path.replace(path)
 
+    @staticmethod
+    def _compose_scoped_key(account_id: str, user_id: str) -> str:
+        safe_account_id = str(account_id or "").strip()
+        safe_user_id = str(user_id or "").strip()
+        if safe_account_id and safe_user_id:
+            return f"{safe_account_id}::{safe_user_id}"
+        return safe_user_id or safe_account_id
+
     def _default_bindings_payload(self) -> dict[str, Any]:
         return {
-            "version": 1,
-            "session": {
-                "token": "",
-                "baseUrl": self.base_url,
-                "cdnBaseUrl": self.cdn_base_url,
-                "accountId": "",
-                "updated_at": "",
-            },
+            "version": 2,
+            "sessions": {},
             "bound_users": {},
         }
+
+    def _normalize_session_record(self, payload: Any) -> dict[str, str] | None:
+        if not isinstance(payload, dict):
+            return None
+        token = self._safe_text(payload.get("token"))
+        account_id = self._safe_text(payload.get("accountId"))
+        if not token or not account_id:
+            return None
+        return {
+            "token": token,
+            "baseUrl": self._normalize_base_url(payload.get("baseUrl") or self.base_url),
+            "cdnBaseUrl": normalize_cdn_base_url(
+                payload.get("cdnBaseUrl") or self.cdn_base_url
+            ),
+            "accountId": account_id,
+            "boundUserId": self._safe_text(
+                payload.get("boundUserId") or payload.get("userId")
+            ),
+            "status": self._safe_text(payload.get("status") or "active") or "active",
+            "source": self._safe_text(payload.get("source")),
+            "bound_at": self._safe_text(payload.get("bound_at")),
+            "bound_by": self._safe_text(payload.get("bound_by")),
+            "updated_at": self._safe_text(payload.get("updated_at")),
+        }
+
+    def _normalize_sessions(self, payload: Any) -> dict[str, dict[str, str]]:
+        if not isinstance(payload, dict):
+            return {}
+        rows: dict[str, dict[str, str]] = {}
+        for raw_account_id, raw_item in payload.items():
+            session = self._normalize_session_record(raw_item)
+            account_id = self._safe_text(raw_account_id) or self._safe_text(
+                (session or {}).get("accountId")
+            )
+            if not account_id or session is None:
+                continue
+            session["accountId"] = account_id
+            rows[account_id] = session
+        return rows
 
     def _normalize_bound_users(self, payload: Any) -> dict[str, dict[str, str]]:
         if not isinstance(payload, dict):
@@ -179,48 +224,133 @@ class WeixinAdapter(BotAdapter):
                 "source": self._safe_text(raw_item.get("source")),
                 "bound_at": self._safe_text(raw_item.get("bound_at")),
                 "bound_by": self._safe_text(raw_item.get("bound_by")),
+                "account_id": self._safe_text(
+                    raw_item.get("account_id") or raw_item.get("accountId")
+                ),
             }
         return rows
+
+    def _select_primary_session(
+        self,
+        sessions: dict[str, dict[str, str]],
+    ) -> dict[str, str] | None:
+        if not sessions:
+            return None
+        ordered = sorted(
+            sessions.values(),
+            key=lambda item: (
+                self._safe_text(item.get("updated_at")),
+                self._safe_text(item.get("bound_at")),
+                self._safe_text(item.get("accountId")),
+            ),
+            reverse=True,
+        )
+        return dict(ordered[0]) if ordered else None
+
+    def _apply_runtime_sessions(self, sessions: dict[str, dict[str, str]]) -> None:
+        self._session_records = {
+            self._safe_text(account_id): dict(record or {})
+            for account_id, record in (sessions or {}).items()
+            if self._safe_text(account_id)
+        }
+        primary = self._select_primary_session(self._session_records)
+        self._credentials = dict(primary or {}) if primary else None
+        if primary:
+            self.base_url = self._normalize_base_url(
+                primary.get("baseUrl") or self.base_url
+            )
+            self.cdn_base_url = normalize_cdn_base_url(
+                primary.get("cdnBaseUrl") or self.cdn_base_url
+            )
 
     def _load_bindings(self) -> dict[str, Any]:
         payload = self._load_json(self.bindings_path)
         default = self._default_bindings_payload()
         if not isinstance(payload, dict):
+            self._apply_runtime_sessions({})
             return default
-        session = dict(default.get("session") or {})
-        session.update(dict(payload.get("session") or {}))
-        session["token"] = self._safe_text(session.get("token"))
-        session["baseUrl"] = self._normalize_base_url(session.get("baseUrl") or self.base_url)
-        session["cdnBaseUrl"] = normalize_cdn_base_url(
-            session.get("cdnBaseUrl") or self.cdn_base_url
-        )
-        session["accountId"] = self._safe_text(session.get("accountId"))
-        session["updated_at"] = self._safe_text(session.get("updated_at"))
+
+        bound_users = self._normalize_bound_users(payload.get("bound_users") or {})
+        sessions = self._normalize_sessions(payload.get("sessions") or {})
+        if not sessions:
+            legacy_session = self._normalize_session_record(payload.get("session") or {})
+            if legacy_session is not None:
+                sessions[legacy_session["accountId"]] = legacy_session
+                for item in bound_users.values():
+                    if not self._safe_text(item.get("account_id")):
+                        item["account_id"] = legacy_session["accountId"]
+                if len(bound_users) > 1:
+                    logger.warning(
+                        "Weixin bindings.json uses legacy single-session format with multiple bound users. "
+                        "Previous bot sessions cannot be reconstructed automatically; affected users need to rebind."
+                    )
+
+        for account_id, session in sessions.items():
+            bound_user_id = self._safe_text(session.get("boundUserId"))
+            if bound_user_id:
+                bound_users.setdefault(
+                    bound_user_id,
+                    {
+                        "status": self._safe_text(session.get("status") or "active")
+                        or "active",
+                        "source": self._safe_text(session.get("source")),
+                        "bound_at": self._safe_text(session.get("bound_at")),
+                        "bound_by": self._safe_text(session.get("bound_by")),
+                        "account_id": account_id,
+                    },
+                )
+
+        self._apply_runtime_sessions(sessions)
         return {
-            "version": 1,
-            "session": session,
-            "bound_users": self._normalize_bound_users(payload.get("bound_users") or {}),
+            "version": 2,
+            "sessions": sessions,
+            "bound_users": bound_users,
         }
 
-    def _load_credentials(self) -> dict[str, str] | None:
-        payload = self._load_bindings()
-        session = payload.get("session") or {}
-        if not isinstance(payload, dict):
-            return None
-        token = self._safe_text(session.get("token"))
-        if not token:
-            return None
-        normalized = {
-            "token": token,
-            "baseUrl": self._normalize_base_url(
-                session.get("baseUrl") or self.base_url
-            ),
-            "cdnBaseUrl": normalize_cdn_base_url(
-                session.get("cdnBaseUrl") or self.cdn_base_url
-            ),
-            "accountId": self._safe_text(session.get("accountId")),
-        }
-        return normalized
+    def _resolve_session_account_id(
+        self,
+        *,
+        user_id: str = "",
+        preferred_account_id: str = "",
+        context: UnifiedContext | None = None,
+    ) -> str:
+        safe_preferred = self._safe_text(preferred_account_id)
+        if safe_preferred and safe_preferred in self._session_records:
+            return safe_preferred
+
+        if context is not None:
+            raw_data = getattr(context.message, "raw_data", None)
+            if isinstance(raw_data, dict):
+                account_id = self._safe_text(
+                    raw_data.get("to_user_id") or raw_data.get("bot_account_id")
+                )
+                if account_id and account_id in self._session_records:
+                    return account_id
+            platform_event = getattr(context, "platform_event", None)
+            if isinstance(platform_event, dict):
+                account_id = self._safe_text(
+                    platform_event.get("to_user_id")
+                    or platform_event.get("bot_account_id")
+                )
+                if account_id and account_id in self._session_records:
+                    return account_id
+
+        safe_user_id = self._safe_text(user_id)
+        if safe_user_id:
+            bindings = self._load_bindings()
+            bound_users = self._normalize_bound_users(bindings.get("bound_users") or {})
+            account_id = self._safe_text((bound_users.get(safe_user_id) or {}).get("account_id"))
+            if account_id and account_id in self._session_records:
+                return account_id
+
+        if self._credentials:
+            account_id = self._safe_text(self._credentials.get("accountId"))
+            if account_id and account_id in self._session_records:
+                return account_id
+
+        if len(self._session_records) == 1:
+            return next(iter(self._session_records))
+        return ""
 
     @staticmethod
     def _now_iso() -> str:
@@ -238,38 +368,41 @@ class WeixinAdapter(BotAdapter):
             raise MessageSendError("Weixin login succeeded but bot_token is missing.")
 
         bound_user_id = self._safe_text(payload.get("ilink_user_id"))
+        account_id = self._safe_text(payload.get("ilink_bot_id"))
+        if not account_id:
+            raise MessageSendError("Weixin login succeeded but ilink_bot_id is missing.")
+
+        bound_at = self._now_iso()
         bindings = self._load_bindings()
-        bindings["session"] = {
+        sessions = self._normalize_sessions(bindings.get("sessions") or {})
+        sessions[account_id] = {
             "token": token,
             "baseUrl": self._normalize_base_url(payload.get("baseurl") or self.base_url),
             "cdnBaseUrl": normalize_cdn_base_url(
                 payload.get("cdn_baseurl") or self.cdn_base_url
             ),
-            "accountId": self._safe_text(payload.get("ilink_bot_id")),
-            "updated_at": self._now_iso(),
+            "accountId": account_id,
+            "boundUserId": bound_user_id,
+            "status": "active",
+            "source": self._safe_text(source),
+            "bound_at": bound_at,
+            "bound_by": self._safe_text(bound_by),
+            "updated_at": bound_at,
         }
+        bindings["sessions"] = sessions
         if bound_user_id:
             bound_users = self._normalize_bound_users(bindings.get("bound_users") or {})
             bound_users[bound_user_id] = {
                 "status": "active",
                 "source": self._safe_text(source),
-                "bound_at": self._now_iso(),
+                "bound_at": bound_at,
                 "bound_by": self._safe_text(bound_by),
+                "account_id": account_id,
             }
             bindings["bound_users"] = bound_users
+        bindings["version"] = 2
         self._write_json(self.bindings_path, bindings)
-
-        credentials = {
-            "token": self._safe_text(bindings["session"].get("token")),
-            "baseUrl": self._safe_text(bindings["session"].get("baseUrl")),
-            "cdnBaseUrl": self._safe_text(bindings["session"].get("cdnBaseUrl")),
-            "accountId": self._safe_text(bindings["session"].get("accountId")),
-        }
-        self._credentials = credentials
-        self.base_url = self._normalize_base_url(credentials["baseUrl"] or self.base_url)
-        self.cdn_base_url = normalize_cdn_base_url(
-            credentials["cdnBaseUrl"] or self.cdn_base_url
-        )
+        self._apply_runtime_sessions(sessions)
 
         if bound_user_id:
             from core.channel_user_store import channel_user_store
@@ -288,9 +421,9 @@ class WeixinAdapter(BotAdapter):
                 )
         return {
             "user_id": bound_user_id,
-            "account_id": credentials["accountId"],
-            "base_url": credentials["baseUrl"],
-            "cdn_base_url": credentials["cdnBaseUrl"],
+            "account_id": account_id,
+            "base_url": self._safe_text(sessions[account_id].get("baseUrl")),
+            "cdn_base_url": self._safe_text(sessions[account_id].get("cdnBaseUrl")),
         }
 
     def list_bound_users(self) -> list[dict[str, str]]:
@@ -307,6 +440,9 @@ class WeixinAdapter(BotAdapter):
         self,
         *,
         requester_user_id: str,
+        requester_account_id: str,
+        notification_platform: str,
+        notification_chat_id: str,
         qrcode_token: str,
     ) -> None:
         notification = ""
@@ -320,19 +456,41 @@ class WeixinAdapter(BotAdapter):
             bound_user_id = self._safe_text(result.get("user_id"))
             if bound_user_id:
                 notification = (
-                    f"✅ 微信绑定完成：`{bound_user_id}` 已加入 allow-list。"
+                    f"✅ 微信绑定完成：`{bound_user_id}` 已加入 allow-list，bot=`{self._safe_text(result.get('account_id'))}`。"
                 )
             else:
                 notification = "✅ 微信绑定完成，但未拿到扫码用户 ID。"
+            account_id = self._safe_text(result.get("account_id"))
+            if account_id and not self._stop_event.is_set():
+                await self._start_poll_task(account_id)
         except Exception as exc:
             notification = f"❌ 绑定二维码已失效或绑定失败：{exc}"
         finally:
             self._binding_tasks.pop(self._safe_text(qrcode_token), None)
 
         with contextlib.suppress(Exception):
-            await self.send_message(requester_user_id, notification)
+            safe_platform = self._safe_text(notification_platform).lower()
+            safe_chat_id = self._safe_text(notification_chat_id or requester_user_id)
+            if safe_platform == "weixin" or not safe_platform:
+                await self.send_message(
+                    safe_chat_id or requester_user_id,
+                    notification,
+                    session_account_id=requester_account_id,
+                )
+            else:
+                from core.platform.registry import adapter_manager
 
-    async def start_additional_binding(self, *, requester_user_id: str) -> dict[str, str]:
+                notify_adapter = adapter_manager.get_adapter(safe_platform)
+                await notify_adapter.send_message(safe_chat_id, notification)
+
+    async def start_additional_binding(
+        self,
+        *,
+        requester_user_id: str,
+        requester_account_id: str = "",
+        notification_platform: str = "",
+        notification_chat_id: str = "",
+    ) -> dict[str, str]:
         qrcode_token, qr_url = await self._fetch_login_qr()
         existing = self._binding_tasks.pop(qrcode_token, None)
         if existing is not None:
@@ -340,6 +498,9 @@ class WeixinAdapter(BotAdapter):
         self._binding_tasks[qrcode_token] = asyncio.create_task(
             self._watch_additional_binding(
                 requester_user_id=self._safe_text(requester_user_id),
+                requester_account_id=self._safe_text(requester_account_id),
+                notification_platform=self._safe_text(notification_platform),
+                notification_chat_id=self._safe_text(notification_chat_id),
                 qrcode_token=qrcode_token,
             ),
             name=f"weixin-bind-{qrcode_token}",
@@ -365,35 +526,119 @@ class WeixinAdapter(BotAdapter):
     def _save_context_tokens(self) -> None:
         self._write_json(self.context_tokens_path, self._context_tokens)
 
-    def _remember_context_token(self, user_id: str, context_token: str) -> None:
+    def _remember_context_token(
+        self,
+        user_id: str,
+        context_token: str,
+        *,
+        account_id: str = "",
+    ) -> None:
         safe_user_id = self._safe_text(user_id)
         safe_token = self._safe_text(context_token)
-        if not safe_user_id or not safe_token:
+        scoped_key = self._compose_scoped_key(account_id, safe_user_id)
+        if not scoped_key or not safe_token:
             return
-        if self._context_tokens.get(safe_user_id) == safe_token:
+        if self._context_tokens.get(scoped_key) == safe_token:
             return
-        self._context_tokens[safe_user_id] = safe_token
+        self._context_tokens[scoped_key] = safe_token
         self._save_context_tokens()
 
-    def _get_cached_typing_ticket(self, user_id: str) -> str:
+    def _load_sync_cursors(self) -> dict[str, str]:
+        payload = self._load_json(self.sync_bufs_path)
+        rendered: dict[str, str] = {}
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                account_id = self._safe_text(key)
+                cursor = self._safe_text(value)
+                if account_id and cursor:
+                    rendered[account_id] = cursor
+        elif self.sync_buf_path.exists():
+            legacy_cursor = self._safe_text(self._load_sync_cursor())
+            if legacy_cursor:
+                primary = self._select_primary_session(self._session_records)
+                primary_account_id = self._safe_text((primary or {}).get("accountId"))
+                if primary_account_id:
+                    rendered[primary_account_id] = legacy_cursor
+        return rendered
+
+    def _adopt_legacy_sync_cursor(self) -> None:
+        legacy_cursor = self._safe_text(self._load_sync_cursor())
+        if not legacy_cursor:
+            return
+        primary = self._select_primary_session(self._session_records)
+        primary_account_id = self._safe_text((primary or {}).get("accountId"))
+        if not primary_account_id or self._safe_text(
+            self._sync_cursors.get(primary_account_id)
+        ):
+            return
+        self._sync_cursors[primary_account_id] = legacy_cursor
+        self._save_sync_cursors()
+
+    def _save_sync_cursors(self) -> None:
+        self._write_json(self.sync_bufs_path, self._sync_cursors)
+
+    def _load_sync_cursor_for_account(self, account_id: str) -> str:
+        safe_account_id = self._safe_text(account_id)
+        if safe_account_id:
+            return self._safe_text(self._sync_cursors.get(safe_account_id))
+        return self._load_sync_cursor()
+
+    def _save_sync_cursor_for_account(self, account_id: str, cursor: str) -> None:
+        safe_account_id = self._safe_text(account_id)
+        safe_cursor = self._safe_text(cursor)
+        if not safe_account_id or not safe_cursor:
+            return
+        if self._sync_cursors.get(safe_account_id) == safe_cursor:
+            return
+        self._sync_cursors[safe_account_id] = safe_cursor
+        self._save_sync_cursors()
+
+    def _session_record(self, account_id: str = "") -> dict[str, str]:
+        safe_account_id = self._safe_text(account_id)
+        if safe_account_id and safe_account_id in self._session_records:
+            return dict(self._session_records[safe_account_id])
+        if self._credentials:
+            return dict(self._credentials)
+        return {}
+
+    def _session_base_url(self, account_id: str = "") -> str:
+        session = self._session_record(account_id)
+        return self._normalize_base_url(session.get("baseUrl") or self.base_url)
+
+    def _session_cdn_base_url(self, account_id: str = "") -> str:
+        session = self._session_record(account_id)
+        return normalize_cdn_base_url(session.get("cdnBaseUrl") or self.cdn_base_url)
+
+    def _session_token(self, account_id: str = "", explicit_token: str = "") -> str:
+        return self._safe_text(explicit_token or self._session_record(account_id).get("token"))
+
+    def _get_cached_typing_ticket(self, user_id: str, *, account_id: str = "") -> str:
         safe_user_id = self._safe_text(user_id)
-        if not safe_user_id:
+        scoped_key = self._compose_scoped_key(account_id, safe_user_id)
+        if not scoped_key:
             return ""
-        cached = self._typing_ticket_cache.get(safe_user_id)
+        cached = self._typing_ticket_cache.get(scoped_key)
         if not cached:
             return ""
         ticket, expires_at = cached
         if expires_at <= time.time():
-            self._typing_ticket_cache.pop(safe_user_id, None)
+            self._typing_ticket_cache.pop(scoped_key, None)
             return ""
         return ticket
 
-    async def _get_typing_ticket(self, user_id: str, context_token: str = "") -> str:
+    async def _get_typing_ticket(
+        self,
+        user_id: str,
+        context_token: str = "",
+        *,
+        account_id: str = "",
+    ) -> str:
         safe_user_id = self._safe_text(user_id)
-        if not safe_user_id:
+        scoped_key = self._compose_scoped_key(account_id, safe_user_id)
+        if not scoped_key:
             return ""
 
-        cached = self._get_cached_typing_ticket(safe_user_id)
+        cached = self._get_cached_typing_ticket(safe_user_id, account_id=account_id)
         if cached:
             return cached
 
@@ -403,7 +648,12 @@ class WeixinAdapter(BotAdapter):
             payload["context_token"] = safe_context_token
         payload["base_info"] = {"channel_version": "0.1.0"}
 
-        response = await self._api_post("ilink/bot/getconfig", payload, timeout=10.0)
+        response = await self._api_post(
+            "ilink/bot/getconfig",
+            payload,
+            timeout=10.0,
+            session_account_id=account_id,
+        )
         ret = response.get("ret")
         if ret not in (None, 0):
             logger.warning(
@@ -416,7 +666,7 @@ class WeixinAdapter(BotAdapter):
 
         ticket = self._safe_text(response.get("typing_ticket"))
         if ticket:
-            self._typing_ticket_cache[safe_user_id] = (
+            self._typing_ticket_cache[scoped_key] = (
                 ticket,
                 time.time() + DEFAULT_TYPING_CACHE_TTL_SEC,
             )
@@ -428,6 +678,7 @@ class WeixinAdapter(BotAdapter):
         user_id: str,
         status: int,
         context_token: str = "",
+        account_id: str = "",
     ) -> bool:
         safe_user_id = self._safe_text(user_id)
         if not safe_user_id:
@@ -436,6 +687,7 @@ class WeixinAdapter(BotAdapter):
         ticket = await self._get_typing_ticket(
             safe_user_id,
             context_token=context_token,
+            account_id=account_id,
         )
         if not ticket:
             return False
@@ -449,6 +701,7 @@ class WeixinAdapter(BotAdapter):
                 "base_info": {"channel_version": "0.1.0"},
             },
             timeout=10.0,
+            session_account_id=account_id,
         )
         ret = response.get("ret")
         if ret not in (None, 0):
@@ -467,6 +720,7 @@ class WeixinAdapter(BotAdapter):
         *,
         user_id: str,
         context_token: str = "",
+        account_id: str = "",
         delay_sec: int = DEFAULT_TYPING_CANCEL_DELAY_SEC,
     ) -> None:
         try:
@@ -477,6 +731,7 @@ class WeixinAdapter(BotAdapter):
                 user_id=user_id,
                 status=WEIXIN_TYPING_STATUS_CANCEL,
                 context_token=context_token,
+                account_id=account_id,
             )
         except asyncio.CancelledError:
             raise
@@ -490,23 +745,37 @@ class WeixinAdapter(BotAdapter):
             current = asyncio.current_task()
             if (
                 current is not None
-                and self._typing_cancel_tasks.get(self._safe_text(user_id)) is current
+                and self._typing_cancel_tasks.get(
+                    self._compose_scoped_key(account_id, user_id)
+                )
+                is current
             ):
-                self._typing_cancel_tasks.pop(self._safe_text(user_id), None)
+                self._typing_cancel_tasks.pop(
+                    self._compose_scoped_key(account_id, user_id),
+                    None,
+                )
 
-    def _reschedule_typing_cancel(self, user_id: str, context_token: str = "") -> None:
+    def _reschedule_typing_cancel(
+        self,
+        user_id: str,
+        context_token: str = "",
+        *,
+        account_id: str = "",
+    ) -> None:
         safe_user_id = self._safe_text(user_id)
-        if not safe_user_id:
+        scoped_key = self._compose_scoped_key(account_id, safe_user_id)
+        if not scoped_key:
             return
-        existing = self._typing_cancel_tasks.pop(safe_user_id, None)
+        existing = self._typing_cancel_tasks.pop(scoped_key, None)
         if existing is not None:
             existing.cancel()
-        self._typing_cancel_tasks[safe_user_id] = asyncio.create_task(
+        self._typing_cancel_tasks[scoped_key] = asyncio.create_task(
             self._cancel_typing_later(
                 user_id=safe_user_id,
                 context_token=context_token,
+                account_id=account_id,
             ),
-            name=f"weixin-typing-cancel-{safe_user_id}",
+            name=f"weixin-typing-cancel-{scoped_key}",
         )
 
     def _load_sync_cursor(self) -> str:
@@ -543,12 +812,13 @@ class WeixinAdapter(BotAdapter):
         *,
         timeout: float,
         token: str | None = None,
+        session_account_id: str = "",
     ) -> dict[str, Any]:
         client = await self._ensure_client()
-        auth_token = self._safe_text(token or (self._credentials or {}).get("token"))
+        auth_token = self._session_token(session_account_id, explicit_token=token or "")
         if not auth_token:
             raise MessageSendError("Weixin credentials are not available.")
-        url = f"{self.base_url}{endpoint.lstrip('/')}"
+        url = f"{self._session_base_url(session_account_id)}{endpoint.lstrip('/')}"
         response = await client.post(
             url,
             json=payload,
@@ -663,6 +933,7 @@ class WeixinAdapter(BotAdapter):
         file_path: Path,
         user_id: str,
         media_kind: str,
+        account_id: str = "",
     ) -> UploadedWeixinMedia:
         plaintext = file_path.read_bytes()
         if len(plaintext) > WEIXIN_MEDIA_MAX_BYTES:
@@ -688,7 +959,10 @@ class WeixinAdapter(BotAdapter):
             "base_info": {"channel_version": "0.1.0"},
         }
         response = await self._api_post(
-            "ilink/bot/getuploadurl", upload_payload, timeout=15.0
+            "ilink/bot/getuploadurl",
+            upload_payload,
+            timeout=15.0,
+            session_account_id=account_id,
         )
         upload_param = self._safe_text(response.get("upload_param"))
         if not upload_param:
@@ -699,6 +973,7 @@ class WeixinAdapter(BotAdapter):
             ciphertext=ciphertext,
             upload_param=upload_param,
             filekey=filekey,
+            account_id=account_id,
         )
         return UploadedWeixinMedia(
             filekey=filekey,
@@ -714,9 +989,14 @@ class WeixinAdapter(BotAdapter):
         ciphertext: bytes,
         upload_param: str,
         filekey: str,
+        account_id: str = "",
     ) -> str:
         client = await self._ensure_client()
-        cdn_url = build_cdn_upload_url(self.cdn_base_url, upload_param, filekey)
+        cdn_url = build_cdn_upload_url(
+            self._session_cdn_base_url(account_id),
+            upload_param,
+            filekey,
+        )
         last_error: Exception | None = None
 
         for attempt in range(1, 4):
@@ -772,10 +1052,16 @@ class WeixinAdapter(BotAdapter):
         context_token: str,
         media_item: dict[str, Any],
         caption: str = "",
+        account_id: str = "",
     ) -> SimpleNamespace:
         rendered_caption = markdown_to_weixin_text(caption)
         for chunk in self._chunk_text(rendered_caption, self.text_chunk_limit):
-            await self._send_text_to_user(user_id, chunk, context_token)
+            await self._send_text_to_user(
+                user_id,
+                chunk,
+                context_token,
+                account_id=account_id,
+            )
 
         client_id = self._build_client_id()
         payload = {
@@ -790,7 +1076,12 @@ class WeixinAdapter(BotAdapter):
             },
             "base_info": {"channel_version": "0.1.0"},
         }
-        response = await self._api_post("ilink/bot/sendmessage", payload, timeout=15.0)
+        response = await self._api_post(
+            "ilink/bot/sendmessage",
+            payload,
+            timeout=15.0,
+            session_account_id=account_id,
+        )
         ret = response.get("ret")
         if ret not in (None, 0):
             raise MessageSendError(
@@ -808,7 +1099,15 @@ class WeixinAdapter(BotAdapter):
         fallback_mime_type: str,
     ) -> Any:
         user_id = self._safe_text(context.message.user.id)
-        context_token = self._resolve_context_token(context=context, user_id=user_id)
+        session_account_id = self._resolve_session_account_id(
+            user_id=user_id,
+            context=context,
+        )
+        context_token = self._resolve_context_token(
+            context=context,
+            user_id=user_id,
+            account_id=session_account_id,
+        )
         if not context_token:
             raise MessageSendError(
                 "Weixin media reply requires a context_token from a recent inbound message."
@@ -833,6 +1132,7 @@ class WeixinAdapter(BotAdapter):
                 file_path=prepared_path,
                 user_id=user_id,
                 media_kind=media_kind,
+                account_id=session_account_id,
             )
             if media_kind == "image":
                 message_item = build_image_message_item(uploaded)
@@ -848,6 +1148,7 @@ class WeixinAdapter(BotAdapter):
                 context_token=context_token,
                 media_item=message_item,
                 caption=caption or "",
+                account_id=session_account_id,
             )
         finally:
             if should_cleanup and prepared_path is not None:
@@ -981,20 +1282,16 @@ class WeixinAdapter(BotAdapter):
         raise MessageSendError("Weixin QR login timeout.")
 
     async def _ensure_credentials(self) -> None:
-        existing = self._load_credentials()
-        if existing:
-            self._credentials = existing
-            self.base_url = self._normalize_base_url(
-                existing.get("baseUrl") or self.base_url
-            )
-            self.cdn_base_url = normalize_cdn_base_url(
-                existing.get("cdnBaseUrl") or self.cdn_base_url
-            )
+        bindings = self._load_bindings()
+        sessions = self._normalize_sessions(bindings.get("sessions") or {})
+        if sessions:
+            self._apply_runtime_sessions(sessions)
+            self._adopt_legacy_sync_cursor()
             logger.info(
-                "Weixin credentials loaded. base_url=%s cdn_base_url=%s account_id=%s",
+                "Weixin sessions loaded. base_url=%s cdn_base_url=%s accounts=%s",
                 self.base_url,
                 self.cdn_base_url,
-                self._safe_text(existing.get("accountId")) or "-",
+                ",".join(sorted(sessions)) or "-",
             )
             return
 
@@ -1026,11 +1323,12 @@ class WeixinAdapter(BotAdapter):
                 self._safe_text(result.get("user_id")) or "-",
                 self._safe_text(result.get("cdn_base_url")) or "-",
             )
+            self._adopt_legacy_sync_cursor()
             return
 
         raise MessageSendError("Weixin login aborted before credentials were obtained.")
 
-    async def _get_updates(self, cursor: str) -> dict[str, Any]:
+    async def _get_updates(self, cursor: str, *, account_id: str = "") -> dict[str, Any]:
         try:
             return await self._api_post(
                 "ilink/bot/getupdates",
@@ -1039,6 +1337,7 @@ class WeixinAdapter(BotAdapter):
                     "base_info": {"channel_version": "0.1.0"},
                 },
                 timeout=35.0,
+                session_account_id=account_id,
             )
         except httpx.ReadTimeout:
             return {
@@ -1052,7 +1351,12 @@ class WeixinAdapter(BotAdapter):
         return f"x-bot-weixin-{int(time.time() * 1000)}-{token_hex(4)}"
 
     async def _send_text_to_user(
-        self, user_id: str, text: str, context_token: str
+        self,
+        user_id: str,
+        text: str,
+        context_token: str,
+        *,
+        account_id: str = "",
     ) -> SimpleNamespace:
         client_id = self._build_client_id()
         payload = {
@@ -1067,13 +1371,41 @@ class WeixinAdapter(BotAdapter):
             },
             "base_info": {"channel_version": "0.1.0"},
         }
-        response = await self._api_post("ilink/bot/sendmessage", payload, timeout=15.0)
+        response = await self._api_post(
+            "ilink/bot/sendmessage",
+            payload,
+            timeout=15.0,
+            session_account_id=account_id,
+        )
         ret = response.get("ret")
         if ret not in (None, 0):
             raise MessageSendError(
                 f"Weixin sendmessage failed ret={ret} errmsg={self._safe_text(response.get('errmsg'))}"
             )
         return SimpleNamespace(id=client_id)
+
+    async def _start_poll_task(self, account_id: str) -> asyncio.Task | None:
+        safe_account_id = self._safe_text(account_id)
+        if not safe_account_id:
+            return None
+        if safe_account_id not in self._session_records:
+            logger.warning(
+                "Weixin poll task requested for unknown account_id=%s",
+                safe_account_id,
+            )
+            return None
+        existing = self._poll_tasks.get(safe_account_id)
+        if existing is not None and not existing.done():
+            return existing
+        task = asyncio.create_task(
+            self._poll_loop(safe_account_id),
+            name=f"weixin-long-poll-{safe_account_id}",
+        )
+        self._poll_tasks[safe_account_id] = task
+        primary_account_id = self._safe_text((self._credentials or {}).get("accountId"))
+        if safe_account_id == primary_account_id or self._poll_task is None:
+            self._poll_task = task
+        return task
 
     @staticmethod
     def _chunk_text(text: str, limit: int) -> list[str]:
@@ -1139,8 +1471,10 @@ class WeixinAdapter(BotAdapter):
         *,
         context: UnifiedContext | None = None,
         user_id: str = "",
+        account_id: str = "",
     ) -> str:
         candidate_user_id = self._safe_text(user_id)
+        candidate_account_id = self._safe_text(account_id)
 
         if context is not None:
             raw_data = getattr(context.message, "raw_data", {}) or {}
@@ -1148,6 +1482,10 @@ class WeixinAdapter(BotAdapter):
                 token = self._safe_text(raw_data.get("context_token"))
                 if token:
                     return token
+                if not candidate_account_id:
+                    candidate_account_id = self._safe_text(
+                        raw_data.get("to_user_id") or raw_data.get("bot_account_id")
+                    )
                 if not candidate_user_id:
                     candidate_user_id = self._safe_text(
                         raw_data.get("from_user_id") or raw_data.get("to_user_id")
@@ -1158,6 +1496,11 @@ class WeixinAdapter(BotAdapter):
                 token = self._safe_text(platform_event.get("context_token"))
                 if token:
                     return token
+                if not candidate_account_id:
+                    candidate_account_id = self._safe_text(
+                        platform_event.get("to_user_id")
+                        or platform_event.get("bot_account_id")
+                    )
 
             if not candidate_user_id:
                 candidate_user_id = self._safe_text(
@@ -1165,6 +1508,11 @@ class WeixinAdapter(BotAdapter):
                 )
 
         if candidate_user_id:
+            scoped = self._compose_scoped_key(candidate_account_id, candidate_user_id)
+            if scoped:
+                token = self._safe_text(self._context_tokens.get(scoped))
+                if token:
+                    return token
             return self._safe_text(self._context_tokens.get(candidate_user_id))
         return ""
 
@@ -1236,7 +1584,12 @@ class WeixinAdapter(BotAdapter):
             or "none"
         )
 
-    def _log_updates_summary(self, payload: dict[str, Any]) -> None:
+    def _log_updates_summary(
+        self,
+        payload: dict[str, Any],
+        *,
+        account_id: str = "",
+    ) -> None:
         if not self.debug_updates:
             return
 
@@ -1248,7 +1601,8 @@ class WeixinAdapter(BotAdapter):
                 sample = json.dumps(first, ensure_ascii=False)[:1200]
 
         logger.info(
-            "Weixin getupdates summary msg_count=%s sync_buf_len=%s get_updates_buf_len=%s sample=%s",
+            "Weixin getupdates summary account_id=%s msg_count=%s sync_buf_len=%s get_updates_buf_len=%s sample=%s",
+            self._safe_text(account_id) or "-",
             len(msgs),
             len(self._safe_text(payload.get("sync_buf"))),
             len(self._safe_text(payload.get("get_updates_buf"))),
@@ -1265,10 +1619,10 @@ class WeixinAdapter(BotAdapter):
             return True
 
         from_user_id = self._safe_text(raw_message.get("from_user_id"))
-        account_id = self._safe_text((self._credentials or {}).get("accountId"))
+        account_id = self._safe_text(raw_message.get("to_user_id"))
         if from_user_id and account_id and from_user_id == account_id:
             return False
-        to_user_id = self._safe_text(raw_message.get("to_user_id"))
+        to_user_id = account_id
         if from_user_id:
             return True
         if not from_user_id and to_user_id:
@@ -1315,8 +1669,13 @@ class WeixinAdapter(BotAdapter):
                 json.dumps(raw_message, ensure_ascii=False)[:1200],
             )
         context_token = self._safe_text(raw_message.get("context_token"))
+        account_id = self._safe_text(raw_message.get("to_user_id"))
         if context_token:
-            self._remember_context_token(unified_msg.user.id, context_token)
+            self._remember_context_token(
+                unified_msg.user.id,
+                context_token,
+                account_id=account_id,
+            )
 
         context = UnifiedContext(
             message=unified_msg,
@@ -1425,7 +1784,7 @@ class WeixinAdapter(BotAdapter):
                 return parse_aes_key_base64(aes_key_b64)
         return None
 
-    async def _download_media_item(self, item: dict[str, Any]) -> bytes:
+    async def _download_media_item(self, item: dict[str, Any], *, account_id: str = "") -> bytes:
         encrypted_query_param = self._resolve_media_download_query(item)
         if not encrypted_query_param:
             raise MediaDownloadUnavailableError(
@@ -1433,7 +1792,10 @@ class WeixinAdapter(BotAdapter):
             )
 
         client = await self._ensure_client()
-        download_url = build_cdn_download_url(self.cdn_base_url, encrypted_query_param)
+        download_url = build_cdn_download_url(
+            self._session_cdn_base_url(account_id),
+            encrypted_query_param,
+        )
         try:
             response = await client.get(download_url, timeout=120.0)
             response.raise_for_status()
@@ -1461,20 +1823,25 @@ class WeixinAdapter(BotAdapter):
                 f"Weixin media decrypt failed: {exc}"
             ) from exc
 
-    async def _poll_loop(self) -> None:
-        cursor = self._load_sync_cursor()
+    async def _poll_loop(self, account_id: str) -> None:
+        cursor = self._load_sync_cursor_for_account(account_id)
         failures = 0
-        logger.info("Weixin long-poll started. base_url=%s", self.base_url)
+        logger.info(
+            "Weixin long-poll started. account_id=%s base_url=%s",
+            self._safe_text(account_id) or "-",
+            self._session_base_url(account_id),
+        )
 
         while not self._stop_event.is_set():
             try:
-                payload = await self._get_updates(cursor)
-                self._log_updates_summary(payload)
+                payload = await self._get_updates(cursor, account_id=account_id)
+                self._log_updates_summary(payload, account_id=account_id)
                 ret = payload.get("ret")
                 if ret not in (None, 0):
                     failures += 1
                     logger.warning(
-                        "Weixin getupdates returned ret=%s errmsg=%s (%s/%s)",
+                        "Weixin getupdates returned account_id=%s ret=%s errmsg=%s (%s/%s)",
+                        self._safe_text(account_id) or "-",
                         ret,
                         self._safe_text(payload.get("errmsg")),
                         failures,
@@ -1495,23 +1862,27 @@ class WeixinAdapter(BotAdapter):
                 )
                 if next_cursor:
                     cursor = next_cursor
-                    self._save_sync_cursor(cursor)
+                    self._save_sync_cursor_for_account(account_id, cursor)
 
                 for raw_message in payload.get("msgs") or []:
                     if not isinstance(raw_message, dict):
                         continue
                     try:
+                        raw_message.setdefault("bot_account_id", self._safe_text(account_id))
                         await self._handle_incoming_message(raw_message)
                     except Exception:
                         logger.error(
-                            "Weixin inbound message handling failed.", exc_info=True
+                            "Weixin inbound message handling failed. account_id=%s",
+                            self._safe_text(account_id) or "-",
+                            exc_info=True,
                         )
             except asyncio.CancelledError:
                 raise
             except Exception:
                 failures += 1
                 logger.error(
-                    "Weixin long-poll failed (%s/%s).",
+                    "Weixin long-poll failed. account_id=%s (%s/%s).",
+                    self._safe_text(account_id) or "-",
                     failures,
                     DEFAULT_MAX_FAILURES,
                     exc_info=True,
@@ -1528,18 +1899,21 @@ class WeixinAdapter(BotAdapter):
         self._stop_event.clear()
         await self._ensure_client()
         await self._ensure_credentials()
-        if self._poll_task and not self._poll_task.done():
-            return
-        self._poll_task = asyncio.create_task(
-            self._poll_loop(), name="weixin-long-poll"
-        )
+        active_accounts = list(self._session_records)
+        if not active_accounts:
+            raise MessageSendError("Weixin credentials are not available.")
+        for account_id in active_accounts:
+            await self._start_poll_task(account_id)
 
     async def stop(self) -> None:
         self._stop_event.set()
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
+        poll_tasks = list(self._poll_tasks.values())
+        self._poll_tasks.clear()
+        for task in poll_tasks:
+            task.cancel()
+        for task in poll_tasks:
             with contextlib.suppress(asyncio.CancelledError):
-                await self._poll_task
+                await task
         self._poll_task = None
         binding_tasks = list(self._binding_tasks.values())
         self._binding_tasks.clear()
@@ -1565,7 +1939,15 @@ class WeixinAdapter(BotAdapter):
         **kwargs,
     ) -> Any:
         user_id = self._safe_text(context.message.user.id)
-        context_token = self._resolve_context_token(context=context, user_id=user_id)
+        session_account_id = self._resolve_session_account_id(
+            user_id=user_id,
+            context=context,
+        )
+        context_token = self._resolve_context_token(
+            context=context,
+            user_id=user_id,
+            account_id=session_account_id,
+        )
         if not context_token:
             raise MessageSendError(
                 "Weixin reply requires a context_token from a recent inbound message."
@@ -1579,7 +1961,12 @@ class WeixinAdapter(BotAdapter):
 
         result: SimpleNamespace | None = None
         for chunk in chunks:
-            result = await self._send_text_to_user(user_id, chunk, context_token)
+            result = await self._send_text_to_user(
+                user_id,
+                chunk,
+                context_token,
+                account_id=session_account_id,
+            )
         return result
 
     async def send_message(
@@ -1590,7 +1977,14 @@ class WeixinAdapter(BotAdapter):
         **kwargs,
     ) -> Any:
         user_id = self._safe_text(chat_id)
-        context_token = self._resolve_context_token(user_id=user_id)
+        session_account_id = self._resolve_session_account_id(
+            user_id=user_id,
+            preferred_account_id=self._safe_text(kwargs.get("session_account_id")),
+        )
+        context_token = self._resolve_context_token(
+            user_id=user_id,
+            account_id=session_account_id,
+        )
         if not context_token:
             raise MessageSendError(
                 f"Weixin proactive send is unavailable for {user_id}: no cached context_token."
@@ -1604,7 +1998,12 @@ class WeixinAdapter(BotAdapter):
 
         result: SimpleNamespace | None = None
         for chunk in chunks:
-            result = await self._send_text_to_user(user_id, chunk, context_token)
+            result = await self._send_text_to_user(
+                user_id,
+                chunk,
+                context_token,
+                account_id=session_account_id,
+            )
         return result
 
     async def edit_text(
@@ -1703,9 +2102,18 @@ class WeixinAdapter(BotAdapter):
         if not user_id:
             return None
 
-        context_token = self._resolve_context_token(context=context, user_id=user_id)
+        session_account_id = self._resolve_session_account_id(
+            user_id=user_id,
+            context=context,
+        )
+        context_token = self._resolve_context_token(
+            context=context,
+            user_id=user_id,
+            account_id=session_account_id,
+        )
+        scoped_key = self._compose_scoped_key(session_account_id, user_id)
         if safe_action in {"cancel", "cancel_typing", "typing_cancel", "stop"}:
-            existing = self._typing_cancel_tasks.pop(user_id, None)
+            existing = self._typing_cancel_tasks.pop(scoped_key, None)
             if existing is not None:
                 existing.cancel()
             try:
@@ -1713,10 +2121,12 @@ class WeixinAdapter(BotAdapter):
                     user_id=user_id,
                     status=WEIXIN_TYPING_STATUS_CANCEL,
                     context_token=context_token,
+                    account_id=session_account_id,
                 )
             except Exception:
                 logger.warning(
-                    "Weixin typing cancel failed for user_id=%s",
+                    "Weixin typing cancel failed for account_id=%s user_id=%s",
+                    self._safe_text(session_account_id) or "-",
                     user_id,
                     exc_info=True,
                 )
@@ -1737,13 +2147,19 @@ class WeixinAdapter(BotAdapter):
                 user_id=user_id,
                 status=WEIXIN_TYPING_STATUS_TYPING,
                 context_token=context_token,
+                account_id=session_account_id,
             )
             if sent:
-                self._reschedule_typing_cancel(user_id, context_token)
+                self._reschedule_typing_cancel(
+                    user_id,
+                    context_token,
+                    account_id=session_account_id,
+                )
         except Exception:
             logger.warning(
-                "Weixin send_chat_action failed action=%s user_id=%s",
+                "Weixin send_chat_action failed action=%s account_id=%s user_id=%s",
                 safe_action,
+                self._safe_text(session_account_id) or "-",
                 user_id,
                 exc_info=True,
             )
@@ -1764,7 +2180,8 @@ class WeixinAdapter(BotAdapter):
                 f"Weixin media item not found for file_id={self._safe_text(file_id)}."
             )
 
-        return await self._download_media_item(item)
+        account_id = self._resolve_session_account_id(context=context)
+        return await self._download_media_item(item, account_id=account_id)
 
     def on_command(
         self,

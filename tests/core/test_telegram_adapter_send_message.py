@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from telegram.error import NetworkError
+from telegram.ext import CommandHandler
 
 from core.platform.exceptions import MessageSendError
 from platforms.telegram.adapter import TelegramAdapter
@@ -230,3 +231,26 @@ async def test_telegram_adapter_set_message_reaction_uses_bot_api():
     payload = fake_bot.reaction_calls[-1]
     assert payload["chat_id"] == 100
     assert payload["message_id"] == 200
+
+
+def test_telegram_adapter_on_command_supports_custom_group():
+    class _FakeApplication:
+        def __init__(self):
+            self.bot = _FakeBot()
+            self.handlers = []
+
+        def add_handler(self, handler, group=0):
+            self.handlers.append((handler, group))
+
+    app = _FakeApplication()
+    adapter = TelegramAdapter(app)
+
+    async def _handler(ctx):
+        return ctx
+
+    adapter.on_command("wxbind", _handler, description="微信多绑定", group=-2)
+
+    assert len(app.handlers) == 1
+    handler, group = app.handlers[0]
+    assert isinstance(handler, CommandHandler)
+    assert group == -2
