@@ -74,7 +74,7 @@ async def test_edit_message_truncates_preview_before_adapter_call():
 
     assert len(adapter.edit_calls) == 1
     assert len(adapter.edit_calls[0]["text"]) <= MAX_EDIT_PREVIEW_CHARS
-    assert "完整结果将在后续消息中给出" in adapter.edit_calls[0]["text"]
+    assert "当前仅显示截断预览" in adapter.edit_calls[0]["text"]
 
 
 @pytest.mark.asyncio

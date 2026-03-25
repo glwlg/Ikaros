@@ -81,8 +81,8 @@ async def fetch_with_playwright_cli_snapshot(url: str) -> str | None:
     if not command_prefix:
         return None
 
-    session_id = f"xbot-{uuid4().hex[:8]}"
-    output_root = Path(os.getenv("PLAYWRIGHT_CLI_OUTPUT_DIR", "/tmp/xbot-playwright"))
+    session_id = f"ikaros-{uuid4().hex[:8]}"
+    output_root = Path(os.getenv("PLAYWRIGHT_CLI_OUTPUT_DIR", "/tmp/ikaros-playwright"))
     output_root.mkdir(parents=True, exist_ok=True)
     snapshot_file = output_root / f"snapshot-{session_id}.yml"
 

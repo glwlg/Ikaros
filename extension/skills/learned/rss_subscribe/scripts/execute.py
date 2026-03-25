@@ -33,14 +33,14 @@ from core.skill_cli import (
 
 prepare_default_env(REPO_ROOT)
 
-from core.state_store import (
+from extension.skills.learned.rss_subscribe.scripts.store import (
     create_subscription,
     delete_subscription,
-    get_feature_delivery_target,
-    list_feed_subscriptions,
     get_subscription,
+    get_rss_delivery_target,
+    list_feed_subscriptions,
     list_subscriptions,
-    set_feature_delivery_target,
+    set_rss_delivery_target,
     update_feed_subscription_state,
 )
 from core.state_paths import SINGLE_USER_SCOPE
@@ -79,14 +79,13 @@ async def _ensure_default_rss_delivery_target(
     ctx: UnifiedContext,
     user_id: int | str,
 ) -> dict[str, str]:
-    current = await get_feature_delivery_target(user_id, "rss")
+    current = await get_rss_delivery_target(user_id)
     if current:
         return current
     target = _current_delivery_target(ctx)
     if target["platform"] and target["chat_id"]:
-        return await set_feature_delivery_target(
+        return await set_rss_delivery_target(
             user_id,
-            "rss",
             target["platform"],
             target["chat_id"],
         )
@@ -158,7 +157,7 @@ def _rss_menu_ui() -> dict:
 
 async def show_rss_menu(ctx: UnifiedContext) -> dict:
     subs = await list_subscriptions(ctx.message.user.id)
-    delivery_target = await get_feature_delivery_target(ctx.message.user.id, "rss")
+    delivery_target = await get_rss_delivery_target(ctx.message.user.id)
     preview = "、".join(
         str(sub.get("title") or "").strip()
         for sub in subs[:3]
@@ -498,7 +497,7 @@ async def _fetch_feed_updates(
     if not subscriptions:
         return "", [], {}
 
-    rss_delivery_target = await get_feature_delivery_target(SINGLE_USER_SCOPE, "rss")
+    rss_delivery_target = await get_rss_delivery_target(SINGLE_USER_SCOPE)
     feed_map: dict[str, list[dict[str, object]]] = {}
     for sub in subscriptions:
         url = str(sub.get("feed_url") or "").strip()
@@ -987,9 +986,8 @@ async def handle_unsubscribe_callback(ctx: UnifiedContext):
             payload = {"text": await refresh_user_subscriptions(ctx), "ui": _rss_menu_ui()}
         elif action == "bind":
             target = _current_delivery_target(ctx)
-            updated = await set_feature_delivery_target(
+            updated = await set_rss_delivery_target(
                 ctx.callback_user_id or ctx.message.user.id,
-                "rss",
                 target["platform"],
                 target["chat_id"],
             )

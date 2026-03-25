@@ -126,7 +126,7 @@ def _build_help_payload(
             "🧩 **技能与工具**\n\n",
             "• `/skills` 浏览已安装技能。\n",
             "• `/daily` 可查天气、时间、汇率、币价。\n",
-            "• `/account` 管理账号凭据。",
+            "• `/credential` 管理账号凭据。",
         ]
         if flags.get("stock"):
             lines.insert(2, "• `/stock` 支持查看和管理自选股。\n")

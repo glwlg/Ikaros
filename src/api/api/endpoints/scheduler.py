@@ -6,7 +6,7 @@ from api.auth.users import current_active_user
 from api.auth.models import User
 from api.core.database import get_async_session
 from api.api.binding_helpers import get_primary_platform_user_id
-from core import state_store
+from extension.skills.builtin.scheduler_manager.scripts import store as scheduler_store
 
 router = APIRouter()
 
@@ -37,7 +37,7 @@ async def get_tasks(
     session: AsyncSession = Depends(get_async_session),
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
-    return await state_store.get_all_active_tasks(platform_uid)
+    return await scheduler_store.get_all_active_tasks(platform_uid)
 
 
 @router.post("")
@@ -48,7 +48,7 @@ async def create_task(
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
     try:
-        await state_store.add_scheduled_task(
+        await scheduler_store.add_scheduled_task(
             task.crontab, task.instruction, platform_uid
         )
         return {"success": True}
@@ -64,7 +64,7 @@ async def delete_task(
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
     try:
-        await state_store.delete_task(task_id, platform_uid)
+        await scheduler_store.delete_task(task_id, platform_uid)
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -79,7 +79,7 @@ async def update_task_status(
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
     try:
-        await state_store.update_task_status(task_id, status.is_active, platform_uid)
+        await scheduler_store.update_task_status(task_id, status.is_active, platform_uid)
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -99,7 +99,7 @@ async def update_task(
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
     try:
-        ok = await state_store.update_scheduled_task(
+        ok = await scheduler_store.update_scheduled_task(
             task_id, platform_uid, crontab=task.crontab, instruction=task.instruction
         )
         if not ok:

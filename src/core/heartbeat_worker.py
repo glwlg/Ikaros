@@ -739,18 +739,25 @@ class HeartbeatWorker:
         rss_delivery_target = self._normalize_delivery_target(default_delivery_target)
         stock_delivery_target = self._normalize_delivery_target(default_delivery_target)
         with contextlib.suppress(Exception):
-            from core.state_store import get_feature_delivery_target
+            from extension.skills.learned.rss_subscribe.scripts.store import (
+                get_rss_delivery_target,
+            )
+            from extension.skills.learned.stock_watch.scripts.store import (
+                get_stock_delivery_target,
+            )
 
-            rss_target = await get_feature_delivery_target(user_id, "rss")
+            rss_target = await get_rss_delivery_target(user_id)
             if rss_target:
                 rss_delivery_target = self._normalize_delivery_target(rss_target)
-            stock_target = await get_feature_delivery_target(user_id, "stock")
+            stock_target = await get_stock_delivery_target(user_id)
             if stock_target:
                 stock_delivery_target = self._normalize_delivery_target(stock_target)
 
         if self.enable_rss_signal and numeric_user_id > 0 and not has_rss_focus:
             with contextlib.suppress(Exception):
-                from core.state_store import list_subscriptions
+                from extension.skills.learned.rss_subscribe.scripts.store import (
+                    list_subscriptions,
+                )
 
                 subs = await list_subscriptions(numeric_user_id)
                 if subs:
@@ -771,7 +778,9 @@ class HeartbeatWorker:
         ):
             with contextlib.suppress(Exception):
                 from extension.skills.registry import skill_registry as skill_loader
-                from core.state_store import get_user_watchlist
+                from extension.skills.learned.stock_watch.scripts.store import (
+                    get_user_watchlist,
+                )
 
                 stock_module = skill_loader.import_skill_module("stock_watch")
                 is_trading_time = getattr(stock_module, "is_trading_time", None)

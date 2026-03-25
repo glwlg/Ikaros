@@ -240,7 +240,7 @@ docker compose logs -f ikaros-api
 ### 3. 典型 builtin skill / channel 扩展命令
 
 - `/acc`
-- `/account`
+- `/credential`
 - `/wxbind`
 
 ### 4. 平台特有流程

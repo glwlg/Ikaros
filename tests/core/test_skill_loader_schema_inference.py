@@ -1,5 +1,8 @@
 import types
 from pathlib import Path
+from types import SimpleNamespace
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from extension.skills.registry import SkillRegistry
 
@@ -334,7 +337,7 @@ def test_builtin_command_skills_remain_opted_in_for_platform_handlers():
     loader = SkillRegistry()
     indexed = loader.scan_skills()
 
-    assert indexed["account_manager"]["platform_handlers"] is True
+    assert indexed["credential_manager"]["platform_handlers"] is True
     assert indexed["daily_query"]["platform_handlers"] is True
     assert indexed["download_video"]["platform_handlers"] is True
     assert indexed["deployment_manager"]["platform_handlers"] is True
@@ -342,6 +345,7 @@ def test_builtin_command_skills_remain_opted_in_for_platform_handlers():
     assert indexed["rss_subscribe"]["platform_handlers"] is True
     assert indexed["scheduler_manager"]["platform_handlers"] is True
     assert indexed["stock_watch"]["platform_handlers"] is True
+    assert indexed["video_to_text"]["platform_handlers"] is True
 
 
 def test_skill_loader_get_skill_accepts_hyphen_underscore_aliases(tmp_path: Path):
@@ -417,3 +421,32 @@ entrypoint: scripts/execute.py
     )
 
     assert loader.get_skill("second_skill")["name"] == "second_skill"
+
+
+def test_skill_loader_imports_relative_script_skills_and_registers_jobs():
+    repo_root = Path(__file__).resolve().parents[2]
+    loader = SkillRegistry(skills_dir=str(repo_root / "extension" / "skills"))
+    loader.scan_skills()
+
+    stock_module = loader.import_skill_module("stock_watch")
+    download_module = loader.import_skill_module("download_video")
+
+    assert stock_module is not None
+    assert download_module is not None
+
+    class _FakeAdapterManager:
+        def on_command(self, command, handler, description=None):
+            _ = (command, handler, description)
+
+        def on_callback_query(self, pattern, handler):
+            _ = (pattern, handler)
+
+    scheduler = AsyncIOScheduler()
+    runtime = SimpleNamespace(
+        scheduler=scheduler,
+        adapter_manager=_FakeAdapterManager(),
+    )
+
+    stock_module.StockWatchSkillExtension().register(runtime)
+
+    assert scheduler.get_job("skill_stock_watch_push") is not None

@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from core.media_hooks import IncomingMediaInterceptResult, MediaHookRegistry
 from core.platform.models import MessageType
+from extension.channels import common as common_channel
 from handlers import ai_handlers
 from handlers import voice_handler
 
@@ -121,27 +123,47 @@ async def test_handle_ai_photo_works_for_discord_without_telegram_update(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_handle_ai_video_works_for_discord_without_telegram_update(monkeypatch):
-    import core.config as config_module
+async def test_route_message_by_type_for_video_uses_media_hook_and_forwards_text(
+    monkeypatch,
+):
+    registry = MediaHookRegistry()
+    captured = {}
 
-    async def _allow_user(_user_id):
-        return True
+    async def _interceptor(ctx):
+        _ = ctx
+        return IncomingMediaInterceptResult(
+            handled=True,
+            forward_text="用户发送了一个视频。\n- 文本工件：/tmp/demo.md",
+        )
 
-    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
-    monkeypatch.setattr(ai_handlers, "add_message", AsyncMock())
-    monkeypatch.setattr(ai_handlers, "increment_stat", AsyncMock())
-    monkeypatch.setattr(ai_handlers, "get_vision_model", lambda: "vision-model")
-    monkeypatch.setattr(ai_handlers, "get_current_model", lambda: "fallback-model")
-    monkeypatch.setattr(
-        ai_handlers, "get_client_for_model", lambda *_args, **_kwargs: object()
-    )
-    monkeypatch.setattr(
-        ai_handlers, "generate_text", AsyncMock(return_value="分析结果")
-    )
-    monkeypatch.setattr(
-        ai_handlers.prompt_composer, "compose_base", lambda **_kwargs: "system prompt"
-    )
+    async def _fake_handle_ai_chat(ctx, user_message_override=None):
+        captured["ctx"] = ctx
+        captured["user_message_override"] = user_message_override
 
+    registry.register_incoming_interceptor(
+        MessageType.VIDEO,
+        _interceptor,
+        owner="video_to_text",
+        priority=50,
+    )
+    monkeypatch.setattr(common_channel, "media_hook_registry", registry)
+    monkeypatch.setattr(common_channel, "handle_ai_chat", _fake_handle_ai_chat)
+
+    message = _build_discord_message(MessageType.VIDEO, "video/mp4")
+    platform_event = SimpleNamespace(
+        attachments=[SimpleNamespace(id="att-1", content_type="video/mp4", size=1234)]
+    )
+    ctx = _DummyContext(message, platform_event)
+
+    await common_channel.route_message_by_type(ctx)
+
+    assert captured["ctx"] is ctx
+    assert captured["user_message_override"] == "用户发送了一个视频。\n- 文本工件：/tmp/demo.md"
+    assert ctx.replies == []
+
+
+@pytest.mark.asyncio
+async def test_handle_ai_video_fallback_replies_when_no_media_hook():
     message = _build_discord_message(MessageType.VIDEO, "video/mp4")
     platform_event = SimpleNamespace(
         attachments=[SimpleNamespace(id="att-1", content_type="video/mp4", size=1234)]
@@ -150,9 +172,7 @@ async def test_handle_ai_video_works_for_discord_without_telegram_update(monkeyp
 
     await ai_handlers.handle_ai_video(ctx)
 
-    assert ctx.download_calls
-    assert ctx.reactions == [("👀", {})]
-    assert any("分析结果" in text for _, text, _ in ctx.edits)
+    assert ctx.replies == [("⚠️ 当前未注册视频文本化处理器，暂时无法处理视频。", {})]
 
 
 @pytest.mark.asyncio

@@ -55,7 +55,10 @@ class TestWatchlistRepo:
     async def test_add_watchlist_stock(self, mock_db):
         """测试添加自选股"""
         from core.state_io import init_db
-        from core.state_store import add_watchlist_stock, get_user_watchlist
+        from extension.skills.learned.stock_watch.scripts.store import (
+            add_watchlist_stock,
+            get_user_watchlist,
+        )
 
         await init_db()
 
@@ -73,7 +76,9 @@ class TestWatchlistRepo:
     async def test_add_duplicate_stock(self, mock_db):
         """测试重复添加自选股"""
         from core.state_io import init_db
-        from core.state_store import add_watchlist_stock
+        from extension.skills.learned.stock_watch.scripts.store import (
+            add_watchlist_stock,
+        )
 
         await init_db()
 
@@ -89,10 +94,10 @@ class TestWatchlistRepo:
     async def test_remove_watchlist_stock(self, mock_db):
         """测试删除自选股"""
         from core.state_io import init_db
-        from core.state_store import (
+        from extension.skills.learned.stock_watch.scripts.store import (
             add_watchlist_stock,
-            remove_watchlist_stock,
             get_user_watchlist,
+            remove_watchlist_stock,
         )
 
         await init_db()
@@ -114,7 +119,10 @@ class TestReminderRepo:
     async def test_add_and_get_reminder(self, mock_db):
         """测试添加和获取提醒"""
         from core.state_io import init_db
-        from core.state_store import add_reminder, get_pending_reminders
+        from extension.skills.learned.reminder.scripts.store import (
+            add_reminder,
+            get_pending_reminders,
+        )
 
         await init_db()
 
@@ -137,7 +145,7 @@ class TestReminderRepo:
     async def test_delete_reminder(self, mock_db):
         """测试删除提醒"""
         from core.state_io import init_db
-        from core.state_store import (
+        from extension.skills.learned.reminder.scripts.store import (
             add_reminder,
             delete_reminder,
             get_pending_reminders,
@@ -161,7 +169,7 @@ class TestSubscriptionRepo:
     async def test_create_feed_subscription(self, mock_db):
         """测试添加订阅"""
         from core.state_io import init_db
-        from core.state_store import (
+        from extension.skills.learned.rss_subscribe.scripts.store import (
             create_subscription,
             list_subscriptions,
         )
@@ -185,7 +193,7 @@ class TestSubscriptionRepo:
     async def test_delete_subscription(self, mock_db):
         """测试删除订阅"""
         from core.state_io import init_db
-        from core.state_store import (
+        from extension.skills.learned.rss_subscribe.scripts.store import (
             create_subscription,
             delete_subscription,
             list_subscriptions,
@@ -208,7 +216,10 @@ class TestSubscriptionRepo:
     @pytest.mark.asyncio
     async def test_list_subscriptions_uses_single_shared_scope(self, mock_db):
         from core.state_io import init_db
-        from core.state_store import create_subscription, list_subscriptions
+        from extension.skills.learned.rss_subscribe.scripts.store import (
+            create_subscription,
+            list_subscriptions,
+        )
 
         await init_db()
 
@@ -299,7 +310,7 @@ class TestStateFileProtocol:
             render_state_markdown,
         )
 
-        content = render_state_markdown({"name": "xbot"}, title="Protocol")
+        content = render_state_markdown({"name": "ikaros"}, title="Protocol")
 
         assert content.count(STATE_BEGIN_MARKER) == 1
         assert content.count(STATE_END_MARKER) == 1
@@ -308,7 +319,7 @@ class TestStateFileProtocol:
 
         ok, payload = parse_state_payload(content)
         assert ok is True
-        assert payload == {"version": 1, "name": "xbot"}
+        assert payload == {"version": 1, "name": "ikaros"}
 
     @pytest.mark.parametrize(
         "raw_text,expected",
@@ -374,25 +385,25 @@ class TestRepositoryStateFiles:
             ),
             (
                 "subscriptions",
-                ("user", "7", ("rss", "subscriptions.md")),
+                ("user", "7", ("rss_subscribe", "subscriptions.md")),
                 [{"feed_url": "https://example.com/rss", "title": "Example"}],
                 [{"feed_url": "https://example.com/rss", "title": "Example"}],
             ),
             (
                 "watchlist",
-                ("user", "7", ("stock", "watchlist.md")),
+                ("user", "7", ("stock_watch", "watchlist.md")),
                 [{"stock_code": "sh601006", "stock_name": "大秦铁路"}],
                 [{"stock_code": "sh601006", "stock_name": "大秦铁路"}],
             ),
             (
                 "reminders",
-                ("user", "7", ("automation", "reminders.md")),
+                ("user", "7", ("reminder", "reminders.md")),
                 [{"id": 1, "message": "drink water"}],
                 [{"id": 1, "message": "drink water"}],
             ),
             (
                 "scheduled_tasks",
-                ("user", "7", ("automation", "scheduled_tasks.md")),
+                ("user", "7", ("scheduler_manager", "scheduled_tasks.md")),
                 [{"id": 2, "crontab": "*/5 * * * *", "instruction": "check"}],
                 [{"id": 2, "crontab": "*/5 * * * *", "instruction": "check"}],
             ),
@@ -404,7 +415,7 @@ class TestRepositoryStateFiles:
             ),
             (
                 "cache",
-                ("system", None, ("video_cache.md",)),
+                ("system", None, ("download_video", "video_cache.md")),
                 {"abc": {"file_path": "/tmp/a.mp4"}},
                 {"version": 1, "abc": {"file_path": "/tmp/a.mp4"}},
             ),

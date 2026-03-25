@@ -8,8 +8,12 @@ import logging
 import base64
 import asyncio
 import json
+import mimetypes
+import os
 import re
 from typing import Any, cast
+
+import httpx
 from telegram.error import BadRequest
 
 from core.config import is_user_allowed, get_client_for_model
@@ -26,6 +30,55 @@ logger = logging.getLogger(__name__)
 
 # Backward-compatible async client injection for tests/legacy callers.
 openai_async_client: Any = None
+
+
+def _whisper_http_endpoint() -> str:
+    return str(
+        os.getenv("VIDEO_TO_TEXT_WHISPER_ENDPOINT")
+        or os.getenv("WHISPER_INFERENCE_URL")
+        or ""
+    ).strip()
+
+
+def _whisper_http_enabled() -> bool:
+    return bool(_whisper_http_endpoint())
+
+
+def _whisper_http_timeout_seconds() -> float:
+    try:
+        value = float(os.getenv("VIDEO_TO_TEXT_WHISPER_TIMEOUT_SECONDS", "180"))
+    except Exception:
+        value = 180.0
+    return max(5.0, value)
+
+
+def _whisper_http_response_format() -> str:
+    return str(os.getenv("VIDEO_TO_TEXT_WHISPER_RESPONSE_FORMAT") or "text").strip() or "text"
+
+
+def _whisper_http_language() -> str:
+    return str(os.getenv("VIDEO_TO_TEXT_WHISPER_LANGUAGE") or "zh").strip()
+
+
+def _whisper_http_temperature() -> float:
+    try:
+        value = float(os.getenv("VIDEO_TO_TEXT_WHISPER_TEMPERATURE", "0"))
+    except Exception:
+        value = 0.0
+    return max(0.0, value)
+
+
+def _whisper_http_temperature_inc() -> float:
+    try:
+        value = float(os.getenv("VIDEO_TO_TEXT_WHISPER_TEMPERATURE_INC", "0"))
+    except Exception:
+        value = 0.0
+    return max(0.0, value)
+
+
+def _whisper_http_no_timestamps() -> bool:
+    raw = str(os.getenv("VIDEO_TO_TEXT_WHISPER_NO_TIMESTAMPS", "1")).strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
 
 
 def _extract_weixin_voice_transcript(ctx: UnifiedContext) -> str:
@@ -159,6 +212,9 @@ def _parse_audio_response_payload(raw_text: str) -> tuple[str, str]:
             continue
         if not isinstance(payload, dict):
             continue
+        error_text = _normalize_transcribed_text(str(payload.get("error") or ""))
+        if error_text:
+            return "failed", error_text
         status = str(payload.get("status") or "").strip().lower() or "transcribed"
         transcript = _normalize_transcribed_text(
             str(
@@ -205,6 +261,24 @@ def _audio_mime_candidates(mime_type: str) -> list[str]:
 
 def _audio_base_mime(mime_type: str) -> str:
     return str(mime_type or "").split(";", 1)[0].strip().lower()
+
+
+def _audio_suffix_for_mime(mime_type: str) -> str:
+    base = _audio_base_mime(mime_type)
+    mapping = {
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/ogg": ".ogg",
+        "audio/opus": ".opus",
+        "audio/webm": ".webm",
+        "audio/mp4": ".m4a",
+        "audio/x-m4a": ".m4a",
+        "audio/flac": ".flac",
+    }
+    guessed = mimetypes.guess_extension(base or "")
+    return mapping.get(base, guessed or ".bin")
 
 
 def _sniff_audio_container(voice_bytes: bytes) -> str | None:
@@ -404,6 +478,113 @@ async def _run_audio_prompt(prompt: str, voice_bytes: bytes, mime_type: str) -> 
     return ""
 
 
+async def _transcribe_voice_with_whisper_http(
+    voice_bytes: bytes,
+    mime_type: str,
+) -> str:
+    endpoint = _whisper_http_endpoint()
+    if not endpoint:
+        return ""
+
+    payload_bytes = bytes(voice_bytes)
+    safe_mime_type = _audio_base_mime(mime_type) or "application/octet-stream"
+    if safe_mime_type in {
+        "audio/ogg",
+        "application/ogg",
+        "audio/opus",
+        "audio/x-opus",
+        "audio/webm",
+    }:
+        transcoded_wav = await _transcode_audio_to_wav(voice_bytes, mime_type)
+        if transcoded_wav:
+            payload_bytes = transcoded_wav
+            safe_mime_type = "audio/wav"
+            logger.info(
+                "Voice transcription transcoded audio for Whisper HTTP upload: original_mime=%s upload_mime=%s upload_size=%s",
+                mime_type,
+                safe_mime_type,
+                len(payload_bytes),
+            )
+
+    suffix = _audio_suffix_for_mime(safe_mime_type)
+    data = {
+        "response_format": _whisper_http_response_format(),
+        "temperature": f"{_whisper_http_temperature():.2f}",
+        "temperature_inc": f"{_whisper_http_temperature_inc():.2f}",
+    }
+    language = _whisper_http_language()
+    if language:
+        data["language"] = language
+    if _whisper_http_no_timestamps():
+        data["no_timestamps"] = "true"
+
+    timeout_seconds = _whisper_http_timeout_seconds()
+    timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 10.0))
+    files = {"file": (f"audio{suffix}", payload_bytes, safe_mime_type)}
+
+    try:
+        logger.info(
+            "Voice transcription using Whisper HTTP endpoint=%s mime=%s size=%s",
+            endpoint,
+            safe_mime_type,
+            len(payload_bytes),
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(endpoint, data=data, files=files)
+            response.raise_for_status()
+    except httpx.TimeoutException:
+        logger.warning(
+            "Whisper HTTP request timed out after %.1fs, falling back to voice model",
+            timeout_seconds,
+        )
+        return ""
+    except httpx.HTTPError as exc:
+        logger.warning("Whisper HTTP request failed, falling back to voice model: %s", exc)
+        return ""
+
+    raw_text = str(response.text or "").strip()
+    preview = raw_text[:200].replace("\n", "\\n")
+    response_headers = getattr(response, "headers", {}) or {}
+    logger.info(
+        "Whisper HTTP response received: content_type=%s preview=%s",
+        response_headers.get("content-type", ""),
+        preview,
+    )
+    if not raw_text:
+        logger.warning("Whisper HTTP returned empty transcript body, falling back to voice model")
+        return ""
+
+    status, transcript = _parse_audio_response_payload(raw_text)
+    if status == "unstructured":
+        normalized = _normalize_transcribed_text(raw_text)
+        if not normalized:
+            logger.warning(
+                "Whisper HTTP returned unstructured but unusable transcript preview=%s",
+                preview,
+            )
+        return normalized
+    if status == "transcribed":
+        if not transcript:
+            logger.warning(
+                "Whisper HTTP returned transcribed status but empty transcript preview=%s",
+                preview,
+            )
+        return transcript
+    if status == "failed":
+        logger.warning(
+            "Whisper HTTP returned error payload detail=%s preview=%s",
+            transcript,
+            preview,
+        )
+        return ""
+    logger.warning(
+        "Whisper HTTP returned non-transcribable status=%s preview=%s",
+        status,
+        preview,
+    )
+    return ""
+
+
 async def transcribe_voice(voice_bytes: bytes, mime_type: str) -> str | None:
     """
     使用对话模型转写语音为文字
@@ -416,6 +597,14 @@ async def transcribe_voice(voice_bytes: bytes, mime_type: str) -> str | None:
         return None
 
     try:
+        if _whisper_http_enabled():
+            whisper_text = _normalize_transcribed_text(
+                await _transcribe_voice_with_whisper_http(voice_bytes, mime_type)
+            )
+            if whisper_text:
+                logger.info("Voice transcription completed via Whisper HTTP")
+                return whisper_text
+            logger.warning("Whisper HTTP did not yield usable text, falling back to voice model")
         prompt = (
             "请将这段语音转写为文字。"
             "返回 JSON，格式为 "

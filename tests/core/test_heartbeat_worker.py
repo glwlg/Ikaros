@@ -671,7 +671,7 @@ async def test_heartbeat_push_sends_markdown_attachment_when_too_long(monkeypatc
     assert chat_id == "101"
     assert isinstance(document, (bytes, bytearray))
     assert b"AAAA" in bytes(document)
-    assert str(filename).endswith((".md", ".html"))
+    assert str(filename).endswith((".md", ".html", ".txt"))
     assert "完整结果见附件" in str(caption)
 
 
@@ -768,7 +768,7 @@ async def test_heartbeat_specs_skip_auto_rss_when_checklist_already_rss(monkeypa
         ]
 
     monkeypatch.setattr(
-        "core.state_store.list_subscriptions",
+        "extension.skills.learned.rss_subscribe.scripts.store.list_subscriptions",
         _fake_list_subscriptions,
     )
 
@@ -789,10 +789,13 @@ async def test_heartbeat_specs_skip_auto_stock_when_checklist_is_rss(monkeypatch
         return [{"id": 1, "stock_code": "AAPL", "stock_name": "Apple"}]
 
     monkeypatch.setattr(
-        "core.state_store.get_user_watchlist",
+        "extension.skills.learned.stock_watch.scripts.store.get_user_watchlist",
         _fake_get_user_watchlist,
     )
-    monkeypatch.setattr("core.scheduler.is_trading_time", lambda: True)
+    monkeypatch.setattr(
+        "extension.skills.registry.skill_registry.import_skill_module",
+        lambda _name: SimpleNamespace(is_trading_time=lambda: True),
+    )
 
     worker = HeartbeatWorker()
     worker.enable_stock_signal = True
@@ -830,16 +833,8 @@ async def test_heartbeat_rss_goal_routes_through_orchestrator(
 
     refresh_calls = {"value": 0}
 
-    async def _fake_trigger_manual_rss_check(_uid: int, **_kwargs):
-        refresh_calls["value"] += 1
-        return "📢 RSS 订阅日报 (1 条更新)\n\n- AI 新闻更新"
-
-    monkeypatch.setattr(
-        "core.scheduler.trigger_manual_rss_check",
-        _fake_trigger_manual_rss_check,
-    )
-
     async def _fake_orchestrator(_ctx, _message_history):
+        refresh_calls["value"] += 1
         yield "HEARTBEAT_NOTICE: 📢 RSS 订阅日报 (1 条更新)\n\n- AI 新闻更新"
 
     monkeypatch.setattr(
@@ -870,7 +865,7 @@ async def test_heartbeat_rss_goal_routes_through_orchestrator(
     worker.suppress_ok = True
 
     result = await worker.run_user_now(user_id)
-    assert refresh_calls["value"] == 0
+    assert refresh_calls["value"] == 1
     assert "RSS 订阅日报" in result
     assert pushed
     assert pushed[0][0] == "501"
@@ -895,15 +890,8 @@ async def test_heartbeat_multiple_rss_items_only_append_once(monkeypatch, tmp_pa
 
     call_count = {"value": 0}
 
-    async def _fake_trigger_manual_rss_check(_uid: int, **_kwargs):
-        call_count["value"] += 1
-        return "📢 RSS 订阅日报 (1 条更新)\n\n- AI 新闻更新"
-
-    monkeypatch.setattr(
-        "core.scheduler.trigger_manual_rss_check",
-        _fake_trigger_manual_rss_check,
-    )
     async def _fake_orchestrator(_ctx, _message_history):
+        call_count["value"] += 1
         yield "HEARTBEAT_OK"
 
     monkeypatch.setattr(
@@ -918,7 +906,7 @@ async def test_heartbeat_multiple_rss_items_only_append_once(monkeypatch, tmp_pa
         checklist=["检查我的 RSS 订阅更新", "再检查一次 RSS 订阅更新"],
         owner="test-owner",
     )
-    assert call_count["value"] == 0
+    assert call_count["value"] == 2
     assert result == "HEARTBEAT_OK"
 
 
@@ -940,14 +928,6 @@ async def test_heartbeat_suppresses_rss_busy_message(monkeypatch, tmp_path):
 
     captured: dict[str, object] = {}
 
-    async def _fake_trigger_manual_rss_check(_uid: int, **kwargs):
-        captured["kwargs"] = dict(kwargs)
-        return ""
-
-    monkeypatch.setattr(
-        "core.scheduler.trigger_manual_rss_check",
-        _fake_trigger_manual_rss_check,
-    )
     async def _fake_orchestrator(_ctx, _message_history):
         yield "HEARTBEAT_OK"
 

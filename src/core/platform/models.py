@@ -214,7 +214,7 @@ class UnifiedContext:
     def _truncate_edit_preview(text: str, max_chars: int) -> str:
         if len(text) <= max_chars:
             return text
-        suffix = "\n\n...（内容较长，完整结果将在后续消息中给出）"
+        suffix = "\n\n...（内容较长，当前仅显示截断预览）"
         budget = max_chars - len(suffix)
         if budget < 100:
             budget = max_chars

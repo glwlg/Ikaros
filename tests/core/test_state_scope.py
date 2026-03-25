@@ -6,18 +6,26 @@ from core.heartbeat_store import HeartbeatStore
 from core.state_io import read_json, write_json
 from core.state_migration import migrate_legacy_user_state
 from core.state_paths import all_user_ids, shared_user_path, system_path, user_path
-from core.state_store import (
-    add_reminder,
+from extension.skills.builtin.scheduler_manager.scripts.store import (
     add_scheduled_task,
-    add_watchlist_stock,
-    create_subscription,
-    get_feature_delivery_target,
     get_all_active_tasks,
-    get_pending_reminders,
-    get_user_watchlist,
-    list_subscriptions,
-    set_feature_delivery_target,
     update_scheduled_task,
+)
+from extension.skills.learned.reminder.scripts.store import (
+    add_reminder,
+    get_pending_reminders,
+)
+from extension.skills.learned.rss_subscribe.scripts.store import (
+    create_subscription,
+    get_rss_delivery_target,
+    list_subscriptions,
+    set_rss_delivery_target,
+)
+from extension.skills.learned.stock_watch.scripts.store import (
+    add_watchlist_stock,
+    get_stock_delivery_target,
+    get_user_watchlist,
+    set_stock_delivery_target,
 )
 
 
@@ -25,12 +33,12 @@ from core.state_store import (
 async def test_single_user_paths_and_logical_scope_are_canonical(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-    alpha = user_path("1001", "automation", "scheduled_tasks.md")
-    beta = user_path("2002", "automation", "scheduled_tasks.md")
-    shared = shared_user_path("automation", "scheduled_tasks.md")
+    alpha = user_path("1001", "scheduler_manager", "scheduled_tasks.md")
+    beta = user_path("2002", "scheduler_manager", "scheduled_tasks.md")
+    shared = shared_user_path("scheduler_manager", "scheduled_tasks.md")
 
     assert alpha == beta == shared
-    assert alpha == tmp_path / "user" / "automation" / "scheduled_tasks.md"
+    assert alpha == tmp_path / "user" / "scheduler_manager" / "scheduled_tasks.md"
     assert system_path("allowed_users.md") == tmp_path / "system" / "allowed_users.md"
     assert all_user_ids() == ["user"]
 
@@ -69,18 +77,18 @@ async def test_feature_delivery_targets_are_shared_across_runtime_user_ids(
 ):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-    await set_feature_delivery_target("1001", "rss", "weixin", "wx-user-1")
-    await set_feature_delivery_target("1001", "stock", "telegram", "257675041")
+    await set_rss_delivery_target("1001", "weixin", "wx-user-1")
+    await set_stock_delivery_target("1001", "telegram", "257675041")
 
-    assert await get_feature_delivery_target("2002", "rss") == {
+    assert await get_rss_delivery_target("2002") == {
         "platform": "weixin",
         "chat_id": "wx-user-1",
-        "updated_at": (await get_feature_delivery_target("1001", "rss"))["updated_at"],
+        "updated_at": (await get_rss_delivery_target("1001"))["updated_at"],
     }
-    assert await get_feature_delivery_target("2002", "stock") == {
+    assert await get_stock_delivery_target("2002") == {
         "platform": "telegram",
         "chat_id": "257675041",
-        "updated_at": (await get_feature_delivery_target("1001", "stock"))["updated_at"],
+        "updated_at": (await get_stock_delivery_target("1001"))["updated_at"],
     }
 
 
@@ -88,7 +96,7 @@ async def test_feature_delivery_targets_are_shared_across_runtime_user_ids(
 async def test_scheduled_tasks_rewrite_to_single_user_schema(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-    scheduled_path = shared_user_path("automation", "scheduled_tasks.md")
+    scheduled_path = shared_user_path("scheduler_manager", "scheduled_tasks.md")
     await write_json(
         scheduled_path,
         [

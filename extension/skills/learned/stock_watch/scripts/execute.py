@@ -21,13 +21,13 @@ if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
 from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
-from core.state_store import (
-    remove_watchlist_stock,
-    get_user_watchlist,
-    get_all_watchlist_users,
+from extension.skills.learned.stock_watch.scripts.store import (
     add_watchlist_stock,
-    get_feature_delivery_target,
-    set_feature_delivery_target,
+    get_all_watchlist_users,
+    get_stock_delivery_target,
+    get_user_watchlist,
+    remove_watchlist_stock,
+    set_stock_delivery_target,
 )
 from core.skill_menu import make_callback, parse_callback
 from core.platform.models import UnifiedContext
@@ -78,14 +78,13 @@ async def _ensure_default_stock_delivery_target(
     ctx: UnifiedContext,
     user_id: int | str,
 ) -> dict[str, str]:
-    current = await get_feature_delivery_target(user_id, "stock")
+    current = await get_stock_delivery_target(user_id)
     if current:
         return current
     target = _current_delivery_target(ctx)
     if target["platform"] and target["chat_id"]:
-        return await set_feature_delivery_target(
+        return await set_stock_delivery_target(
             user_id,
-            "stock",
             target["platform"],
             target["chat_id"],
         )
@@ -155,7 +154,7 @@ def _stock_home_ui() -> dict:
 
 async def show_stock_menu(ctx: UnifiedContext, user_id: int | str) -> dict:
     watchlist = await get_user_watchlist(user_id)
-    delivery_target = await get_feature_delivery_target(user_id, "stock")
+    delivery_target = await get_stock_delivery_target(user_id)
     names = [str(item.get("stock_name") or "").strip() for item in watchlist[:4] if str(item.get("stock_name") or "").strip()]
     summary = "、".join(names)
     if len(watchlist) > 4:
@@ -293,9 +292,7 @@ async def stock_push_job() -> None:
                     continue
 
                 message = format_stock_message(quotes)
-                stock_delivery_target = await get_feature_delivery_target(
-                    user_id, "stock"
-                )
+                stock_delivery_target = await get_stock_delivery_target(user_id)
                 target_platform, target_chat_id = await _resolve_proactive_delivery_target(
                     user_id,
                     platform,
@@ -642,9 +639,8 @@ async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
             }
         elif action == "bind":
             target = _current_delivery_target(ctx)
-            updated = await set_feature_delivery_target(
+            updated = await set_stock_delivery_target(
                 user_id,
-                "stock",
                 target["platform"],
                 target["chat_id"],
             )

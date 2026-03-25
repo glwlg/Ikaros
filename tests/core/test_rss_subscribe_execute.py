@@ -8,8 +8,9 @@ import pytest
 def _load_rss_execute_module():
     path = (
         Path(__file__).resolve().parents[2]
+        / "extension"
         / "skills"
-        / "builtin"
+        / "learned"
         / "rss_subscribe"
         / "scripts"
         / "execute.py"
@@ -24,6 +25,7 @@ def _load_rss_execute_module():
 @pytest.mark.asyncio
 async def test_execute_slash_list_uses_list_action(monkeypatch):
     module = _load_rss_execute_module()
+    monkeypatch.setattr(module, "_rss_enabled", lambda _ctx: True)
 
     called = {"list": 0, "subscribe": 0}
 
@@ -59,6 +61,7 @@ async def test_execute_slash_list_uses_list_action(monkeypatch):
 @pytest.mark.asyncio
 async def test_execute_list_alias_actions_use_list(monkeypatch):
     module = _load_rss_execute_module()
+    monkeypatch.setattr(module, "_rss_enabled", lambda _ctx: True)
 
     called = {"list": 0, "subscribe": 0}
 
@@ -96,6 +99,7 @@ async def test_execute_list_alias_actions_use_list(monkeypatch):
 @pytest.mark.asyncio
 async def test_execute_update_intent_overrides_list_alias_to_refresh(monkeypatch):
     module = _load_rss_execute_module()
+    monkeypatch.setattr(module, "_rss_enabled", lambda _ctx: True)
 
     called = {"list": 0, "refresh": 0}
 
@@ -136,6 +140,7 @@ async def test_execute_update_intent_overrides_list_alias_to_refresh(monkeypatch
 @pytest.mark.asyncio
 async def test_execute_monitor_returns_disabled_message(monkeypatch):
     module = _load_rss_execute_module()
+    monkeypatch.setattr(module, "_rss_enabled", lambda _ctx: True)
 
     ctx = SimpleNamespace(
         message=SimpleNamespace(

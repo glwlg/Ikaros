@@ -67,8 +67,8 @@ def test_stock_rss_schedule_deploy_subcommand_parsers():
     deploy = _load_module(
         "extension/skills/builtin/deployment_manager/scripts/execute.py", "deploy_subcmd_test"
     )
-    account = _load_module(
-        "extension/skills/builtin/account_manager/scripts/execute.py", "account_subcmd_test"
+    credential = _load_module(
+        "extension/skills/builtin/credential_manager/scripts/execute.py", "credential_subcmd_test"
     )
     daily = _load_module(
         "extension/skills/learned/daily_query/scripts/execute.py", "daily_subcmd_test"
@@ -104,9 +104,9 @@ def test_stock_rss_schedule_deploy_subcommand_parsers():
     assert deploy._parse_deploy_request("/deploy run n8n") == ("run", "n8n")
     assert deploy._parse_deploy_request("/deploy n8n") == ("run", "n8n")
 
-    assert account._parse_account_subcommand("/account") == ("menu", "", "")
-    assert account._parse_account_subcommand("/account github") == ("get", "github", "")
-    assert account._parse_account_subcommand("/account add github username=alice") == (
+    assert credential._parse_credential_subcommand("/credential") == ("menu", "", "")
+    assert credential._parse_credential_subcommand("/credential github") == ("get", "github", "")
+    assert credential._parse_credential_subcommand("/credential add github username=alice") == (
         "add",
         "github",
         "username=alice",
@@ -143,8 +143,8 @@ def test_skill_command_registration_is_converged():
     deploy = _load_module(
         "extension/skills/builtin/deployment_manager/scripts/execute.py", "deploy_register_test"
     )
-    account = _load_module(
-        "extension/skills/builtin/account_manager/scripts/execute.py", "account_register_test"
+    credential = _load_module(
+        "extension/skills/builtin/credential_manager/scripts/execute.py", "credential_register_test"
     )
     daily = _load_module(
         "extension/skills/learned/daily_query/scripts/execute.py", "daily_register_test"
@@ -172,9 +172,9 @@ def test_skill_command_registration_is_converged():
     deploy.register_handlers(deploy_manager)
     assert deploy_manager.commands == ["deploy"]
 
-    account_manager = _FakeAdapterManager()
-    account.register_handlers(account_manager)
-    assert account_manager.commands == ["account"]
+    credential_manager = _FakeAdapterManager()
+    credential.register_handlers(credential_manager)
+    assert credential_manager.commands == ["credential"]
 
     daily_manager = _FakeAdapterManager()
     daily.register_handlers(daily_manager)

@@ -124,6 +124,8 @@ extension/
 - `src/core/subagent_supervisor.py`：内部 `subagent` 启动、等待、后台交付
 - `src/core/model_config.py`：`config/models.json` 读写、角色模型解析与运行时重载
 - `src/core/llm_usage_store.py`：LLM 用量聚合存储、token 估算与 OpenAI client 包装
+- `src/core/storage_service.py`：`data/` 根目录下的通用状态存储服务，只负责安全路径、读写和计数器
+- `extension/skills/*/scripts/store.py`：skill 自己的持久化封装；具体文件路径由对应 skill 定义
 
 ## 4. Extension Runtime 约束
 
@@ -395,6 +397,7 @@ Manager 是否给 `subagent` 分配某个 skill，由 `allowed_skills` 决定。
 - 不要重新引入 `src/core/skill_loader.py`
 - 不要把 skill 命令 / 定时任务注册重新写回 core 特化函数
 - 代码型 skill 应通过 `SkillExtension` 子类完成注册
+- extension 自有持久化应定义在各自的 `scripts/store.py`，通过 `core.storage_service` 读写；`core.state_store` 只保留 core 自有状态
 
 ## 10. Anti-Patterns
 
@@ -403,7 +406,8 @@ Manager 是否给 `subagent` 分配某个 skill，由 `allowed_skills` 决定。
 - 不要把新的用户侧业务注册直接写进 `src/main.py`
 - 不要把 channel / memory / skill 业务逻辑重新塞回 `src/core`
 - 不要为 channel / memory / plugin 重新设计一套额外 manifest
-- 不要绕过 `state_store` / `state_paths` 使用 ad-hoc 文件路径
+- 不要绕过 `storage_service` / `state_paths` 使用 ad-hoc 文件路径
+- 不要把 extension 的业务存储文件路径或业务存储实现重新定义回 `src/core/state_store.py`
 - 不要重新引入独立 Worker 执行面或过时的 manager/worker 分裂架构
 - 不要把新的聚合型运行时数据写回无界 JSONL
 - 不要在语义判定上回退到 regex/关键词硬编码路由

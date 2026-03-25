@@ -14,8 +14,8 @@ from core.config import LOG_LEVEL, TELEGRAM_BOT_TOKEN
 from core.extension_base import ChannelExtension
 
 from .adapter import TelegramAdapter
-from ..common import COMMON_CALLBACK_PATTERN, button_callback
-from handlers import handle_ai_chat, handle_ai_photo, handle_ai_video, handle_sticker_message
+from ..common import COMMON_CALLBACK_PATTERN, button_callback, route_message_by_type
+from handlers import handle_ai_chat, handle_ai_photo, handle_sticker_message
 from handlers.document_handler import handle_document
 from handlers.voice_handler import handle_voice_message
 
@@ -66,7 +66,7 @@ class TelegramChannelExtension(ChannelExtension):
         adapter = runtime.register_adapter(TelegramAdapter(tg_app))
         adapter.on_callback_query(COMMON_CALLBACK_PATTERN, button_callback)
         adapter.on_message(filters.PHOTO, handle_ai_photo)
-        adapter.on_message(filters.VIDEO, handle_ai_video)
+        adapter.on_message(filters.VIDEO, route_message_by_type)
         adapter.on_message(filters.VOICE | filters.AUDIO, handle_voice_message)
         adapter.on_message(filters.Document.ALL, handle_document)
         adapter.on_message(filters.Sticker.ALL, handle_sticker_message)

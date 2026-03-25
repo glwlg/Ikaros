@@ -6,12 +6,16 @@ from typing import Any
 
 
 _AUDIO_PART_STYLE = str(os.getenv("OPENAI_AUDIO_PART_STYLE") or "file").strip().lower()
+_VIDEO_PART_STYLE = str(
+    os.getenv("OPENAI_VIDEO_PART_STYLE") or "video_url"
+).strip().lower()
 
 
 def build_messages(
     *,
     contents: Any,
     system_instruction: str | None = None,
+    config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     system_text = str(system_instruction or "").strip()
@@ -30,7 +34,7 @@ def build_messages(
         if not parts and isinstance(item, dict) and item.get("content"):
             parts = [{"text": str(item.get("content"))}]
 
-        content_blocks = _build_content_blocks(parts)
+        content_blocks = _build_content_blocks(parts, config=config)
         if not content_blocks:
             continue
 
@@ -114,6 +118,7 @@ def build_chat_kwargs(
         "messages": build_messages(
             contents=contents,
             system_instruction=str(cfg.get("system_instruction") or "") or None,
+            config=cfg,
         ),
     }
     return apply_generation_config(kwargs=kwargs, config=cfg)
@@ -218,8 +223,19 @@ def _read_attr(payload: Any, key: str) -> Any:
     return getattr(payload, key, None)
 
 
-def _build_content_blocks(parts: Any) -> list[dict[str, Any]]:
+def _build_content_blocks(
+    parts: Any,
+    *,
+    config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
+    cfg = config if isinstance(config, dict) else {}
+    audio_part_style = str(
+        cfg.get("audio_part_style") or _AUDIO_PART_STYLE or "file"
+    ).strip().lower()
+    video_part_style = str(
+        cfg.get("video_part_style") or _VIDEO_PART_STYLE or "video_url"
+    ).strip().lower()
     for part in parts or []:
         text = _read_attr(part, "text") or _read_key(part, "text")
         if text:
@@ -245,7 +261,7 @@ def _build_content_blocks(parts: Any) -> list[dict[str, Any]]:
             continue
 
         if mime_type.startswith("audio/"):
-            if _AUDIO_PART_STYLE == "input_audio":
+            if audio_part_style == "input_audio":
                 audio_format = _audio_format_from_mime(mime_type)
                 if audio_format:
                     blocks.append(
@@ -258,6 +274,16 @@ def _build_content_blocks(parts: Any) -> list[dict[str, Any]]:
                         }
                     )
                     continue
+            if audio_part_style == "input_audio_data_uri":
+                blocks.append(
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": f"data:{mime_type};base64,{raw_data}",
+                        },
+                    }
+                )
+                continue
 
             blocks.append(
                 {
@@ -266,6 +292,25 @@ def _build_content_blocks(parts: Any) -> list[dict[str, Any]]:
                         "filename": _audio_filename_from_mime(mime_type),
                         "file_data": raw_data,
                     },
+                }
+            )
+            continue
+
+        if mime_type.startswith("video/"):
+            data_url = f"data:{mime_type};base64,{raw_data}"
+            if video_part_style == "video":
+                blocks.append(
+                    {
+                        "type": "video",
+                        "video": {"url": data_url},
+                    }
+                )
+                continue
+
+            blocks.append(
+                {
+                    "type": "video_url",
+                    "video_url": {"url": data_url},
                 }
             )
             continue

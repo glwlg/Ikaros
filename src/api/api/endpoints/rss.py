@@ -8,7 +8,7 @@ from api.api.binding_helpers import get_primary_platform_user_id
 from api.auth.models import User
 from api.auth.users import current_active_user
 from api.core.database import get_async_session
-from core import state_store
+from extension.skills.learned.rss_subscribe.scripts import store as rss_subscribe_store
 
 router = APIRouter()
 REMOVED_SUBSCRIPTION_FIELDS = {"kind", "provider", "query", "scope"}
@@ -75,7 +75,7 @@ async def get_rss(
     session: AsyncSession = Depends(get_async_session),
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
-    return await state_store.list_subscriptions(platform_uid)
+    return await rss_subscribe_store.list_subscriptions(platform_uid)
 
 
 @router.post("")
@@ -87,7 +87,7 @@ async def create_rss(
     platform_uid = await _resolve_platform_uid(current_user, session)
     sub = await _parse_subscription_payload(request, partial=False)
     try:
-        created = await state_store.create_subscription(
+        created = await rss_subscribe_store.create_subscription(
             platform_uid,
             sub.model_dump(exclude_none=True),
         )
@@ -104,7 +104,7 @@ async def delete_rss(
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
     try:
-        deleted = await state_store.delete_subscription(platform_uid, sub_id)
+        deleted = await rss_subscribe_store.delete_subscription(platform_uid, sub_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Subscription not found")
         return {"success": True}
@@ -124,14 +124,14 @@ async def update_rss(
     platform_uid = await _resolve_platform_uid(current_user, session)
     sub = await _parse_subscription_payload(request, partial=True)
     try:
-        ok = await state_store.update_subscription(
+        ok = await rss_subscribe_store.update_subscription(
             sub_id,
             platform_uid,
             sub.model_dump(exclude_none=True),
         )
         if not ok:
             raise HTTPException(status_code=404, detail="Subscription not found")
-        updated = await state_store.get_subscription(platform_uid, sub_id)
+        updated = await rss_subscribe_store.get_subscription(platform_uid, sub_id)
         return {"success": True, "data": updated}
     except HTTPException:
         raise
