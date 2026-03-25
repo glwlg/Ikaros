@@ -3,13 +3,13 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
-import base64
 import html
 import json
 import logging
-import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -368,8 +368,7 @@ def _normalize_xiaohongshu_tags(raw_tags: Any, topic: str) -> list[str]:
 
 def _fallback_xiaohongshu_note(topic: str, article_data: dict[str, Any]) -> dict[str, Any]:
     title = str(article_data.get("title") or topic or "小红书笔记").strip()
-    if len(title) > 20:
-        title = title[:20].rstrip()
+    title = title[:20].rstrip()
     body = _article_plain_text(article_data)
     if not body:
         body = str(article_data.get("digest") or topic or "").strip()
@@ -388,6 +387,7 @@ def _normalize_xiaohongshu_note_data(
 ) -> dict[str, Any]:
     fallback = _fallback_xiaohongshu_note(topic, article_data)
     title = str(data.get("title") or fallback["title"]).strip() or fallback["title"]
+    title = title[:20].rstrip() or fallback["title"]
     body = _html_to_plain_text(str(data.get("body") or fallback["body"])).strip()
     if not body:
         body = fallback["body"]
@@ -716,42 +716,53 @@ async def _prepare_wechat_publisher(
     return publisher, ""
 
 
-def _resolve_xiaohongshu_endpoint(account: dict[str, Any] | None) -> str:
-    if not isinstance(account, dict):
-        return ""
-    for key in ("endpoint", "publish_url", "url", "webhook"):
-        value = str(account.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-async def _prepare_xiaohongshu_publisher(
-    account: dict[str, Any] | None,
-) -> tuple["XiaohongshuPublisher | None", str]:
-    if not account:
-        return None, "⚠️ 发布中止：未配置小红书发布凭证 `xiaohongshu_publisher`。"
-
-    endpoint = _resolve_xiaohongshu_endpoint(account)
-    if not endpoint:
-        return (
-            None,
-            "⚠️ 发布中止：小红书发布凭证缺少 `endpoint` 或 `publish_url`。",
-        )
-
-    token = str(account.get("token") or account.get("access_token") or "").strip()
-    api_key = str(account.get("api_key") or account.get("apikey") or "").strip()
-    timeout_seconds = 60.0
+async def _run_subprocess(
+    args: list[str],
+    *,
+    timeout_seconds: float,
+) -> tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
     try:
-        timeout_seconds = max(5.0, float(account.get("timeout_seconds") or 60.0))
-    except Exception:
-        timeout_seconds = 60.0
-    return XiaohongshuPublisher(
-        endpoint=endpoint,
-        token=token,
-        api_key=api_key,
-        timeout_seconds=timeout_seconds,
-    ), ""
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError(
+            f"Command timed out after {int(timeout_seconds)}s: {' '.join(args[:4])}"
+        ) from None
+    return (
+        int(proc.returncode or 0),
+        stdout.decode("utf-8", errors="ignore"),
+        stderr.decode("utf-8", errors="ignore"),
+    )
+
+
+def _condense_command_output(text: str, *, limit: int = 300) -> str:
+    condensed = re.sub(r"\s+", " ", str(text or "").strip())
+    if len(condensed) <= limit:
+        return condensed
+    return condensed[: limit - 3].rstrip() + "..."
+
+
+async def _prepare_xiaohongshu_opencli() -> str:
+    opencli_path = shutil.which("opencli")
+    if not opencli_path:
+        return "⚠️ 发布中止：未找到 `opencli` 命令，请先安装并确保它在 PATH 中。"
+    try:
+        code, _, stderr = await _run_subprocess(
+            [opencli_path, "xiaohongshu", "publish", "--help"],
+            timeout_seconds=15.0,
+        )
+    except Exception as exc:
+        return f"⚠️ 发布中止：无法执行 `opencli xiaohongshu publish --help`：{exc}"
+    if code != 0:
+        detail = _condense_command_output(stderr) or "未知错误"
+        return f"⚠️ 发布中止：`opencli` 小红书发布子命令不可用：{detail}"
+    return ""
 
 
 class WeChatPublisher:
@@ -854,127 +865,130 @@ class WeChatPublisher:
             raise RuntimeError(f"Failed to add draft: {data}")
 
 
-class XiaohongshuPublisher:
-    def __init__(
-        self,
-        *,
-        endpoint: str,
-        token: str = "",
-        api_key: str = "",
-        timeout_seconds: float = 60.0,
-    ):
-        self.endpoint = endpoint
-        self.token = token
-        self.api_key = api_key
-        self.timeout_seconds = timeout_seconds
+def _extract_opencli_result_row(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        if any(
+            key in payload
+            for key in ("status", "detail", "message", "note_id", "draft_id", "url")
+        ):
+            return payload
+        for key in ("data", "result", "rows", "items"):
+            nested = _extract_opencli_result_row(payload.get(key))
+            if nested:
+                return nested
+    elif isinstance(payload, list):
+        for item in payload:
+            nested = _extract_opencli_result_row(item)
+            if nested:
+                return nested
+    return {}
 
-    async def publish_note(
-        self,
-        *,
-        topic: str,
-        author: str,
-        note_data: dict[str, Any],
-        images: list[tuple[str, bytes]],
-    ) -> dict[str, Any]:
-        headers: dict[str, str] = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        if self.api_key:
-            headers["X-API-Key"] = self.api_key
 
-        payload = {
-            "topic": topic,
-            "author": author,
-            "title": str(note_data.get("title") or "").strip(),
-            "body": str(note_data.get("body") or "").strip(),
-            "tags": list(note_data.get("tags") or []),
-            "images": [
-                {
-                    "filename": name,
-                    "mime_type": "image/png",
-                    "content_base64": base64.b64encode(content).decode("utf-8"),
-                }
-                for name, content in images
-                if content
-            ],
-        }
-
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            resp = await client.post(self.endpoint, json=payload, headers=headers)
-            resp.raise_for_status()
-            content_type = str(resp.headers.get("content-type") or "").lower()
-            if "json" in content_type:
-                data = resp.json()
-            else:
-                raw_text = str(resp.text or "").strip()
-                return {"ok": True, "message": raw_text or "success"}
-
-        if not isinstance(data, dict):
-            raise RuntimeError(f"Unexpected response: {data}")
-
-        success = data.get("ok")
-        if success is None:
-            success = data.get("success")
-        if success is False:
-            raise RuntimeError(
-                str(
-                    data.get("message")
-                    or data.get("error")
-                    or data.get("detail")
-                    or data
-                )
-            )
-        return data
+def _parse_opencli_publish_output(stdout_text: str) -> dict[str, Any]:
+    text = str(stdout_text or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {"detail": text}
+    return _extract_opencli_result_row(payload) or {"detail": text}
 
 
 async def _publish_to_xiaohongshu(
     *,
-    publisher: "XiaohongshuPublisher",
     topic: str,
-    article_data: dict[str, Any],
     note_data: dict[str, Any],
     cover_bytes: bytes | None,
     section_images: dict[int, bytes],
 ) -> str:
+    opencli_path = shutil.which("opencli")
+    if not opencli_path:
+        return "❌ 小红书发布中止：未找到 `opencli` 命令。"
+
     publish_images: list[tuple[str, bytes]] = []
     if cover_bytes:
         publish_images.append(("cover.png", cover_bytes))
     for idx, image_bytes in sorted(section_images.items()):
         if image_bytes:
             publish_images.append((f"section-{idx}.png", image_bytes))
+    publish_images = publish_images[:9]
     if not publish_images:
         return "❌ 小红书发布中止：至少需要 1 张配图。"
 
-    response = await publisher.publish_note(
-        topic=topic,
-        author=str(article_data.get("author") or ""),
-        note_data=note_data,
-        images=publish_images,
-    )
-    data_payload = response.get("data") if isinstance(response.get("data"), dict) else {}
-    note_id = str(
-        response.get("note_id")
-        or response.get("draft_id")
-        or response.get("id")
-        or data_payload.get("note_id")
-        or data_payload.get("draft_id")
-        or ""
-    ).strip()
-    note_url = str(
-        response.get("url")
-        or response.get("note_url")
-        or data_payload.get("url")
-        or data_payload.get("note_url")
-        or ""
-    ).strip()
-    message = str(response.get("message") or "").strip()
-    parts = ["✅ 已提交到小红书发布通道"]
-    if note_id:
-        parts.append(f"ID: `{note_id}`")
-    if note_url:
-        parts.append(f"URL: {note_url}")
-    if message:
-        parts.append(message)
+    note_body = str(note_data.get("body") or "").strip()
+    title = str(note_data.get("title") or "").strip()[:20].rstrip()
+    topics = [
+        str(tag or "").strip().lstrip("#")
+        for tag in list(note_data.get("tags") or [])
+        if str(tag or "").strip()
+    ]
+    if not topics and str(topic or "").strip():
+        topics = [str(topic).strip()[:24]]
+
+    async def _run_opencli_publish_once(cmd: list[str]) -> str:
+        code, stdout, stderr = await _run_subprocess(cmd, timeout_seconds=300.0)
+        if code != 0:
+            detail = _condense_command_output(stderr) or _condense_command_output(stdout)
+            raise RuntimeError(detail or f"opencli exited with code {code}")
+
+        result = _parse_opencli_publish_output(stdout)
+        status = str(result.get("status") or "").strip().lower()
+        detail = _condense_command_output(
+            str(result.get("detail") or result.get("message") or stdout)
+        )
+        if status in {"error", "failed", "failure"}:
+            raise RuntimeError(detail or "opencli reported failure")
+        return detail
+
+    with tempfile.TemporaryDirectory(prefix="ikaros-xhs-") as temp_dir:
+        image_paths: list[str] = []
+        for filename, image_bytes in publish_images:
+            target_path = Path(temp_dir) / filename
+            target_path.write_bytes(image_bytes)
+            image_paths.append(str(target_path))
+
+        cmd = [
+            opencli_path,
+            "xiaohongshu",
+            "publish",
+            note_body,
+            "--format",
+            "json",
+        ]
+        if title:
+            cmd.extend(["--title", title])
+        if image_paths:
+            cmd.extend(["--images", ",".join(image_paths)])
+        if topics:
+            cmd.extend(["--topics", ",".join(topics[:8])])
+
+        detail = ""
+        retried = False
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                detail = await _run_opencli_publish_once(cmd)
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    retried = True
+                    logger.warning(
+                        "opencli xiaohongshu publish failed on first attempt, retrying in 2s: %s",
+                        exc,
+                    )
+                    await asyncio.sleep(2)
+                    continue
+                raise
+        if last_error is not None and not detail:
+            raise last_error
+
+    parts = ["✅ 已通过 opencli 提交到小红书"]
+    if retried:
+        parts.append("重试后成功")
+    if detail:
+        parts.append(detail)
     return "，".join(parts)
 
 
@@ -985,7 +999,6 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
     publish = _as_bool(params.get("publish"), default=False)
     publish_channels = _resolve_publish_channels(params)
     publisher: WeChatPublisher | None = None
-    xiaohongshu_publisher: XiaohongshuPublisher | None = None
     wechat_account = await get_credential(ctx.message.user.id, "wechat_official_account")
     xiaohongshu_account = await get_credential(ctx.message.user.id, "xiaohongshu_publisher")
     account_map = {
@@ -1031,10 +1044,8 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
                 }
                 return
         if "xiaohongshu" in publish_channels:
-            yield "🔐 正在检查小红书发布通道配置..."
-            xiaohongshu_publisher, preflight_error = await _prepare_xiaohongshu_publisher(
-                xiaohongshu_account
-            )
+            yield "🔐 正在检查 opencli 小红书发布能力..."
+            preflight_error = await _prepare_xiaohongshu_opencli()
             if preflight_error:
                 yield {
                     "ok": False,
@@ -1139,13 +1150,11 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
             publish_statuses.append(f"❌ 微信发布失败: {exc}")
 
     if publish and "xiaohongshu" in publish_channels and xiaohongshu_note_data is not None:
-        yield "📤 正在上传素材并同步至小红书发布通道..."
+        yield "📤 正在调用 opencli 发布到小红书..."
         try:
             publish_statuses.append(
                 await _publish_to_xiaohongshu(
-                    publisher=xiaohongshu_publisher,
                     topic=topic,
-                    article_data=article_data,
                     note_data=xiaohongshu_note_data,
                     cover_bytes=cover_bytes,
                     section_images=section_images,

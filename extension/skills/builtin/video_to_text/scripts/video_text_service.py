@@ -115,6 +115,10 @@ def _whisper_http_prefer_full_audio() -> bool:
     return _env_bool("VIDEO_TO_TEXT_WHISPER_PREFER_FULL_AUDIO", True)
 
 
+def _whisper_http_max_full_audio_seconds() -> float:
+    return _env_float("VIDEO_TO_TEXT_WHISPER_MAX_FULL_AUDIO_SECONDS", 900.0, 60.0)
+
+
 def _estimated_base64_size(binary_size: int) -> int:
     safe_size = max(0, int(binary_size or 0))
     return ((safe_size + 2) // 3) * 4
@@ -540,7 +544,36 @@ def _low_quality_transcript(text: str) -> bool:
         "provide the audio file",
         "provide the audio content",
     )
-    return any(marker in lowered or marker in safe_text for marker in bad_markers)
+    if any(marker in lowered or marker in safe_text for marker in bad_markers):
+        return True
+
+    if re.search(r"\b([a-z][a-z0-9'-]{1,})\b(?:\s+\1\b){11,}", lowered):
+        return True
+
+    latin_tokens = re.findall(r"\b[a-z][a-z0-9'-]{1,}\b", lowered)
+    if len(latin_tokens) >= 40:
+        counts: dict[str, int] = {}
+        max_count = 0
+        max_run = 1
+        current_run = 1
+        previous = ""
+        for token in latin_tokens:
+            counts[token] = counts.get(token, 0) + 1
+            if counts[token] > max_count:
+                max_count = counts[token]
+            if token == previous:
+                current_run += 1
+                if current_run > max_run:
+                    max_run = current_run
+            else:
+                current_run = 1
+                previous = token
+        if max_run >= 12:
+            return True
+        if max_count >= 40 and max_count / len(latin_tokens) >= 0.35:
+            return True
+
+    return False
 
 
 def _seconds_to_label(seconds: float | None) -> str:
@@ -812,6 +845,112 @@ def _audio_suffix_for_mime(mime_type: str) -> str:
     return mapping.get(base, guessed or ".bin")
 
 
+def _audio_copy_profile_from_codec(codec_name: str) -> tuple[str, str] | None:
+    codec = str(codec_name or "").strip().lower()
+    mapping = {
+        "aac": (".m4a", "audio/mp4"),
+        "alac": (".m4a", "audio/mp4"),
+        "mp3": (".mp3", "audio/mpeg"),
+        "vorbis": (".ogg", "audio/ogg"),
+        "opus": (".ogg", "audio/ogg"),
+        "flac": (".flac", "audio/flac"),
+        "pcm_s16le": (".wav", "audio/wav"),
+        "pcm_s24le": (".wav", "audio/wav"),
+        "pcm_s32le": (".wav", "audio/wav"),
+        "pcm_f32le": (".wav", "audio/wav"),
+        "pcm_f64le": (".wav", "audio/wav"),
+    }
+    return mapping.get(codec)
+
+
+async def _probe_primary_audio_codec(media_path: Path) -> str:
+    if shutil.which("ffprobe") is None:
+        return ""
+    code, stdout, _stderr = await _run_subprocess(
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_name",
+        "-of",
+        "json",
+        str(media_path),
+    )
+    if code != 0 or not stdout:
+        return ""
+    try:
+        payload = json.loads(stdout.decode("utf-8", errors="ignore"))
+    except Exception:
+        return ""
+    streams = payload.get("streams") or []
+    if not streams or not isinstance(streams[0], dict):
+        return ""
+    return str(streams[0].get("codec_name") or "").strip().lower()
+
+
+def _audio_copy_profile_from_mime(mime_type: str) -> tuple[str, str] | None:
+    base = _audio_base_mime(mime_type)
+    mapping = {
+        "audio/mp4": (".m4a", "audio/mp4"),
+        "audio/x-m4a": (".m4a", "audio/mp4"),
+        "audio/aac": (".aac", "audio/aac"),
+        "audio/x-aac": (".aac", "audio/aac"),
+        "audio/mpeg": (".mp3", "audio/mpeg"),
+        "audio/mp3": (".mp3", "audio/mpeg"),
+        "audio/ogg": (".ogg", "audio/ogg"),
+        "audio/opus": (".ogg", "audio/ogg"),
+        "audio/flac": (".flac", "audio/flac"),
+        "audio/wav": (".wav", "audio/wav"),
+        "audio/x-wav": (".wav", "audio/wav"),
+    }
+    return mapping.get(base)
+
+
+async def _extract_audio_segment_to_temp_file(
+    input_path: Path,
+    *,
+    start_seconds: float,
+    duration_seconds: float | None,
+    suffix: str,
+    ffmpeg_output_args: list[str],
+) -> tuple[bytes | None, str]:
+    with tempfile.TemporaryDirectory(prefix="ikaros-audio-segment-") as temp_dir:
+        output_path = (Path(temp_dir) / f"segment{suffix}").resolve()
+        args = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
+            "-ss",
+            f"{max(0.0, start_seconds):.3f}",
+        ]
+        if duration_seconds is not None and duration_seconds > 0:
+            args.extend(["-t", f"{duration_seconds:.3f}"])
+        args.extend(ffmpeg_output_args)
+        args.append(str(output_path))
+
+        code, _stdout, stderr = await _run_subprocess(*args)
+        if code != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+            return (
+                None,
+                stderr[:200].decode("utf-8", errors="ignore").strip()
+                or "audio segment extraction failed",
+            )
+        return output_path.read_bytes(), ""
+
+
+def _workspace_audio_track_path(workspace: Path) -> str:
+    audio_dir = (workspace / "audio").resolve()
+    if not audio_dir.exists():
+        return str((audio_dir / "full-audio").resolve())
+    candidates = sorted(audio_dir.glob("full-audio.*"))
+    if candidates:
+        return str(candidates[0].resolve())
+    return str((audio_dir / "full-audio").resolve())
+
+
 def _sniff_audio_container(audio_bytes: bytes) -> str | None:
     if not audio_bytes:
         return None
@@ -1049,39 +1188,30 @@ async def extract_audio_segment(
 ) -> tuple[bytes | None, str, str]:
     if shutil.which("ffmpeg") is None:
         return None, "ffmpeg not found", ""
-
-    args = [
-        "ffmpeg",
-        "-y",
-        "-ss",
-        f"{max(0.0, start_seconds):.3f}",
-        "-i",
-        str(video_path),
-        "-vn",
-        "-map",
-        "0:a:0?",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-acodec",
-        "libmp3lame",
-        "-b:a",
-        f"{_env_int('VIDEO_TO_TEXT_AUDIO_BITRATE_KBPS', 32, 16)}k",
-    ]
-    if duration_seconds is not None and duration_seconds > 0:
-        args.extend(["-t", f"{duration_seconds:.3f}"])
-    args.extend(["-f", "mp3", "pipe:1"])
-
-    code, stdout, stderr = await _run_subprocess(*args)
-    if code != 0 or not stdout:
-        return (
-            None,
-            stderr[:200].decode("utf-8", errors="ignore").strip()
-            or "audio extraction failed",
-            "",
+    codec_name = await _probe_primary_audio_codec(video_path)
+    copy_profile = _audio_copy_profile_from_codec(codec_name)
+    if copy_profile is not None:
+        suffix, mime_type = copy_profile
+        payload, error = await _extract_audio_segment_to_temp_file(
+            video_path,
+            start_seconds=start_seconds,
+            duration_seconds=duration_seconds,
+            suffix=suffix,
+            ffmpeg_output_args=["-vn", "-map", "0:a:0?", "-c:a", "copy"],
         )
-    return stdout, "", "audio/mpeg"
+        if payload:
+            return payload, "", mime_type
+
+    payload, error = await _extract_audio_segment_to_temp_file(
+        video_path,
+        start_seconds=start_seconds,
+        duration_seconds=duration_seconds,
+        suffix=".wav",
+        ffmpeg_output_args=["-vn", "-map", "0:a:0?", "-c:a", "pcm_s16le"],
+    )
+    if payload:
+        return payload, "", "audio/wav"
+    return None, error or "audio extraction failed", ""
 
 
 async def extract_audio_track_file(
@@ -1094,7 +1224,28 @@ async def extract_audio_track_file(
 
     audio_dir = (workspace / "audio").resolve()
     audio_dir.mkdir(parents=True, exist_ok=True)
-    output_path = (audio_dir / "full-audio.mp3").resolve()
+    codec_name = await _probe_primary_audio_codec(video_path)
+    copy_profile = _audio_copy_profile_from_codec(codec_name)
+    if copy_profile is not None:
+        suffix, mime_type = copy_profile
+        output_path = (audio_dir / f"full-audio{suffix}").resolve()
+        args = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_path),
+            "-vn",
+            "-map",
+            "0:a:0?",
+            "-c:a",
+            "copy",
+            str(output_path),
+        ]
+        code, _stdout, stderr = await _run_subprocess(*args)
+        if code == 0 and output_path.exists() and output_path.stat().st_size > 0:
+            return output_path, "", mime_type
+
+    output_path = (audio_dir / "full-audio.wav").resolve()
     args = [
         "ffmpeg",
         "-y",
@@ -1103,14 +1254,8 @@ async def extract_audio_track_file(
         "-vn",
         "-map",
         "0:a:0?",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-acodec",
-        "libmp3lame",
-        "-b:a",
-        f"{_env_int('VIDEO_TO_TEXT_AUDIO_BITRATE_KBPS', 32, 16)}k",
+        "-c:a",
+        "pcm_s16le",
         str(output_path),
     ]
     code, _stdout, stderr = await _run_subprocess(*args)
@@ -1121,7 +1266,7 @@ async def extract_audio_track_file(
             or "audio track extraction failed",
             "",
         )
-    return output_path, "", "audio/mpeg"
+    return output_path, "", "audio/wav"
 
 
 async def extract_audio_file_segment(
@@ -1133,45 +1278,29 @@ async def extract_audio_file_segment(
 ) -> tuple[bytes | None, str, str]:
     if shutil.which("ffmpeg") is None:
         return None, "ffmpeg not found", ""
-
-    args = [
-        "ffmpeg",
-        "-y",
-        "-ss",
-        f"{max(0.0, start_seconds):.3f}",
-        "-i",
-        str(audio_path),
-    ]
-    if duration_seconds is not None and duration_seconds > 0:
-        args.extend(["-t", f"{duration_seconds:.3f}"])
-    if str(mime_type or "").split(";", 1)[0].strip().lower() == "audio/mpeg":
-        args.extend(["-acodec", "copy", "-f", "mp3", "pipe:1"])
-    else:
-        args.extend(
-            [
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-acodec",
-                "libmp3lame",
-                "-b:a",
-                f"{_env_int('VIDEO_TO_TEXT_AUDIO_BITRATE_KBPS', 32, 16)}k",
-                "-f",
-                "mp3",
-                "pipe:1",
-            ]
+    copy_profile = _audio_copy_profile_from_mime(mime_type)
+    if copy_profile is not None:
+        suffix, normalized_mime = copy_profile
+        payload, error = await _extract_audio_segment_to_temp_file(
+            audio_path,
+            start_seconds=start_seconds,
+            duration_seconds=duration_seconds,
+            suffix=suffix,
+            ffmpeg_output_args=["-c:a", "copy"],
         )
+        if payload:
+            return payload, "", normalized_mime
 
-    code, stdout, stderr = await _run_subprocess(*args)
-    if code != 0 or not stdout:
-        return (
-            None,
-            stderr[:200].decode("utf-8", errors="ignore").strip()
-            or "audio segment extraction failed",
-            "",
-        )
-    return stdout, "", "audio/mpeg"
+    payload, error = await _extract_audio_segment_to_temp_file(
+        audio_path,
+        start_seconds=start_seconds,
+        duration_seconds=duration_seconds,
+        suffix=".wav",
+        ffmpeg_output_args=["-c:a", "pcm_s16le"],
+    )
+    if payload:
+        return payload, "", "audio/wav"
+    return None, error or "audio segment extraction failed", ""
 
 
 async def transcribe_audio_bytes(audio_bytes: bytes, mime_type: str) -> tuple[str, str]:
@@ -1695,67 +1824,84 @@ async def transcribe_audio_segments(
             )
 
         if _whisper_http_enabled() and _whisper_http_prefer_full_audio():
-            full_audio_bytes = await _read_audio_file_bytes(audio_path)
-            full_audio_size = len(full_audio_bytes)
-            full_audio_segment = TranscriptSegment(
-                index=1,
-                start_seconds=0.0,
-                end_seconds=max(float(duration_seconds or 0.0), 0.0),
-            )
-            diagnostics.append("whisper full-audio mode enabled")
-            diagnostics.append(f"full audio bytes: {full_audio_size}")
-            _emit_progress(
-                progress,
-                f"full audio transcription: sending {full_audio_size} bytes",
-                workspace=active_workspace,
-            )
-            status, transcript_or_error, _strategy = await _transcribe_audio_bytes_internal(
-                full_audio_bytes,
-                audio_mime_type or "audio/mpeg",
-                transcription_state=transcription_state,
-            )
-            reported_locked_strategy = _report_locked_audio_strategy(
-                transcription_state,
-                diagnostics=diagnostics,
-                reported_label=reported_locked_strategy,
-                progress=progress,
-                workspace=active_workspace,
-            )
-            if status == "transcribed":
-                full_audio_segment.status = "transcribed"
-                full_audio_segment.transcript = transcript_or_error
+            max_full_audio_seconds = _whisper_http_max_full_audio_seconds()
+            if duration_seconds is not None and duration_seconds > max_full_audio_seconds:
+                diagnostics.append(
+                    "whisper full-audio mode skipped: "
+                    f"duration {duration_seconds:.1f}s exceeds "
+                    f"{max_full_audio_seconds:.1f}s limit"
+                )
+                _emit_progress(
+                    progress,
+                    "full audio transcription skipped: video too long, using segments",
+                    workspace=active_workspace,
+                )
+            else:
+                full_audio_bytes = await _read_audio_file_bytes(audio_path)
+                full_audio_size = len(full_audio_bytes)
+                full_audio_segment = TranscriptSegment(
+                    index=1,
+                    start_seconds=0.0,
+                    end_seconds=max(float(duration_seconds or 0.0), 0.0),
+                )
+                diagnostics.append("whisper full-audio mode enabled")
+                diagnostics.append(f"full audio bytes: {full_audio_size}")
+                _emit_progress(
+                    progress,
+                    f"full audio transcription: sending {full_audio_size} bytes",
+                    workspace=active_workspace,
+                )
+                status, transcript_or_error, _strategy = await _transcribe_audio_bytes_internal(
+                    full_audio_bytes,
+                    audio_mime_type or "audio/mpeg",
+                    transcription_state=transcription_state,
+                )
+                reported_locked_strategy = _report_locked_audio_strategy(
+                    transcription_state,
+                    diagnostics=diagnostics,
+                    reported_label=reported_locked_strategy,
+                    progress=progress,
+                    workspace=active_workspace,
+                )
+                if status == "transcribed":
+                    full_audio_segment.status = "transcribed"
+                    full_audio_segment.transcript = transcript_or_error
+                    _persist_segment_outputs(
+                        audio_dir=segment_audio_dir,
+                        text_dir=segment_text_dir,
+                        segment=full_audio_segment,
+                        audio_bytes=full_audio_bytes,
+                    )
+                    diagnostics.append("full audio transcription completed without segmentation")
+                    _emit_progress(
+                        progress,
+                        "full audio transcription: transcribed",
+                        workspace=active_workspace,
+                    )
+                    return [full_audio_segment], diagnostics, audio_incomplete
+
+                full_audio_segment.status = "failed"
+                full_audio_segment.error = (
+                    transcript_or_error or status or "audio transcription failed"
+                )
                 _persist_segment_outputs(
                     audio_dir=segment_audio_dir,
                     text_dir=segment_text_dir,
                     segment=full_audio_segment,
                     audio_bytes=full_audio_bytes,
                 )
-                diagnostics.append("full audio transcription completed without segmentation")
+                diagnostics.append(
+                    "full audio transcription failed, falling back to segmented transcription"
+                )
+                if transcript_or_error:
+                    diagnostics.append(
+                        f"full audio transcription detail: {transcript_or_error}"
+                    )
                 _emit_progress(
                     progress,
-                    "full audio transcription: transcribed",
+                    f"full audio transcription: {status or 'failed'}, fallback to segments",
                     workspace=active_workspace,
                 )
-                return [full_audio_segment], diagnostics, audio_incomplete
-
-            full_audio_segment.status = "failed"
-            full_audio_segment.error = transcript_or_error or status or "audio transcription failed"
-            _persist_segment_outputs(
-                audio_dir=segment_audio_dir,
-                text_dir=segment_text_dir,
-                segment=full_audio_segment,
-                audio_bytes=full_audio_bytes,
-            )
-            diagnostics.append(
-                "full audio transcription failed, falling back to segmented transcription"
-            )
-            if transcript_or_error:
-                diagnostics.append(f"full audio transcription detail: {transcript_or_error}")
-            _emit_progress(
-                progress,
-                f"full audio transcription: {status or 'failed'}, fallback to segments",
-                workspace=active_workspace,
-            )
 
         start_seconds = 0.0
         index = 1
@@ -2154,7 +2300,7 @@ async def ensure_video_artifact_for_path(
                 source_video_path=str(video_path),
                 mime_type=str(metadata.mime_type or mime_type or "video/mp4"),
                 workspace_path=str(workspace),
-                audio_track_path=str((workspace / "audio" / "full-audio.mp3").resolve()),
+                audio_track_path=_workspace_audio_track_path(workspace),
                 segment_audio_dir=str((workspace / "audio" / "segments").resolve()),
                 segment_text_dir=str((workspace / "audio" / "transcripts").resolve()),
                 progress_log_path=str((workspace / "progress.log").resolve()),
@@ -2186,7 +2332,7 @@ async def ensure_video_artifact_for_path(
             source_video_path=str(video_path),
             mime_type=str(metadata.mime_type or mime_type or "video/mp4"),
             workspace_path=str(workspace),
-            audio_track_path=str((workspace / "audio" / "full-audio.mp3").resolve()),
+            audio_track_path=_workspace_audio_track_path(workspace),
             segment_audio_dir=str((workspace / "audio" / "segments").resolve()),
             segment_text_dir=str((workspace / "audio" / "transcripts").resolve()),
             progress_log_path=str((workspace / "progress.log").resolve()),
