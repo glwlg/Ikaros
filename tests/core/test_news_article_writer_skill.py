@@ -441,10 +441,9 @@ async def test_news_article_writer_xiaohongshu_publish_preflight_fails_before_ge
     module = _load_module()
     monkeypatch.setattr(
         module,
-        "_prepare_xiaohongshu_publisher",
-        lambda account: _async_tuple(
-            None,
-            "⚠️ 发布中止：未配置小红书发布凭证 `xiaohongshu_publisher`。",
+        "_prepare_xiaohongshu_opencli",
+        lambda: _async_value(
+            "⚠️ 发布中止：未找到 `opencli` 命令，请先安装并确保它在 PATH 中。"
         ),
     )
 
@@ -471,11 +470,11 @@ async def test_news_article_writer_xiaohongshu_publish_preflight_fails_before_ge
     )
 
     assert len(chunks) == 2
-    assert "检查小红书发布通道配置" in str(chunks[0])
+    assert "检查 opencli 小红书发布能力" in str(chunks[0])
     final = chunks[-1]
     assert final.get("ok") is False
     assert final.get("failure_mode") == "fatal"
-    assert "xiaohongshu_publisher" in str(final.get("text") or "")
+    assert "PATH" in str(final.get("text") or "")
 
 
 async def _async_tuple(first, second):

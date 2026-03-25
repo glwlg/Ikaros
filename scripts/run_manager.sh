@@ -24,8 +24,8 @@ resolve_home_dir() {
 }
 
 resolve_uv_bin() {
-    if [[ -n "${X_BOT_UV_BIN:-}" ]]; then
-        printf '%s\n' "${X_BOT_UV_BIN}"
+    if [[ -n "${IKAROS_UV_BIN:-}" ]]; then
+        printf '%s\n' "${IKAROS_UV_BIN}"
         return 0
     fi
 
@@ -54,7 +54,7 @@ main() {
     fi
 
     uv_bin="$(resolve_uv_bin)" || {
-        echo "Failed to locate uv. Install uv or set X_BOT_UV_BIN." >&2
+        echo "Failed to locate uv. Install uv or set IKAROS_UV_BIN." >&2
         exit 1
     }
 
