@@ -127,3 +127,19 @@ async def test_manager_git_ops_handler_routes_commit(monkeypatch):
     assert captured["action"] == "commit"
     assert captured["workspace_id"] == "ws-1"
     assert captured["message"] == "feat: update"
+
+
+@pytest.mark.asyncio
+async def test_skill_tool_handler_registry_rejects_unknown_handler():
+    dispatcher = SimpleNamespace(
+        ctx=SimpleNamespace(message=SimpleNamespace(text=""), user_data={})
+    )
+
+    result = await skill_tool_handler_registry.dispatch(
+        "manager.analyze_video",
+        dispatcher=dispatcher,
+        args={},
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "unsupported_skill_tool_handler"

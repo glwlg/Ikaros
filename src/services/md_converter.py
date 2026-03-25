@@ -1,8 +1,11 @@
-"""Markdown → HTML conversion for platform-adaptive file delivery.
+"""Markdown attachment adaptation for platform delivery.
 
-Skills generate Markdown (less tokens), but some platforms (e.g. Telegram)
-cannot open .md files natively. This module provides a lightweight conversion
-utility so the relay/delivery layer can auto-convert .md → .html before sending.
+Skills generate Markdown (less tokens), but some platforms cannot open `.md`
+files natively. This module adapts Markdown attachments per platform:
+
+- Telegram -> `.txt` with raw Markdown preserved
+- DingTalk / generic fallback -> self-contained `.html`
+- Discord / Weixin -> keep `.md`
 """
 
 from __future__ import annotations
@@ -100,8 +103,9 @@ def adapt_md_file_for_platform(
 ) -> tuple[bytes, str]:
     """Return (content_bytes, adapted_filename) for the target platform.
 
-    - Telegram / DingTalk → converts .md to self-contained .html
-    - Discord / Weixin    → keeps .md as-is
+    - Telegram            → renames `.md` to `.txt`, keeps raw Markdown bytes
+    - Discord / Weixin    → keeps `.md` as-is
+    - DingTalk / fallback → converts `.md` to self-contained `.html`
     """
     lower_name = str(filename or "").strip().lower()
     lower_platform = str(platform or "").strip().lower()
@@ -109,12 +113,16 @@ def adapt_md_file_for_platform(
     if not lower_name.endswith(".md"):
         return file_bytes, filename
 
+    if lower_platform == "telegram":
+        text_filename = str(Path(filename).with_suffix(".txt"))
+        return file_bytes, text_filename
+
     # Platforms that natively preview .md
     md_native_platforms = {"discord", "weixin"}
     if lower_platform in md_native_platforms:
         return file_bytes, filename
 
-    # Convert .md → .html for Telegram, DingTalk, etc.
+    # Convert .md → .html for DingTalk and other conservative platforms.
     try:
         md_text = file_bytes.decode("utf-8", errors="replace")
     except Exception:

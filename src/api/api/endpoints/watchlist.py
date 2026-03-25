@@ -6,7 +6,7 @@ from api.auth.users import current_active_user
 from api.auth.models import User
 from api.core.database import get_async_session
 from api.api.binding_helpers import get_primary_platform_user_id
-from core import state_store
+from extension.skills.learned.stock_watch.scripts import store as stock_watch_store
 
 router = APIRouter()
 
@@ -37,7 +37,7 @@ async def get_watchlist(
     session: AsyncSession = Depends(get_async_session),
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
-    stocks = await state_store.get_user_watchlist(platform_uid)
+    stocks = await stock_watch_store.get_user_watchlist(platform_uid)
     if not stocks:
         return []
 
@@ -84,7 +84,7 @@ async def add_stock(
     name = stock.stock_name.strip()
     if not code:
         raise HTTPException(status_code=400, detail="stock_code is required")
-    ok = await state_store.add_watchlist_stock(platform_uid, code, name)
+    ok = await stock_watch_store.add_watchlist_stock(platform_uid, code, name)
     if not ok:
         raise HTTPException(status_code=409, detail="Stock already in watchlist")
     return {"success": True}
@@ -99,8 +99,8 @@ async def update_stock(
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
     # Remove old, add new
-    await state_store.remove_watchlist_stock(platform_uid, stock_code)
-    await state_store.add_watchlist_stock(
+    await stock_watch_store.remove_watchlist_stock(platform_uid, stock_code)
+    await stock_watch_store.add_watchlist_stock(
         platform_uid, stock.stock_code.strip(), stock.stock_name.strip()
     )
     return {"success": True}
@@ -113,7 +113,7 @@ async def remove_stock(
     session: AsyncSession = Depends(get_async_session),
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
-    ok = await state_store.remove_watchlist_stock(platform_uid, stock_code)
+    ok = await stock_watch_store.remove_watchlist_stock(platform_uid, stock_code)
     if not ok:
         raise HTTPException(status_code=404, detail="Stock not found in watchlist")
     return {"success": True}

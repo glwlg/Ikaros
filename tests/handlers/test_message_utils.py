@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import core.agent_input as agent_input_module
+from core.media_hooks import MediaHookRegistry, ReplyContextHookResult
 from handlers import message_utils
 from core.platform.models import MessageType
 
@@ -219,3 +220,46 @@ async def test_process_reply_message_fetches_web_content_for_non_image_url(monke
     assert result.detected_refs == []
     assert result.errors == []
     assert "网页正文" in result.extra_context
+
+
+@pytest.mark.asyncio
+async def test_process_reply_message_uses_registered_video_reply_context_provider(
+    monkeypatch,
+):
+    registry = MediaHookRegistry()
+
+    async def _provider(ctx, reply_to):
+        _ = (ctx, reply_to)
+        return ReplyContextHookResult(
+            handled=True,
+            extra_context="【引用视频文本工件】\n- 文本工件：/tmp/video.md\n\n",
+            detected_refs=["/tmp/video.md"],
+            errors=["cached artifact reused"],
+        )
+
+    registry.register_reply_context_provider(
+        MessageType.VIDEO,
+        _provider,
+        owner="video_to_text",
+        priority=50,
+    )
+    monkeypatch.setattr(agent_input_module, "media_hook_registry", registry)
+
+    ctx = _DummyContext()
+    ctx.message.reply_to_message = SimpleNamespace(
+        id="reply-video-1",
+        text="",
+        caption="",
+        type=MessageType.VIDEO,
+        platform="telegram",
+        file_id="file-1",
+        mime_type="video/mp4",
+    )
+
+    result = await message_utils.process_reply_message(ctx)
+
+    assert result.handled_media is True
+    assert "/tmp/video.md" in result.extra_context
+    assert result.detected_refs == ["/tmp/video.md"]
+    assert result.errors == ["cached artifact reused"]
+    assert ctx.replies == []

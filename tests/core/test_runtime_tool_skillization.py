@@ -74,6 +74,7 @@ async def test_runtime_tool_assembler_injects_manager_skill_tools():
         "spawn_subagent",
         "task_tracker",
     } <= set(names)
+    assert "analyze_video" not in names
 
 
 @pytest.mark.asyncio

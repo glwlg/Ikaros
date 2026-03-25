@@ -16,3 +16,4 @@ def test_tool_registry_exposes_task_tracker_for_manager_runtime():
     names = [tool["name"] for tool in registry.get_manager_tools()]
 
     assert "task_tracker" in names
+    assert "analyze_video" not in names

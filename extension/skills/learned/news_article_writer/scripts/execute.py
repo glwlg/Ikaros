@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
+import base64
+import html
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -31,7 +34,7 @@ prepare_default_env(REPO_ROOT)
 
 from core.config import get_client_for_model
 from core.model_config import get_current_model
-from core.state_store import get_account
+from extension.skills.builtin.credential_manager.scripts.store import get_credential
 from services.openai_adapter import generate_text
 from services.web_summary_service import fetch_webpage_content
 
@@ -41,11 +44,16 @@ DEFAULT_SEARCH_RESULT_COUNT = 8
 MAX_DEEP_READ_URLS = 3
 MAX_SEARCH_CONTEXT_CHARS = 5000
 MAX_DOC_SNIPPET_CHARS = 1200
+MAX_LOCAL_MATERIAL_TOTAL_CHARS = 30000
+MAX_LOCAL_MATERIAL_FILE_CHARS = 18000
+SUPPORTED_LOCAL_MATERIAL_SUFFIXES = {".md", ".markdown", ".txt"}
+MAX_SOCIAL_CONTEXT_CHARS = 6000
 AUTHOR_ACCOUNT_KEYS = (
     "author",
     "auther",
     "article_author",
 )
+SUPPORTED_PUBLISH_CHANNELS = ("wechat", "xiaohongshu")
 
 
 def _as_bool(value: Any, *, default: bool = False) -> bool:
@@ -61,7 +69,12 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
     return bool(default)
 
 
-def _resolve_topic(ctx: UnifiedContext, params: dict[str, Any]) -> str:
+def _resolve_topic(
+    ctx: UnifiedContext,
+    params: dict[str, Any],
+    *,
+    fallback_paths: list[Path] | None = None,
+) -> str:
     candidates = [
         params.get("topic"),
         params.get("query"),
@@ -72,6 +85,12 @@ def _resolve_topic(ctx: UnifiedContext, params: dict[str, Any]) -> str:
         topic = str(value or "").strip()
         if topic:
             return topic
+    if fallback_paths:
+        if len(fallback_paths) == 1:
+            fallback_name = str(fallback_paths[0].stem or "").strip()
+            if fallback_name:
+                return fallback_name
+        return "本地素材整理"
     return ""
 
 
@@ -144,6 +163,122 @@ def _decode_text_file(payload: Any) -> str:
     return str(payload or "")
 
 
+def _resolve_local_material_paths(params: dict[str, Any]) -> list[Path]:
+    raw_values: list[Any] = []
+    for key in ("source_path", "source_paths", "material_path", "material_paths"):
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            raw_values.extend(list(value))
+        else:
+            raw_values.append(value)
+
+    resolved: list[Path] = []
+    for raw in raw_values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        else:
+            path = path.resolve()
+        if path not in resolved:
+            resolved.append(path)
+    return resolved
+
+
+def _read_local_material_context(material_paths: list[Path]) -> str:
+    if not material_paths:
+        return ""
+
+    docs: list[str] = []
+    remaining = MAX_LOCAL_MATERIAL_TOTAL_CHARS
+    for path in material_paths:
+        if not path.exists() or not path.is_file():
+            raise ValueError(f"本地素材不存在：{path}")
+        if path.suffix.lower() not in SUPPORTED_LOCAL_MATERIAL_SUFFIXES:
+            raise ValueError(
+                f"本地素材格式不支持：{path.name}，仅支持 {', '.join(sorted(SUPPORTED_LOCAL_MATERIAL_SUFFIXES))}"
+            )
+        raw_text = path.read_text(encoding="utf-8", errors="ignore").strip()
+        if not raw_text:
+            raise ValueError(f"本地素材为空：{path}")
+
+        allowed = min(remaining, MAX_LOCAL_MATERIAL_FILE_CHARS)
+        if allowed <= 0:
+            break
+        snippet = raw_text[:allowed].strip()
+        if not snippet:
+            continue
+        if len(raw_text) > len(snippet):
+            snippet += "\n\n[内容过长，已截断]"
+        docs.append(f"Local material: {path}\n{snippet}")
+        remaining -= len(snippet)
+        if remaining <= 0:
+            break
+
+    if not docs:
+        raise ValueError("本地素材无法读取有效文本内容")
+    return "\n\n---\n\n".join(docs)
+
+
+def _normalize_publish_channel(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    aliases = {
+        "wechat": "wechat",
+        "weixin": "wechat",
+        "wechat_official_account": "wechat",
+        "公众号": "wechat",
+        "微信公众号": "wechat",
+        "xiaohongshu": "xiaohongshu",
+        "xhs": "xiaohongshu",
+        "rednote": "xiaohongshu",
+        "小红书": "xiaohongshu",
+    }
+    return aliases.get(token, "")
+
+
+def _resolve_publish_channels(params: dict[str, Any]) -> list[str]:
+    raw_values: list[Any] = []
+    for key in ("publish_channel", "publish_channels", "channel", "channels"):
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            raw_values.extend(list(value))
+        else:
+            raw_values.append(value)
+
+    channels: list[str] = []
+    for raw in raw_values:
+        parts = re.split(r"[\s,，]+", str(raw or "").strip())
+        for part in parts:
+            normalized = _normalize_publish_channel(part)
+            if normalized and normalized not in channels:
+                channels.append(normalized)
+
+    if not channels and _as_bool(params.get("publish"), default=False):
+        channels.append("wechat")
+    return channels
+
+
+def _primary_author_account(
+    accounts: dict[str, dict[str, Any] | None],
+    publish_channels: list[str],
+) -> dict[str, Any] | None:
+    for channel in publish_channels:
+        account = accounts.get(channel)
+        if isinstance(account, dict):
+            return account
+    for channel in SUPPORTED_PUBLISH_CHANNELS:
+        account = accounts.get(channel)
+        if isinstance(account, dict):
+            return account
+    return None
+
+
 def _resolve_article_author(
     account: dict[str, Any] | None,
     *,
@@ -181,6 +316,138 @@ def _augment_image_prompt(prompt: str, author: str) -> str:
         "no publisher name",
     ]
     return f"{prompt}, " + ", ".join(instructions)
+
+
+def _html_to_plain_text(content: str) -> str:
+    text = str(content or "")
+    replacements = (
+        (r"(?i)<br\s*/?>", "\n"),
+        (r"(?i)</p>", "\n\n"),
+        (r"(?i)</h[1-6]>", "\n\n"),
+        (r"(?i)<li[^>]*>", "- "),
+        (r"(?i)</li>", "\n"),
+        (r"(?i)</blockquote>", "\n\n"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text)
+    text = re.sub(r"(?is)<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _article_plain_text(article_data: dict[str, Any]) -> str:
+    parts: list[str] = []
+    digest = str(article_data.get("digest") or "").strip()
+    if digest:
+        parts.append(digest)
+    for section in list(article_data.get("sections") or []):
+        plain = _html_to_plain_text(str(section.get("content") or ""))
+        if plain:
+            parts.append(plain)
+    return "\n\n".join(parts).strip()
+
+
+def _normalize_xiaohongshu_tags(raw_tags: Any, topic: str) -> list[str]:
+    tokens: list[str] = []
+    if isinstance(raw_tags, str):
+        tokens.extend(re.split(r"[#\s,，]+", raw_tags))
+    elif isinstance(raw_tags, list):
+        for item in raw_tags:
+            tokens.extend(re.split(r"[#\s,，]+", str(item or "")))
+
+    normalized: list[str] = []
+    for token in tokens:
+        cleaned = str(token or "").strip().lstrip("#")
+        if cleaned and cleaned not in normalized:
+            normalized.append(cleaned[:24])
+    if not normalized and str(topic or "").strip():
+        normalized.append(str(topic).strip()[:24])
+    return normalized[:8]
+
+
+def _fallback_xiaohongshu_note(topic: str, article_data: dict[str, Any]) -> dict[str, Any]:
+    title = str(article_data.get("title") or topic or "小红书笔记").strip()
+    if len(title) > 20:
+        title = title[:20].rstrip()
+    body = _article_plain_text(article_data)
+    if not body:
+        body = str(article_data.get("digest") or topic or "").strip()
+    return {
+        "title": title or "小红书笔记",
+        "body": body,
+        "tags": _normalize_xiaohongshu_tags([], topic or title),
+    }
+
+
+def _normalize_xiaohongshu_note_data(
+    data: dict[str, Any],
+    *,
+    topic: str,
+    article_data: dict[str, Any],
+) -> dict[str, Any]:
+    fallback = _fallback_xiaohongshu_note(topic, article_data)
+    title = str(data.get("title") or fallback["title"]).strip() or fallback["title"]
+    body = _html_to_plain_text(str(data.get("body") or fallback["body"])).strip()
+    if not body:
+        body = fallback["body"]
+    tags = _normalize_xiaohongshu_tags(data.get("tags"), topic or title)
+    if not tags:
+        tags = list(fallback["tags"])
+    return {"title": title, "body": body, "tags": tags}
+
+
+async def _generate_xiaohongshu_note_json(
+    topic: str,
+    article_data: dict[str, Any],
+) -> dict[str, Any]:
+    article_plain = _article_plain_text(article_data)
+    note_prompt = (
+        f"你是一位擅长科技内容运营的小红书编辑，请把下面的文章整理成一篇适合小红书图文发布的笔记。\n"
+        f"主题：{topic}\n"
+        f"文章标题：{article_data.get('title') or topic}\n"
+        f"文章正文：\n{article_plain[:MAX_SOCIAL_CONTEXT_CHARS]}\n\n"
+        "要求：\n"
+        "1. 返回严格 JSON。\n"
+        '2. JSON 格式：{"title":"...","body":"...","tags":["标签1","标签2"]}。\n'
+        "3. title 控制在 20 个汉字以内，避免夸张标题党。\n"
+        "4. body 使用纯文本和换行，不要 Markdown，不要 HTML。\n"
+        "5. tags 返回 3 到 8 个，不带 #。\n"
+        "6. 仅返回 JSON 对象，不要额外解释。"
+    )
+
+    model_to_use = get_current_model()
+    if not model_to_use:
+        raise RuntimeError("No text model configured in config/models.json")
+    async_client = get_client_for_model(model_to_use, is_async=True)
+    if async_client is None:
+        raise RuntimeError("OpenAI async client is not initialized")
+
+    response_text = await generate_text(
+        async_client=async_client,
+        model=model_to_use,
+        contents=note_prompt,
+        config={"response_mime_type": "application/json"},
+    )
+    payload = _parse_article_json(str(response_text or ""))
+    return _normalize_xiaohongshu_note_data(
+        payload,
+        topic=topic,
+        article_data=article_data,
+    )
+
+
+def _build_xiaohongshu_note_attachment(note_data: dict[str, Any]) -> bytes:
+    tags = " ".join(f"#{tag}" for tag in list(note_data.get("tags") or []) if str(tag).strip())
+    lines = [
+        f"标题：{str(note_data.get('title') or '').strip()}",
+        "",
+        "正文：",
+        str(note_data.get("body") or "").strip(),
+    ]
+    if tags:
+        lines.extend(["", "标签：", tags])
+    return ("\n".join(lines).strip() + "\n").encode("utf-8")
 
 
 def _extract_urls(text: str) -> list[str]:
@@ -449,6 +716,44 @@ async def _prepare_wechat_publisher(
     return publisher, ""
 
 
+def _resolve_xiaohongshu_endpoint(account: dict[str, Any] | None) -> str:
+    if not isinstance(account, dict):
+        return ""
+    for key in ("endpoint", "publish_url", "url", "webhook"):
+        value = str(account.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+async def _prepare_xiaohongshu_publisher(
+    account: dict[str, Any] | None,
+) -> tuple["XiaohongshuPublisher | None", str]:
+    if not account:
+        return None, "⚠️ 发布中止：未配置小红书发布凭证 `xiaohongshu_publisher`。"
+
+    endpoint = _resolve_xiaohongshu_endpoint(account)
+    if not endpoint:
+        return (
+            None,
+            "⚠️ 发布中止：小红书发布凭证缺少 `endpoint` 或 `publish_url`。",
+        )
+
+    token = str(account.get("token") or account.get("access_token") or "").strip()
+    api_key = str(account.get("api_key") or account.get("apikey") or "").strip()
+    timeout_seconds = 60.0
+    try:
+        timeout_seconds = max(5.0, float(account.get("timeout_seconds") or 60.0))
+    except Exception:
+        timeout_seconds = 60.0
+    return XiaohongshuPublisher(
+        endpoint=endpoint,
+        token=token,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+    ), ""
+
+
 class WeChatPublisher:
     BASE_URL = "https://api.weixin.qq.com/cgi-bin"
 
@@ -549,12 +854,144 @@ class WeChatPublisher:
             raise RuntimeError(f"Failed to add draft: {data}")
 
 
+class XiaohongshuPublisher:
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        token: str = "",
+        api_key: str = "",
+        timeout_seconds: float = 60.0,
+    ):
+        self.endpoint = endpoint
+        self.token = token
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+
+    async def publish_note(
+        self,
+        *,
+        topic: str,
+        author: str,
+        note_data: dict[str, Any],
+        images: list[tuple[str, bytes]],
+    ) -> dict[str, Any]:
+        headers: dict[str, str] = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+
+        payload = {
+            "topic": topic,
+            "author": author,
+            "title": str(note_data.get("title") or "").strip(),
+            "body": str(note_data.get("body") or "").strip(),
+            "tags": list(note_data.get("tags") or []),
+            "images": [
+                {
+                    "filename": name,
+                    "mime_type": "image/png",
+                    "content_base64": base64.b64encode(content).decode("utf-8"),
+                }
+                for name, content in images
+                if content
+            ],
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            resp = await client.post(self.endpoint, json=payload, headers=headers)
+            resp.raise_for_status()
+            content_type = str(resp.headers.get("content-type") or "").lower()
+            if "json" in content_type:
+                data = resp.json()
+            else:
+                raw_text = str(resp.text or "").strip()
+                return {"ok": True, "message": raw_text or "success"}
+
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Unexpected response: {data}")
+
+        success = data.get("ok")
+        if success is None:
+            success = data.get("success")
+        if success is False:
+            raise RuntimeError(
+                str(
+                    data.get("message")
+                    or data.get("error")
+                    or data.get("detail")
+                    or data
+                )
+            )
+        return data
+
+
+async def _publish_to_xiaohongshu(
+    *,
+    publisher: "XiaohongshuPublisher",
+    topic: str,
+    article_data: dict[str, Any],
+    note_data: dict[str, Any],
+    cover_bytes: bytes | None,
+    section_images: dict[int, bytes],
+) -> str:
+    publish_images: list[tuple[str, bytes]] = []
+    if cover_bytes:
+        publish_images.append(("cover.png", cover_bytes))
+    for idx, image_bytes in sorted(section_images.items()):
+        if image_bytes:
+            publish_images.append((f"section-{idx}.png", image_bytes))
+    if not publish_images:
+        return "❌ 小红书发布中止：至少需要 1 张配图。"
+
+    response = await publisher.publish_note(
+        topic=topic,
+        author=str(article_data.get("author") or ""),
+        note_data=note_data,
+        images=publish_images,
+    )
+    data_payload = response.get("data") if isinstance(response.get("data"), dict) else {}
+    note_id = str(
+        response.get("note_id")
+        or response.get("draft_id")
+        or response.get("id")
+        or data_payload.get("note_id")
+        or data_payload.get("draft_id")
+        or ""
+    ).strip()
+    note_url = str(
+        response.get("url")
+        or response.get("note_url")
+        or data_payload.get("url")
+        or data_payload.get("note_url")
+        or ""
+    ).strip()
+    message = str(response.get("message") or "").strip()
+    parts = ["✅ 已提交到小红书发布通道"]
+    if note_id:
+        parts.append(f"ID: `{note_id}`")
+    if note_url:
+        parts.append(f"URL: {note_url}")
+    if message:
+        parts.append(message)
+    return "，".join(parts)
+
+
 async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
     _ = runtime
-    topic = _resolve_topic(ctx, params)
+    material_paths = _resolve_local_material_paths(params)
+    topic = _resolve_topic(ctx, params, fallback_paths=material_paths)
     publish = _as_bool(params.get("publish"), default=False)
+    publish_channels = _resolve_publish_channels(params)
     publisher: WeChatPublisher | None = None
-    account = await get_account(ctx.message.user.id, "wechat_official_account")
+    xiaohongshu_publisher: XiaohongshuPublisher | None = None
+    wechat_account = await get_credential(ctx.message.user.id, "wechat_official_account")
+    xiaohongshu_account = await get_credential(ctx.message.user.id, "xiaohongshu_publisher")
+    account_map = {
+        "wechat": wechat_account,
+        "xiaohongshu": xiaohongshu_account,
+    }
 
     if not topic:
         yield {
@@ -565,39 +1002,73 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
         }
         return
 
-    if publish:
-        yield "🔐 正在检查公众号发布权限与 IP 白名单..."
-        publisher, preflight_error = await _prepare_wechat_publisher(account)
-        if preflight_error:
+    local_material_context = ""
+    if material_paths:
+        yield f"📄 正在读取 {len(material_paths)} 份本地素材..."
+        try:
+            local_material_context = _read_local_material_context(material_paths)
+        except Exception as exc:
             yield {
                 "ok": False,
-                "failure_mode": "fatal",
-                "text": preflight_error,
+                "failure_mode": "recoverable",
+                "text": f"❌ 本地素材读取失败: {exc}",
                 "ui": {},
-                "terminal": True,
-                "task_outcome": "failed",
             }
             return
 
-    yield f"🔍 正在全网搜索 `{topic}` 深度资料..."
+    if publish:
+        if "wechat" in publish_channels:
+            yield "🔐 正在检查公众号发布权限与 IP 白名单..."
+            publisher, preflight_error = await _prepare_wechat_publisher(wechat_account)
+            if preflight_error:
+                yield {
+                    "ok": False,
+                    "failure_mode": "fatal",
+                    "text": preflight_error,
+                    "ui": {},
+                    "terminal": True,
+                    "task_outcome": "failed",
+                }
+                return
+        if "xiaohongshu" in publish_channels:
+            yield "🔐 正在检查小红书发布通道配置..."
+            xiaohongshu_publisher, preflight_error = await _prepare_xiaohongshu_publisher(
+                xiaohongshu_account
+            )
+            if preflight_error:
+                yield {
+                    "ok": False,
+                    "failure_mode": "fatal",
+                    "text": preflight_error,
+                    "ui": {},
+                    "terminal": True,
+                    "task_outcome": "failed",
+                }
+                return
+
     search_context = ""
-    search_payload = await _collect_search_context(ctx, topic=topic)
+    if local_material_context:
+        yield "🧾 正在基于本地素材整理写作上下文..."
+        search_context = local_material_context
+    else:
+        yield f"🔍 正在全网搜索 `{topic}` 深度资料..."
+        search_payload = await _collect_search_context(ctx, topic=topic)
 
-    deep_read_urls = list(search_payload.get("urls") or [])
-    if deep_read_urls:
-        yield f"📖 正在深度阅读 {len(deep_read_urls)} 篇核心讯息..."
-        docs: list[str] = []
-        for url in deep_read_urls:
-            content = await fetch_webpage_content(url)
-            if content:
-                docs.append(f"Src: {url}\n{content[:MAX_DOC_SNIPPET_CHARS]}")
-        if docs:
-            search_context = "\n---\n".join(docs)
+        deep_read_urls = list(search_payload.get("urls") or [])
+        if deep_read_urls:
+            yield f"📖 正在深度阅读 {len(deep_read_urls)} 篇核心讯息..."
+            docs: list[str] = []
+            for url in deep_read_urls:
+                content = await fetch_webpage_content(url)
+                if content:
+                    docs.append(f"Src: {url}\n{content[:MAX_DOC_SNIPPET_CHARS]}")
+            if docs:
+                search_context = "\n---\n".join(docs)
 
-    if not search_context:
-        search_context = str(search_payload.get("report_text") or "").strip()
-    if not search_context:
-        search_context = str(search_payload.get("summary_text") or "").strip()
+        if not search_context:
+            search_context = str(search_payload.get("report_text") or "").strip()
+        if not search_context:
+            search_context = str(search_payload.get("summary_text") or "").strip()
 
     yield "✍️ 正在构思文章结构与配图设计..."
     try:
@@ -613,7 +1084,7 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
         return
 
     article_data["author"] = _resolve_article_author(
-        account,
+        _primary_author_account(account_map, publish_channels),
         fallback_author=str(article_data.get("author") or ""),
     )
 
@@ -631,21 +1102,61 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
         publish=publish,
     )
     final_text = f"🔇🔇🔇【新闻文章】\n\n{preview_text}".strip()
+    publish_statuses: list[str] = []
 
-    if publish:
+    xiaohongshu_note_data: dict[str, Any] | None = None
+    if "xiaohongshu" in publish_channels:
+        yield "📝 正在生成小红书笔记版本..."
+        try:
+            xiaohongshu_note_data = await _generate_xiaohongshu_note_json(topic, article_data)
+        except Exception as exc:
+            logger.warning("Xiaohongshu note generation failed, using fallback: %s", exc)
+            xiaohongshu_note_data = _fallback_xiaohongshu_note(topic, article_data)
+        generated_files["xiaohongshu_note.txt"] = _build_xiaohongshu_note_attachment(
+            xiaohongshu_note_data
+        )
+        generated_files["xiaohongshu_note.json"] = json.dumps(
+            xiaohongshu_note_data,
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+        if not publish:
+            publish_statuses.append("📝 已生成小红书发布草稿附件。")
+
+    if publish and "wechat" in publish_channels:
         yield "📤 正在上传素材并同步至微信后台..."
         try:
-            publish_status = await _publish_to_wechat(
-                publisher=publisher,
-                article_data=article_data,
-                cover_bytes=cover_bytes,
-                section_images=section_images,
+            publish_statuses.append(
+                await _publish_to_wechat(
+                    publisher=publisher,
+                    article_data=article_data,
+                    cover_bytes=cover_bytes,
+                    section_images=section_images,
+                )
             )
         except Exception as exc:
-            logger.error("Publish failed: %s", exc, exc_info=True)
-            publish_status = f"❌ 发布失败: {exc}"
-        if publish_status:
-            final_text = f"{final_text}\n\n---\n{publish_status}"
+            logger.error("WeChat publish failed: %s", exc, exc_info=True)
+            publish_statuses.append(f"❌ 微信发布失败: {exc}")
+
+    if publish and "xiaohongshu" in publish_channels and xiaohongshu_note_data is not None:
+        yield "📤 正在上传素材并同步至小红书发布通道..."
+        try:
+            publish_statuses.append(
+                await _publish_to_xiaohongshu(
+                    publisher=xiaohongshu_publisher,
+                    topic=topic,
+                    article_data=article_data,
+                    note_data=xiaohongshu_note_data,
+                    cover_bytes=cover_bytes,
+                    section_images=section_images,
+                )
+            )
+        except Exception as exc:
+            logger.error("Xiaohongshu publish failed: %s", exc, exc_info=True)
+            publish_statuses.append(f"❌ 小红书发布失败: {exc}")
+
+    if publish_statuses:
+        final_text = f"{final_text}\n\n---\n" + "\n".join(publish_statuses)
 
     yield {
         "ok": True,
@@ -659,7 +1170,7 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate a long-form news article and optional WeChat draft.",
+        description="Generate a long-form news article and optional multi-channel publishing outputs.",
     )
     parser.add_argument(
         "topic",
@@ -669,7 +1180,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--publish",
         action="store_true",
-        help="Publish the generated article to WeChat draft box.",
+        help="Publish the generated content to selected channels.",
+    )
+    parser.add_argument(
+        "--publish-channel",
+        action="append",
+        default=[],
+        help="Publish/output channel. Supported: wechat, xiaohongshu. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--source-path",
+        action="append",
+        default=[],
+        help="Local markdown/txt material path. Can be passed multiple times.",
     )
     add_common_arguments(parser)
     return parser
@@ -677,9 +1200,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _params_from_args(args: argparse.Namespace) -> dict[str, Any]:
     topic = " ".join(str(item or "").strip() for item in list(args.topic or [])).strip()
+    source_paths = [
+        str(item or "").strip()
+        for item in list(getattr(args, "source_path", []) or [])
+        if str(item or "").strip()
+    ]
+    publish_channels = [
+        str(item or "").strip()
+        for item in list(getattr(args, "publish_channel", []) or [])
+        if str(item or "").strip()
+    ]
     explicit = {
         "topic": topic or None,
         "publish": bool(getattr(args, "publish", False)),
+        "publish_channels": publish_channels or None,
+        "source_paths": source_paths or None,
     }
     return merge_params(args, explicit)
 

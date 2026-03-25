@@ -3,10 +3,25 @@ import base64
 from types import SimpleNamespace
 
 import pytest
+import httpx
 
 os.environ.setdefault("LLM_API_KEY", "test-key")
 
 import handlers.voice_handler as voice_handler
+
+
+@pytest.fixture(autouse=True)
+def _clear_whisper_env(monkeypatch):
+    for name in (
+        "VIDEO_TO_TEXT_WHISPER_ENDPOINT",
+        "WHISPER_INFERENCE_URL",
+        "VIDEO_TO_TEXT_WHISPER_RESPONSE_FORMAT",
+        "VIDEO_TO_TEXT_WHISPER_LANGUAGE",
+        "VIDEO_TO_TEXT_WHISPER_TEMPERATURE",
+        "VIDEO_TO_TEXT_WHISPER_TEMPERATURE_INC",
+        "VIDEO_TO_TEXT_WHISPER_NO_TIMESTAMPS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 class _Response:
@@ -169,6 +184,123 @@ async def test_transcribe_voice_prefers_transcoded_wav_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_transcribe_voice_prefers_whisper_http_endpoint(monkeypatch):
+    posted = {}
+    fake_client = _FakeClient([_Response(text="should-not-be-used")])
+
+    class _FakeResponse:
+        text = "这是 Whisper 识别结果"
+
+        def raise_for_status(self):
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout):
+            posted["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, *, data=None, files=None):
+            posted["url"] = url
+            posted["data"] = dict(data or {})
+            posted["files"] = files
+            return _FakeResponse()
+
+    monkeypatch.setenv("VIDEO_TO_TEXT_WHISPER_ENDPOINT", "http://127.0.0.1:20800/inference")
+    monkeypatch.setattr(voice_handler, "openai_async_client", fake_client)
+    monkeypatch.setattr(voice_handler.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = await voice_handler.transcribe_voice(b"audio-bytes", "audio/mpeg")
+
+    assert result == "这是 Whisper 识别结果"
+    assert fake_client.chat.completions.calls == []
+    assert posted["url"] == "http://127.0.0.1:20800/inference"
+    assert posted["data"]["response_format"] == "text"
+    assert posted["data"]["language"] == "zh"
+    assert posted["data"]["temperature"] == "0.00"
+    assert posted["data"]["temperature_inc"] == "0.00"
+    assert posted["data"]["no_timestamps"] == "true"
+    assert posted["files"]["file"][0].endswith(".mp3")
+
+
+@pytest.mark.asyncio
+async def test_transcribe_voice_transcodes_ogg_for_whisper_http(monkeypatch):
+    posted = {}
+    fake_client = _FakeClient([_Response(text="should-not-be-used")])
+
+    class _FakeResponse:
+        text = "转写成功"
+
+        def raise_for_status(self):
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout):
+            _ = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, *, data=None, files=None):
+            posted["url"] = url
+            posted["files"] = files
+            return _FakeResponse()
+
+    async def _fake_transcode(voice_bytes: bytes, mime_type: str) -> bytes | None:
+        assert voice_bytes == b"OggS-fake"
+        assert mime_type == "audio/ogg"
+        return b"wav-payload"
+
+    monkeypatch.setenv("VIDEO_TO_TEXT_WHISPER_ENDPOINT", "http://127.0.0.1:20800/inference")
+    monkeypatch.setattr(voice_handler, "openai_async_client", fake_client)
+    monkeypatch.setattr(voice_handler.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(voice_handler, "_transcode_audio_to_wav", _fake_transcode)
+
+    result = await voice_handler.transcribe_voice(b"OggS-fake", "audio/ogg")
+
+    assert result == "转写成功"
+    assert fake_client.chat.completions.calls == []
+    assert posted["files"]["file"][0].endswith(".wav")
+    assert posted["files"]["file"][1] == b"wav-payload"
+    assert posted["files"]["file"][2] == "audio/wav"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_voice_falls_back_to_llm_when_whisper_http_fails(monkeypatch):
+    fake_client = _FakeClient([_Response(text='{"status":"transcribed","transcript":"LLM fallback"}')])
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout):
+            _ = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, *, data=None, files=None):
+            _ = (url, data, files)
+            raise httpx.ConnectError("boom")
+
+    monkeypatch.setenv("VIDEO_TO_TEXT_WHISPER_ENDPOINT", "http://127.0.0.1:20800/inference")
+    monkeypatch.setattr(voice_handler, "openai_async_client", fake_client)
+    monkeypatch.setattr(voice_handler.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = await voice_handler.transcribe_voice(b"audio-bytes", "audio/ogg")
+
+    assert result == "LLM fallback"
+    assert len(fake_client.chat.completions.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_process_as_voice_message_falls_back_to_transcription(
     monkeypatch,
 ):
@@ -232,6 +364,14 @@ def test_parse_audio_response_payload_reads_structured_status() -> None:
     )
     assert status == "no_audio"
     assert transcript == ""
+
+
+def test_parse_audio_response_payload_reads_error_payload() -> None:
+    status, transcript = voice_handler._parse_audio_response_payload(
+        '{"error":"failed to read audio data"}'
+    )
+    assert status == "failed"
+    assert transcript == "failed to read audio data"
 
 
 def test_normalize_transcribed_text_extracts_json_text_value() -> None:

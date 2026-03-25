@@ -23,5 +23,5 @@ def test_adapt_md_file_for_platform_converts_md_for_telegram():
         platform="telegram",
     )
 
-    assert adapted_name == "README.html"
-    assert b"<!DOCTYPE html>" in adapted_bytes
+    assert adapted_name == "README.txt"
+    assert adapted_bytes == payload

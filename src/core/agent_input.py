@@ -9,8 +9,8 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 
 from core.file_artifacts import extract_file_rows_from_text
+from core.media_hooks import media_hook_registry
 from core.platform.models import MessageType, UnifiedContext
-from core.state_store import get_video_cache
 from services.image_input_service import (
     DEFAULT_MAX_IMAGE_INPUT_BYTES,
     fetch_image_from_url,
@@ -71,6 +71,7 @@ class ReplyMessageResolution:
     extra_context: str = ""
     detected_refs: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    handled_media: bool = False
 
 
 @dataclass
@@ -485,44 +486,18 @@ async def process_reply_message(ctx: UnifiedContext) -> ReplyMessageResolution:
         result.extra_context = f"【用户引用的消息】\n{reply_text}\n\n"
         logger.info("Extracted reply text context: %s chars", len(reply_text))
 
+    reply_hook = await media_hook_registry.dispatch_reply_context(ctx, reply_to)
+    if reply_hook.handled:
+        result.handled_media = True
+        if reply_hook.extra_context:
+            result.extra_context = f"{result.extra_context}{reply_hook.extra_context}"
+        _append_unique_text(result.detected_refs, reply_hook.detected_refs)
+        _append_unique_text(result.errors, reply_hook.errors)
+        return result
+
     if reply_to.type == MessageType.VIDEO:
-        file_id = reply_to.file_id
-        mime_type = reply_to.mime_type or "video/mp4"
-
-        cache_path = await get_video_cache(file_id)
-        if cache_path and os.path.exists(cache_path):
-            logger.info("Using cached video: %s", cache_path)
-            await ctx.reply("🎬 正在分析视频（使用缓存）...")
-            with open(cache_path, "rb") as file_obj:
-                result.inputs.append(
-                    _build_inline_input(
-                        mime_type=mime_type,
-                        content=bytes(file_obj.read()),
-                        source_kind="reply_media",
-                        source_ref=str(file_id),
-                    )
-                )
-
-        if not any(
-            item.source_kind == "reply_media" and item.source_ref == str(file_id)
-            for item in result.inputs
-        ):
-            if reply_to.file_size and reply_to.file_size > 20 * 1024 * 1024:
-                await ctx.reply(
-                    "⚠️ 引用的视频文件过大（超过 20MB），无法通过 Telegram 下载分析。\n\n"
-                    "提示：Bot 下载的视频会被缓存，可以直接分析。"
-                )
-                return result
-
-            await ctx.reply("🎬 正在下载并分析视频...")
-            result.inputs.append(
-                _build_inline_input(
-                    mime_type=mime_type,
-                    content=bytes(await ctx.download_file(file_id)),
-                    source_kind="reply_media",
-                    source_ref=str(file_id),
-                )
-            )
+        await ctx.reply("⚠️ 当前未注册视频文本化处理器，无法直接处理引用的视频。")
+        return result
 
     elif reply_to.type == MessageType.IMAGE:
         mime_type = reply_to.mime_type or "image/jpeg"
@@ -614,7 +589,7 @@ async def build_agent_message_history(
     prepared.has_reply_media = any(
         str(getattr(item, "source_kind", "") or "").strip() == "reply_media"
         for item in list(prepared.reply_resolution.inputs or [])
-    )
+    ) or bool(prepared.reply_resolution.handled_media)
 
     final_user_message = str(user_message or "")
     if strip_refs_from_user_message and prepared.current_resolution.detected_refs:

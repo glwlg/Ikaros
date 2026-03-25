@@ -9,7 +9,11 @@ import zlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from core.platform.models import UnifiedContext, MessageType
+from core.platform.models import (
+    MAX_EDIT_PREVIEW_CHARS,
+    MessageType,
+    UnifiedContext,
+)
 from core.long_term_memory import long_term_memory
 
 from core.config import get_client_for_model
@@ -618,7 +622,13 @@ def _is_message_too_long_error(exc: Exception) -> bool:
     return "too_long" in text or "too long" in text or "message is too long" in text
 
 
-async def _send_response_as_markdown_file(
+def _should_edit_final_response(rendered_response: str, *, ui_payload: Any = None) -> bool:
+    if ui_payload:
+        return False
+    return len(str(rendered_response or "")) <= MAX_EDIT_PREVIEW_CHARS
+
+
+async def _send_response_as_text_attachment(
     ctx: UnifiedContext, content: str, prefix: str = "agent_response"
 ):
     if not content:
@@ -628,7 +638,7 @@ async def _send_response_as_markdown_file(
     return await ctx.reply_document(
         document=content.encode("utf-8"),
         filename=filename,
-        caption="📝 内容较长，已转为 Markdown 文件发送。",
+        caption="📝 内容较长，已转为文本附件发送。",
     )
 
 
@@ -733,12 +743,19 @@ async def _try_handle_memory_commands(ctx: UnifiedContext, user_message: str) ->
     return False
 
 
-async def handle_ai_chat(ctx: UnifiedContext) -> None:
+async def handle_ai_chat(
+    ctx: UnifiedContext,
+    user_message_override: str | None = None,
+) -> None:
     """
     处理普通文本消息，使用对话模型生成回复
     支持引用（回复）包含图片或视频的消息
     """
-    user_message = ctx.message.text
+    user_message = (
+        str(user_message_override)
+        if user_message_override is not None
+        else str(ctx.message.text or "")
+    )
     context = ctx.platform_ctx
 
     chat_id = ctx.message.chat.id
@@ -784,10 +801,6 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                             {
                                 "text": "📹 下载视频",
                                 "callback_data": "action_download_video",
-                            },
-                            {
-                                "text": "📝 生成摘要",
-                                "callback_data": "action_summarize_video",
                             },
                         ]
                     ]
@@ -1260,9 +1273,9 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                                 payload["ui"] = ui_payload
                             sent_msg = await ctx.reply(payload)
                             state["response_visible"] = True
-                        await ctx.reply("📝 内容较长，完整结果已转为 Markdown 文件发送。")
+                        await ctx.reply("📝 内容较长，完整结果已转为文本附件发送。")
                         state["response_visible"] = True
-                        sent_msg = await _send_response_as_markdown_file(
+                        sent_msg = await _send_response_as_text_attachment(
                             ctx, final_text_response
                         )
                         state["response_visible"] = True
@@ -1274,7 +1287,10 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                             can_update
                             and thinking_msg is not None
                             and not thinking_deleted
-                            and not ui_payload
+                            and _should_edit_final_response(
+                                rendered_response,
+                                ui_payload=ui_payload,
+                            )
                         ):
                             msg_id = _message_id_of(thinking_msg)
                             if msg_id is not None:
@@ -1290,7 +1306,7 @@ async def handle_ai_chat(ctx: UnifiedContext) -> None:
                         raise
                     await ctx.reply("⚠️ 文本过长，正在转换为文件发送...")
                     state["response_visible"] = True
-                    sent_msg = await _send_response_as_markdown_file(
+                    sent_msg = await _send_response_as_text_attachment(
                         ctx, final_text_response
                     )
                     state["response_visible"] = True
@@ -1461,8 +1477,8 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
                         if ui_payload:
                             payload["ui"] = ui_payload
                         sent_msg = await ctx.reply(payload)
-                    await ctx.reply("📝 内容较长，完整结果已转为 Markdown 文件发送。")
-                    sent_msg = await _send_response_as_markdown_file(
+                    await ctx.reply("📝 内容较长，完整结果已转为文本附件发送。")
+                    sent_msg = await _send_response_as_text_attachment(
                         ctx, final_text_response, prefix="photo_response"
                     )
                 elif ui_payload:
@@ -1473,16 +1489,22 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
                         }
                     )
                 else:
-                    msg_id = getattr(
-                        thinking_msg, "message_id", getattr(thinking_msg, "id", None)
-                    )
-                    await ctx.edit_message(msg_id, rendered_response)
-                    sent_msg = thinking_msg
+                    if _should_edit_final_response(
+                        rendered_response,
+                        ui_payload=ui_payload,
+                    ):
+                        msg_id = getattr(
+                            thinking_msg, "message_id", getattr(thinking_msg, "id", None)
+                        )
+                        await ctx.edit_message(msg_id, rendered_response)
+                        sent_msg = thinking_msg
+                    else:
+                        sent_msg = await ctx.reply({"text": rendered_response})
             except MessageSendError as send_err:
                 if not _is_message_too_long_error(send_err):
                     raise
                 await ctx.reply("⚠️ 文本过长，正在转换为文件发送...")
-                sent_msg = await _send_response_as_markdown_file(
+                sent_msg = await _send_response_as_text_attachment(
                     ctx, final_text_response, prefix="photo_response"
                 )
 
@@ -1516,131 +1538,11 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
 
 async def handle_ai_video(ctx: UnifiedContext) -> None:
     """
-    处理视频消息，使用对话模型分析视频
+    兼容旧入口。正式的视频文本化由 skill 注册的 media hook 负责。
     """
-    user_id = ctx.message.user.id
-
-    # 检查用户权限
-    from core.config import is_user_allowed
-
-    if not await is_user_allowed(user_id):
-        logger.info("Ignoring unauthorized video message from user_id=%s", user_id)
-        return
-    if not await require_feature_access(ctx, "chat"):
-        return
-
-    await _acknowledge_received(ctx)
-
-    try:
-        media = await extract_media_input(
-            ctx,
-            expected_types={MessageType.VIDEO},
-            auto_download=True,
-        )
-    except MediaProcessingError as exc:
-        if exc.error_code == "unsupported_media_on_platform":
-            await ctx.reply(
-                "❌ 当前平台暂不支持该视频消息格式，请改为发送标准视频文件。"
-            )
-        else:
-            await ctx.reply("❌ 当前平台暂时无法下载视频内容，请稍后重试。")
-        return
-
-    if not media.content:
-        await ctx.reply("❌ 无法获取视频数据，请重新发送。")
-        return
-
-    caption = media.caption or "请分析这个视频的内容"
-
-    # Save to history immediately
-    await bind_delivery_target(ctx, user_id)
-    await add_message(ctx, user_id, "user", f"【用户发送了一个视频】 {caption}")
-
-    if media.file_size and media.file_size > 20 * 1024 * 1024:  # 20MB 限制
-        await ctx.reply(
-            "⚠️ 视频文件过大（超过 20MB），无法分析。\n\n请尝试发送较短的视频片段。"
-        )
-        return
-
-    # 立即发送"正在分析"提示
-    thinking_msg = await ctx.reply("🎬 视频分析中，请稍候片刻...")
-
-    # 发送"正在输入"状态
-    await ctx.send_chat_action(action="typing")
-
-    try:
-        # 获取 MIME 类型
-        mime_type = media.mime_type or "video/mp4"
-
-        # 构建带视频的内容
-        contents = [
-            {
-                "parts": [
-                    {"text": caption},
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": base64.b64encode(bytes(media.content)).decode(
-                                "utf-8"
-                            ),
-                        }
-                    },
-                ]
-            }
-        ]
-
-        model_to_use = get_vision_model() or get_current_model()
-        client_to_use = get_client_for_model(model_to_use, is_async=True)
-        if client_to_use is None:
-            raise RuntimeError("OpenAI async client is not initialized")
-        analysis = await generate_text(
-            async_client=client_to_use,
-            model=model_to_use,
-            contents=contents,
-            config={
-                "system_instruction": prompt_composer.compose_base(
-                    runtime_user_id=str(user_id),
-                    platform=str(getattr(ctx.message, "platform", "") or ""),
-                    tools=[],
-                    runtime_policy_ctx={
-                        "agent_kind": "core-manager",
-                        "policy": {"tools": {"allow": [], "deny": []}},
-                    },
-                    mode="media_video",
-                )
-            },
-        )
-        analysis = str(analysis or "").strip()
-
-        if analysis:
-            # Update the thinking message with the model response
-            msg_id = getattr(
-                thinking_msg, "message_id", getattr(thinking_msg, "id", None)
-            )
-            await ctx.edit_message(msg_id, analysis)
-
-            # Save model response to history
-            await add_message(ctx, user_id, "model", analysis)
-
-            # 记录统计
-            await increment_stat(user_id, "video_analyses")
-        else:
-            msg_id = getattr(
-                thinking_msg, "message_id", getattr(thinking_msg, "id", None)
-            )
-            await ctx.edit_message(msg_id, "抱歉，我无法分析这个视频。请稍后再试。")
-
-    except Exception as e:
-        logger.error(f"AI video analysis error: {e}")
-        msg_id = getattr(thinking_msg, "message_id", getattr(thinking_msg, "id", None))
-        await ctx.edit_message(
-            msg_id,
-            "❌ 视频分析失败，请稍后再试。\n\n"
-            "可能的原因：\n"
-            "• 视频格式不支持\n"
-            "• 视频时长过长\n"
-            "• 服务暂时不可用",
-        )
+    _ = ctx
+    logger.warning("handle_ai_video fallback called without a registered video hook.")
+    await ctx.reply("⚠️ 当前未注册视频文本化处理器，暂时无法处理视频。")
 
 
 async def handle_sticker_message(ctx: UnifiedContext) -> None:

@@ -12,7 +12,7 @@ import tempfile
 import pytest
 
 
-_PYTEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="xbot-pytest-data-")).resolve()
+_PYTEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="ikaros-pytest-data-")).resolve()
 os.environ["DATA_DIR"] = str(_PYTEST_DATA_DIR)
 
 

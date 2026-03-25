@@ -650,19 +650,89 @@ class SkillRegistry:
 
         try:
             import importlib.util
+            import importlib.machinery
             import sys
+            import types
 
             safe_skill = _normalize_skill_alias(skill_name) or "skill"
-            safe_script = _normalize_skill_alias(script_name.replace(".py", "")) or "module"
-            module_name = (
-                f"extension.skills.dynamic.{skill_info['source']}."
-                f"{safe_skill}.{safe_script}"
+            raw_script_parts = list(Path(script_name).with_suffix("").parts)
+            if raw_script_parts and raw_script_parts[-1] == "__init__":
+                raw_script_parts = raw_script_parts[:-1]
+            safe_parts = [
+                _normalize_skill_alias(part) or "module" for part in raw_script_parts
+            ]
+            module_name = ".".join(
+                [
+                    "extension",
+                    "skills",
+                    "dynamic",
+                    str(skill_info["source"] or "").strip(),
+                    safe_skill,
+                    "scripts",
+                    *safe_parts,
+                ]
             )
-            spec = importlib.util.spec_from_file_location(module_name, script_path)
+
+            def _ensure_namespace_package(name: str, path: str) -> None:
+                existing = sys.modules.get(name)
+                if existing is not None:
+                    package_paths = list(getattr(existing, "__path__", []))
+                    if path not in package_paths:
+                        package_paths.append(path)
+                        existing.__path__ = package_paths
+                    return
+                package = types.ModuleType(name)
+                package.__file__ = path
+                package.__path__ = [path]
+                package.__package__ = name
+                package.__spec__ = importlib.machinery.ModuleSpec(
+                    name,
+                    loader=None,
+                    is_package=True,
+                )
+                package.__spec__.submodule_search_locations = [path]
+                sys.modules[name] = package
+
+            skill_dir = os.path.join(skill_info["skill_dir"])
+            scripts_root = os.path.join(skill_dir, "scripts")
+            source_root = os.path.dirname(skill_dir)
+            skills_root = os.path.dirname(source_root)
+            _ensure_namespace_package("extension.skills.dynamic", skills_root)
+            _ensure_namespace_package(
+                f"extension.skills.dynamic.{str(skill_info['source'] or '').strip()}",
+                source_root,
+            )
+            _ensure_namespace_package(
+                f"extension.skills.dynamic.{str(skill_info['source'] or '').strip()}.{safe_skill}",
+                skill_dir,
+            )
+            _ensure_namespace_package(
+                f"extension.skills.dynamic.{str(skill_info['source'] or '').strip()}.{safe_skill}.scripts",
+                scripts_root,
+            )
+            current_path = scripts_root
+            package_name = (
+                f"extension.skills.dynamic.{str(skill_info['source'] or '').strip()}."
+                f"{safe_skill}.scripts"
+            )
+            for raw_part, safe_part in zip(raw_script_parts[:-1], safe_parts[:-1]):
+                current_path = os.path.join(current_path, raw_part)
+                package_name = f"{package_name}.{safe_part}"
+                _ensure_namespace_package(package_name, current_path)
+
+            spec_kwargs: Dict[str, Any] = {}
+            if os.path.basename(script_path) == "__init__.py":
+                spec_kwargs["submodule_search_locations"] = [os.path.dirname(script_path)]
+            spec = importlib.util.spec_from_file_location(
+                module_name,
+                script_path,
+                **spec_kwargs,
+            )
             if not spec or not spec.loader:
                 return None
 
             module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
             script_dir = os.path.dirname(script_path)
             if script_dir not in sys.path:
                 sys.path.insert(0, script_dir)
@@ -671,6 +741,8 @@ class SkillRegistry:
             self._loaded_modules[cache_key] = module
             return module
         except Exception as exc:
+            if "module_name" in locals():
+                sys.modules.pop(module_name, None)
             logger.error(
                 "Failed to import skill module %s/%s: %s",
                 skill_name,

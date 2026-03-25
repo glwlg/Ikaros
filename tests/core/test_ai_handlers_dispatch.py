@@ -653,6 +653,81 @@ async def test_handle_ai_chat_reacts_and_skips_immediate_placeholder(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_handle_ai_chat_replies_full_text_when_final_response_exceeds_edit_preview(
+    monkeypatch,
+):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+    from handlers import message_utils
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _fake_process_reply_message(_ctx):
+        return message_utils.ReplyMessageResolution()
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    original_sleep = asyncio.sleep
+    clock = {"now": 2000.0}
+    long_text = "长文" * 1100
+
+    async def _fast_sleep(delay, result=None):
+        clock["now"] += float(delay or 0.0)
+        await original_sleep(0)
+        return result
+
+    async def _fake_handle_message(_ctx, _message_history):
+        await original_sleep(0)
+        clock["now"] += 1.5
+        yield long_text
+
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(heartbeat_module.heartbeat_store, "set_delivery_target", _noop)
+    monkeypatch.setattr(ai_handlers, "add_message", _noop)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(
+        message_utils, "process_reply_message", _fake_process_reply_message
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "is_cancelled", lambda _uid: False
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "unregister_task", lambda _uid: None
+    )
+    monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(ai_handlers.time, "time", lambda: clock["now"])
+
+    ctx = _DummyChatContext()
+
+    await ai_handlers.handle_ai_chat(ctx)
+
+    assert ctx.edits
+    assert len(ctx.edits) == 1
+    assert any(payload == {"text": long_text} for payload, _kwargs in ctx.replies)
+
+
+@pytest.mark.asyncio
 async def test_handle_ai_chat_injects_inline_image_inputs_from_text(monkeypatch):
     import core.agent_input as agent_input_module
     import core.config as config_module

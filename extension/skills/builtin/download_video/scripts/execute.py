@@ -22,7 +22,6 @@ from core.platform.models import UnifiedContext
 from core.skill_menu import make_callback, parse_callback
 from core.config import is_user_allowed
 from utils import extract_video_url
-from user_context import add_message
 
 if __package__:
     from .services.download_service import download_video, get_download_dir
@@ -219,7 +218,6 @@ async def process_video_download(
         ui = {
             "actions": [
                 [
-                    {"text": "📝 生成内容摘要 (AI)", "callback_data": "large_file_summary"},
                     {"text": "🎵 仅发送音频", "callback_data": "large_file_audio"},
                 ],
                 [
@@ -266,7 +264,9 @@ async def process_video_download(
                     file_id = sent_message.document.file_id
 
                 if file_id:
-                    from core.state_store import save_video_cache
+                    from extension.skills.builtin.download_video.scripts.store import (
+                        save_video_cache,
+                    )
 
                     await save_video_cache(file_id, file_path)
                     logger.info(f"Video cached: {file_id} -> {file_path}")
@@ -302,7 +302,7 @@ async def process_video_download(
 
 
 async def handle_video_actions(ctx: UnifiedContext) -> None:
-    """处理视频链接的智能选项（下载 vs 摘要）"""
+    """处理视频链接的下载操作"""
     logger.info(f"🎬 [DownloadVideo] Received callback action: {ctx.callback_data}")
     await ctx.answer_callback()
     logger.info(ctx.message)
@@ -331,39 +331,6 @@ async def handle_video_actions(ctx: UnifiedContext) -> None:
             pass
 
         await process_video_download(ctx, url, audio_only=False)
-
-    elif action == "action_summarize_video":
-        try:
-            await ctx.edit_message(ctx.message.id, "📄 正在获取网页内容并生成摘要...")
-            await ctx.send_chat_action(action="typing")
-        except Exception as e:
-            logger.error(f"Error editing message in handle_video_actions: {e}")
-            pass
-
-        from services.web_summary_service import summarize_webpage
-
-        summary = await summarize_webpage(url)
-
-        try:
-            await ctx.edit_message(ctx.message.id, summary)
-        except Exception as e:
-            logger.error(f"Error editing message in handle_video_actions: {e}")
-            await ctx.reply(summary)
-
-        # Save summary to history
-        user_id = ctx.message.user.id
-        try:
-            await add_message(ctx.platform_ctx, user_id, "model", summary)
-        except:
-            pass
-
-        # 统计
-        from stats import increment_stat
-
-        try:
-            await increment_stat(user_id, "video_summaries")
-        except:
-            pass
 
 
 async def handle_large_file_action(ctx: UnifiedContext) -> None:
@@ -435,116 +402,6 @@ async def handle_large_file_action(ctx: UnifiedContext) -> None:
                 )
                 try:
                     await ctx.delete_message(message_id=ctx.message.id)
-                except:
-                    pass
-
-        elif data == "large_file_summary":
-            await ctx.edit_message(
-                ctx.message.id, "📝 正在提取并压缩音频，请稍候... (这可能需要几分钟)"
-            )
-
-            # Logic similar to original media_handlers.py
-            # For brevity in this refactor I'm simplifying copy but assumption is standard ffmpeg available
-            # ... (Full logic copied from media_handlers.py for summary)
-
-            # Use ffmpeg to compress
-            base, _ = os.path.splitext(file_path)
-            compressed_audio_path = f"{base}_compressed.mp3"
-
-            cmd = [
-                "ffmpeg",
-                "-i",
-                file_path,
-                "-vn",
-                "-acodec",
-                "libmp3lame",
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-b:a",
-                "32k",
-                "-y",
-                compressed_audio_path,
-            ]
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await process.wait()
-
-            if not os.path.exists(compressed_audio_path):
-                await ctx.edit_message(ctx.message.id, "❌ 音频提取失败。")
-                return
-
-            import base64
-
-            with open(compressed_audio_path, "rb") as f:
-                audio_bytes = f.read()
-
-            if len(audio_bytes) > 25 * 1024 * 1024:
-                await ctx.edit_message(
-                    ctx.message.id, "❌ 即使压缩后音频仍然过大，无法分析。"
-                )
-                try:
-                    os.remove(compressed_audio_path)
-                except:
-                    pass
-                return
-
-            await ctx.edit_message(
-                ctx.message.id, "📝 音频处理完成，正在通过 AI 生成摘要..."
-            )
-            from core.config import get_client_for_model
-            from core.model_config import get_voice_model
-            from services.openai_adapter import generate_text
-
-            contents = [
-                {
-                    "parts": [
-                        {
-                            "text": "请详细总结这段视频音频的内容。请描述主要发生了什么，核心观点是什么，并列出关键时间点 (如果可能)。"
-                        },
-                        {
-                            "inline_data": {
-                                "mime_type": "audio/mp3",
-                                "data": base64.b64encode(audio_bytes).decode("utf-8"),
-                            }
-                        },
-                    ]
-                }
-            ]
-
-            try:
-                voice_model = get_voice_model()
-                if not voice_model:
-                    raise RuntimeError("No voice model configured in config/models.json")
-                async_client = get_client_for_model(voice_model, is_async=True)
-                if async_client is None:
-                    raise RuntimeError("OpenAI async client is not initialized")
-                summary_body = await generate_text(
-                    async_client=async_client,
-                    model=voice_model,
-                    contents=contents,
-                )
-                if summary_body:
-                    summary_text = f"📝 **视频内容摘要**\n\n{summary_body}"
-                    await ctx.reply(summary_text)
-                    await add_message(
-                        ctx.platform_ctx, ctx.message.user.id, "model", summary_text
-                    )
-                    try:
-                        await ctx.delete_message(message_id=ctx.message.id)
-                    except:
-                        pass
-                else:
-                    await ctx.edit_message(ctx.message.id, "❌ AI 无法生成摘要。")
-            except Exception as e:
-                await ctx.edit_message(ctx.message.id, f"❌ AI 分析失败: {e}")
-            finally:
-                try:
-                    os.remove(compressed_audio_path)
                 except:
                     pass
 

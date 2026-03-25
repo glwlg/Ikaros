@@ -24,7 +24,7 @@ from core.skill_cli import (
 
 prepare_default_env(REPO_ROOT)
 
-from core.state_store import (
+from extension.skills.builtin.scheduler_manager.scripts.store import (
     add_scheduled_task,
     delete_task,
     get_all_active_tasks,

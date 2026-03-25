@@ -15,12 +15,14 @@ from core.proactive_delivery import resolve_proactive_target
 from core.state_paths import SINGLE_USER_SCOPE
 from shared.contracts.proactive_delivery_target import normalize_proactive_platform
 
-from core.state_store import (
+from extension.skills.learned.reminder.scripts.store import (
     add_reminder,
     delete_reminder,
     get_pending_reminders,
 )
-from core.state_store import get_all_active_tasks
+from extension.skills.builtin.scheduler_manager.scripts.store import (
+    get_all_active_tasks,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -12,14 +12,14 @@
 | Prompt policy and personality chain | `src/core/prompt_composer.py`, `src/core/prompts.py`, `src/core/soul_store.py`, `src/core/model_config.py` | system constraints + SOUL + model choices |
 | Orchestrator context and event closure | `src/core/orchestrator_context.py`, `src/core/orchestrator_event_handler.py` | context snapshots and delivery completion handling |
 | Task lifecycle and heartbeat | `src/core/task_inbox.py`, `src/core/task_manager.py`, `src/core/heartbeat_worker.py`, `src/core/heartbeat_store.py` | state transitions, background heartbeat, and periodic maintenance |
-| Canonical state persistence | `src/core/state_store.py`, `src/core/state_paths.py`, `src/core/state_io.py`, `src/core/state_file.py`, `src/core/audit_store.py` | user/system state protocol and storage primitives |
+| Canonical state persistence | `src/core/storage_service.py`, `src/core/state_store.py`, `src/core/state_paths.py`, `src/core/state_io.py`, `src/core/state_file.py`, `src/core/audit_store.py`, `extension/skills/*/scripts/store.py` | core state plus skill-owned persistence wrappers and storage primitives |
 | Memory and kernel snapshots | `src/core/markdown_memory_store.py`, `src/core/kernel_config_store.py` | persistent context and runtime config history |
 | Platform abstraction layer | `src/core/platform/adapter.py`, `src/core/platform/registry.py`, `src/core/platform/models.py` | unified adapter API for multi-platform handlers |
 
 ## CONVENTIONS
 - Keep Core Manager as orchestrator/governor; do not execute user business workflows directly in core loops.
 - Add tools via `tool_registry` + runtime merge path; keep tool names/signatures stable when possible.
-- Use `state_paths`/`state_io`/`state_store` for persistence; avoid ad-hoc direct path writes.
+- Use `storage_service`/`state_paths`/`state_io` for persistence; keep extension business stores in each skill's `scripts/store.py`.
 - Preserve explicit task source/state transitions and loop guardrails across orchestration modules.
 
 ## ANTI-PATTERNS
