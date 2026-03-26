@@ -83,7 +83,7 @@ def _whisper_http_timeout_seconds() -> float:
 
 
 def _whisper_http_response_format() -> str:
-    return str(os.getenv("VIDEO_TO_TEXT_WHISPER_RESPONSE_FORMAT") or "text").strip() or "text"
+    return str(os.getenv("VIDEO_TO_TEXT_WHISPER_RESPONSE_FORMAT") or "json").strip() or "json"
 
 
 def _whisper_http_language() -> str:
@@ -104,7 +104,7 @@ def _whisper_http_temperature() -> float:
 
 
 def _whisper_http_temperature_inc() -> float:
-    return _env_float("VIDEO_TO_TEXT_WHISPER_TEMPERATURE_INC", 0.0, 0.0)
+    return _env_float("VIDEO_TO_TEXT_WHISPER_TEMPERATURE_INC", 0.2, 0.0)
 
 
 def _whisper_http_no_timestamps() -> bool:
@@ -546,6 +546,8 @@ def _low_quality_transcript(text: str) -> bool:
     )
     if any(marker in lowered or marker in safe_text for marker in bad_markers):
         return True
+    if re.search(r"请提供.{0,20}(音频文件|音频链接)", safe_text):
+        return True
 
     if re.search(r"\b([a-z][a-z0-9'-]{1,})\b(?:\s+\1\b){11,}", lowered):
         return True
@@ -845,67 +847,27 @@ def _audio_suffix_for_mime(mime_type: str) -> str:
     return mapping.get(base, guessed or ".bin")
 
 
-def _audio_copy_profile_from_codec(codec_name: str) -> tuple[str, str] | None:
-    codec = str(codec_name or "").strip().lower()
-    mapping = {
-        "aac": (".m4a", "audio/mp4"),
-        "alac": (".m4a", "audio/mp4"),
-        "mp3": (".mp3", "audio/mpeg"),
-        "vorbis": (".ogg", "audio/ogg"),
-        "opus": (".ogg", "audio/ogg"),
-        "flac": (".flac", "audio/flac"),
-        "pcm_s16le": (".wav", "audio/wav"),
-        "pcm_s24le": (".wav", "audio/wav"),
-        "pcm_s32le": (".wav", "audio/wav"),
-        "pcm_f32le": (".wav", "audio/wav"),
-        "pcm_f64le": (".wav", "audio/wav"),
-    }
-    return mapping.get(codec)
+def _audio_mp3_bitrate_kbps() -> int:
+    return _env_int("VIDEO_TO_TEXT_AUDIO_BITRATE_KBPS", 32, 16)
 
 
-async def _probe_primary_audio_codec(media_path: Path) -> str:
-    if shutil.which("ffprobe") is None:
-        return ""
-    code, stdout, _stderr = await _run_subprocess(
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "stream=codec_name",
-        "-of",
-        "json",
-        str(media_path),
+def _mp3_ffmpeg_output_args(*, include_video_flags: bool) -> list[str]:
+    args: list[str] = []
+    if include_video_flags:
+        args.extend(["-vn", "-map", "0:a:0?"])
+    args.extend(
+        [
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-acodec",
+            "libmp3lame",
+            "-b:a",
+            f"{_audio_mp3_bitrate_kbps()}k",
+        ]
     )
-    if code != 0 or not stdout:
-        return ""
-    try:
-        payload = json.loads(stdout.decode("utf-8", errors="ignore"))
-    except Exception:
-        return ""
-    streams = payload.get("streams") or []
-    if not streams or not isinstance(streams[0], dict):
-        return ""
-    return str(streams[0].get("codec_name") or "").strip().lower()
-
-
-def _audio_copy_profile_from_mime(mime_type: str) -> tuple[str, str] | None:
-    base = _audio_base_mime(mime_type)
-    mapping = {
-        "audio/mp4": (".m4a", "audio/mp4"),
-        "audio/x-m4a": (".m4a", "audio/mp4"),
-        "audio/aac": (".aac", "audio/aac"),
-        "audio/x-aac": (".aac", "audio/aac"),
-        "audio/mpeg": (".mp3", "audio/mpeg"),
-        "audio/mp3": (".mp3", "audio/mpeg"),
-        "audio/ogg": (".ogg", "audio/ogg"),
-        "audio/opus": (".ogg", "audio/ogg"),
-        "audio/flac": (".flac", "audio/flac"),
-        "audio/wav": (".wav", "audio/wav"),
-        "audio/x-wav": (".wav", "audio/wav"),
-    }
-    return mapping.get(base)
+    return args
 
 
 async def _extract_audio_segment_to_temp_file(
@@ -945,6 +907,9 @@ def _workspace_audio_track_path(workspace: Path) -> str:
     audio_dir = (workspace / "audio").resolve()
     if not audio_dir.exists():
         return str((audio_dir / "full-audio").resolve())
+    preferred = (audio_dir / "full-audio.mp3").resolve()
+    if preferred.exists():
+        return str(preferred)
     candidates = sorted(audio_dir.glob("full-audio.*"))
     if candidates:
         return str(candidates[0].resolve())
@@ -1033,7 +998,47 @@ async def _transcode_audio_bytes_to_wav(
     input_fmt = _ffmpeg_audio_input_format(mime_type, audio_bytes)
     if input_fmt:
         args.extend(["-f", input_fmt])
-    args.extend(["-i", "pipe:0", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"])
+    args.extend(["-i", "pipe:0", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"])
+
+    code, stdout, _stderr = await _run_subprocess(*args, input_bytes=bytes(audio_bytes))
+    if code != 0 or not stdout:
+        return None
+    return stdout
+
+
+async def _transcode_audio_bytes_to_mp3(
+    audio_bytes: bytes,
+    mime_type: str,
+) -> bytes | None:
+    if not audio_bytes:
+        return None
+    base = _audio_base_mime(mime_type)
+    if base in {"audio/mpeg", "audio/mp3"}:
+        return bytes(audio_bytes)
+    if shutil.which("ffmpeg") is None:
+        return None
+
+    args = ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error"]
+    input_fmt = _ffmpeg_audio_input_format(mime_type, audio_bytes)
+    if input_fmt:
+        args.extend(["-f", input_fmt])
+    args.extend(
+        [
+            "-i",
+            "pipe:0",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-acodec",
+            "libmp3lame",
+            "-b:a",
+            f"{_audio_mp3_bitrate_kbps()}k",
+            "-f",
+            "mp3",
+            "pipe:1",
+        ]
+    )
 
     code, stdout, _stderr = await _run_subprocess(*args, input_bytes=bytes(audio_bytes))
     if code != 0 or not stdout:
@@ -1188,29 +1193,15 @@ async def extract_audio_segment(
 ) -> tuple[bytes | None, str, str]:
     if shutil.which("ffmpeg") is None:
         return None, "ffmpeg not found", ""
-    codec_name = await _probe_primary_audio_codec(video_path)
-    copy_profile = _audio_copy_profile_from_codec(codec_name)
-    if copy_profile is not None:
-        suffix, mime_type = copy_profile
-        payload, error = await _extract_audio_segment_to_temp_file(
-            video_path,
-            start_seconds=start_seconds,
-            duration_seconds=duration_seconds,
-            suffix=suffix,
-            ffmpeg_output_args=["-vn", "-map", "0:a:0?", "-c:a", "copy"],
-        )
-        if payload:
-            return payload, "", mime_type
-
     payload, error = await _extract_audio_segment_to_temp_file(
         video_path,
         start_seconds=start_seconds,
         duration_seconds=duration_seconds,
-        suffix=".wav",
-        ffmpeg_output_args=["-vn", "-map", "0:a:0?", "-c:a", "pcm_s16le"],
+        suffix=".mp3",
+        ffmpeg_output_args=_mp3_ffmpeg_output_args(include_video_flags=True),
     )
     if payload:
-        return payload, "", "audio/wav"
+        return payload, "", "audio/mpeg"
     return None, error or "audio extraction failed", ""
 
 
@@ -1224,38 +1215,13 @@ async def extract_audio_track_file(
 
     audio_dir = (workspace / "audio").resolve()
     audio_dir.mkdir(parents=True, exist_ok=True)
-    codec_name = await _probe_primary_audio_codec(video_path)
-    copy_profile = _audio_copy_profile_from_codec(codec_name)
-    if copy_profile is not None:
-        suffix, mime_type = copy_profile
-        output_path = (audio_dir / f"full-audio{suffix}").resolve()
-        args = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(video_path),
-            "-vn",
-            "-map",
-            "0:a:0?",
-            "-c:a",
-            "copy",
-            str(output_path),
-        ]
-        code, _stdout, stderr = await _run_subprocess(*args)
-        if code == 0 and output_path.exists() and output_path.stat().st_size > 0:
-            return output_path, "", mime_type
-
-    output_path = (audio_dir / "full-audio.wav").resolve()
+    output_path = (audio_dir / "full-audio.mp3").resolve()
     args = [
         "ffmpeg",
         "-y",
         "-i",
         str(video_path),
-        "-vn",
-        "-map",
-        "0:a:0?",
-        "-c:a",
-        "pcm_s16le",
+        *_mp3_ffmpeg_output_args(include_video_flags=True),
         str(output_path),
     ]
     code, _stdout, stderr = await _run_subprocess(*args)
@@ -1266,7 +1232,7 @@ async def extract_audio_track_file(
             or "audio track extraction failed",
             "",
         )
-    return output_path, "", "audio/wav"
+    return output_path, "", "audio/mpeg"
 
 
 async def extract_audio_file_segment(
@@ -1278,28 +1244,15 @@ async def extract_audio_file_segment(
 ) -> tuple[bytes | None, str, str]:
     if shutil.which("ffmpeg") is None:
         return None, "ffmpeg not found", ""
-    copy_profile = _audio_copy_profile_from_mime(mime_type)
-    if copy_profile is not None:
-        suffix, normalized_mime = copy_profile
-        payload, error = await _extract_audio_segment_to_temp_file(
-            audio_path,
-            start_seconds=start_seconds,
-            duration_seconds=duration_seconds,
-            suffix=suffix,
-            ffmpeg_output_args=["-c:a", "copy"],
-        )
-        if payload:
-            return payload, "", normalized_mime
-
     payload, error = await _extract_audio_segment_to_temp_file(
         audio_path,
         start_seconds=start_seconds,
         duration_seconds=duration_seconds,
-        suffix=".wav",
-        ffmpeg_output_args=["-c:a", "pcm_s16le"],
+        suffix=".mp3",
+        ffmpeg_output_args=_mp3_ffmpeg_output_args(include_video_flags=False),
     )
     if payload:
-        return payload, "", "audio/wav"
+        return payload, "", "audio/mpeg"
     return None, error or "audio segment extraction failed", ""
 
 
@@ -1335,78 +1288,17 @@ async def _transcribe_audio_bytes_internal(
                 return status, detail, strategy or locked_strategy
             if transcription_state is not None:
                 transcription_state.locked_strategy = None
-        locked_client = get_client_for_model(locked_strategy.model, is_async=True)
-        if locked_client is None:
-            if transcription_state is not None:
-                transcription_state.locked_strategy = None
-        else:
-            status, detail, strategy = await _transcribe_audio_bytes_with_target(
-                locked_strategy.model,
-                locked_client,
-                audio_bytes,
-                mime_type,
-                attempts=await _build_audio_transcription_attempts(audio_bytes, mime_type),
-                audio_part_styles=[locked_strategy.audio_part_style],
-                strategy_filter=locked_strategy,
-            )
-            if status not in {"failed", "unsupported_modality"}:
-                if (
-                    transcription_state is not None
-                    and strategy is not None
-                    and _status_locks_audio_strategy(status)
-                ):
-                    transcription_state.locked_strategy = strategy
-                return status, detail, strategy or locked_strategy
-            if transcription_state is not None:
-                transcription_state.locked_strategy = None
+        elif transcription_state is not None:
+            transcription_state.locked_strategy = None
 
-    whisper_failure_detail = ""
-    if _whisper_http_enabled():
-        status, detail, strategy = await _transcribe_audio_bytes_with_whisper_http(
-            audio_bytes,
-            mime_type,
-        )
-        if status not in {"failed", "unsupported_modality"}:
-            if (
-                transcription_state is not None
-                and strategy is not None
-                and _status_locks_audio_strategy(status)
-            ):
-                transcription_state.locked_strategy = strategy
-            return status, detail, strategy
-        whisper_failure_detail = detail or whisper_failure_detail
+    if not _whisper_http_enabled():
+        return "failed", "whisper http endpoint not configured", None
 
-    targets = _available_audio_transcription_targets()
-    if not targets:
-        voice_model, client, selection_diagnostics = _resolve_audio_transcription_target()
-        _ = (voice_model, client)
-        if whisper_failure_detail:
-            return "failed", whisper_failure_detail, None
-        if selection_diagnostics:
-            return "failed", "; ".join(selection_diagnostics), None
-        return "failed", "voice client unavailable", None
-    last_unsupported_detail = ""
-    last_no_audio_status = ""
-    last_no_audio_strategy: AudioTranscriptionStrategy | None = None
-    last_failure_detail = ""
-    for voice_model, client in targets:
-        status, detail, strategy = await _transcribe_audio_bytes_with_target(
-            voice_model,
-            client,
-            audio_bytes,
-            mime_type,
-        )
-        if status == "unsupported_modality":
-            last_unsupported_detail = detail or last_unsupported_detail
-            continue
-        if status in {"no_audio", "unintelligible", "empty"}:
-            last_no_audio_status = status
-            if strategy is not None and _status_locks_audio_strategy(status):
-                last_no_audio_strategy = strategy
-            continue
-        if status == "failed":
-            last_failure_detail = detail or last_failure_detail
-            continue
+    status, detail, strategy = await _transcribe_audio_bytes_with_whisper_http(
+        audio_bytes,
+        mime_type,
+    )
+    if status not in {"failed", "unsupported_modality"}:
         if (
             transcription_state is not None
             and strategy is not None
@@ -1414,17 +1306,7 @@ async def _transcribe_audio_bytes_internal(
         ):
             transcription_state.locked_strategy = strategy
         return status, detail, strategy
-    if last_no_audio_status:
-        if transcription_state is not None and last_no_audio_strategy is not None:
-            transcription_state.locked_strategy = last_no_audio_strategy
-        return last_no_audio_status, "", last_no_audio_strategy
-    if last_failure_detail:
-        return "failed", last_failure_detail, None
-    if whisper_failure_detail:
-        return "failed", whisper_failure_detail, None
-    if last_unsupported_detail:
-        return "unsupported_modality", last_unsupported_detail, None
-    return "failed", "audio transcription failed", None
+    return "failed", detail or "whisper http transcription failed", None
 
 
 async def _transcribe_audio_bytes_with_target(
@@ -1596,7 +1478,12 @@ async def _transcribe_audio_bytes_with_whisper_http(
     if not endpoint:
         return "failed", "whisper http endpoint not configured", None
 
+    payload_bytes = bytes(audio_bytes)
     safe_mime_type = _audio_base_mime(mime_type) or "application/octet-stream"
+    transcoded_mp3 = await _transcode_audio_bytes_to_mp3(audio_bytes, mime_type)
+    if transcoded_mp3:
+        payload_bytes = transcoded_mp3
+        safe_mime_type = "audio/mpeg"
     suffix = _audio_suffix_for_mime(safe_mime_type)
     strategy = AudioTranscriptionStrategy(
         model=_WHISPER_HTTP_MODEL,
@@ -1617,7 +1504,7 @@ async def _transcribe_audio_bytes_with_whisper_http(
 
     timeout_seconds = _whisper_http_timeout_seconds()
     timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 10.0))
-    files = {"file": (f"audio{suffix}", bytes(audio_bytes), safe_mime_type)}
+    files = {"file": (f"audio{suffix}", payload_bytes, safe_mime_type)}
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1673,28 +1560,10 @@ async def _probe_audio_transcription_mode(
             f"whisper http endpoint configured: {whisper_endpoint}",
             workspace=workspace,
         )
-    targets = _available_audio_transcription_targets()
-    if targets:
-        diagnostics.append(
-            "audio transcription model candidates: "
-            + ", ".join(model_key for model_key, _client in targets)
-        )
-        _emit_progress(
-            progress,
-            "audio transcription candidates: "
-            + ", ".join(model_key for model_key, _client in targets),
-            workspace=workspace,
-        )
-    else:
-        voice_model, client, selection_diagnostics = _resolve_audio_transcription_target()
-        _ = (voice_model, client)
-        diagnostics.extend(selection_diagnostics)
-        if not whisper_endpoint:
-            diagnostics.append("no voice-capable model available, video fallback disabled")
-            diagnostics.append(
-                _fatal_audio_diagnostic("no voice-capable model available")
-            )
-            return False, diagnostics
+    if not whisper_endpoint:
+        diagnostics.append("whisper http endpoint not configured")
+        diagnostics.append(_fatal_audio_diagnostic("whisper http endpoint not configured"))
+        return False, diagnostics
 
     probe_seconds = _env_float("VIDEO_TO_TEXT_AUDIO_PROBE_SECONDS", 20.0, 5.0)
     if duration_seconds is not None and duration_seconds > 0:
@@ -1784,18 +1653,18 @@ async def transcribe_audio_segments(
         )
         transcription_state = AudioTranscriptionState()
         reported_locked_strategy = ""
-        audio_supported, mode_diagnostics = await _probe_audio_transcription_mode(
-            audio_path,
-            duration_seconds=duration_seconds,
-            mime_type=audio_mime_type or "audio/mpeg",
-            transcription_state=transcription_state,
-            progress=progress,
+        diagnostics: list[str] = []
+        whisper_endpoint = _whisper_http_endpoint()
+        if not whisper_endpoint:
+            diagnostics.append("whisper http endpoint not configured")
+            diagnostics.append(_fatal_audio_diagnostic("whisper http endpoint not configured"))
+            return [], diagnostics, True
+        diagnostics.append(f"whisper http endpoint configured: {whisper_endpoint}")
+        _emit_progress(
+            progress,
+            f"whisper http endpoint configured: {whisper_endpoint}",
             workspace=active_workspace,
         )
-        if not audio_supported:
-            return [], mode_diagnostics, True
-
-        diagnostics: list[str] = list(mode_diagnostics)
         reported_locked_strategy = _report_locked_audio_strategy(
             transcription_state,
             diagnostics=diagnostics,
