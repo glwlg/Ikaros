@@ -31,3 +31,35 @@ def extract_video_url(text: str) -> str | None:
     """从文本中提取视频 URL"""
     match = URL_REGEX.search(text)
     return match.group(0) if match else None
+
+
+def extract_pure_video_url(text: str) -> str | None:
+    """仅当整条消息是一个视频 URL 时返回该 URL。"""
+    def _extract_from_normalized(value: str) -> str | None:
+        match = URL_REGEX.match(value)
+        if not match:
+            return None
+
+        candidate = match.group(0)
+        remainder = value[match.end() :]
+        extra = re.match(r"(?:[?&#][^\s<>]+)+", remainder)
+        if extra:
+            candidate += extra.group(0)
+            remainder = remainder[extra.end() :]
+
+        return candidate if not remainder.strip() else None
+
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None
+
+    direct = _extract_from_normalized(normalized)
+    if direct:
+        return direct
+
+    if normalized.startswith("<") and normalized.endswith(">"):
+        inner = normalized[1:-1].strip()
+        if inner:
+            return _extract_from_normalized(inner)
+
+    return None

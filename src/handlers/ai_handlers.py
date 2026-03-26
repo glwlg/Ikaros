@@ -784,9 +784,9 @@ async def handle_ai_chat(
     if await _try_handle_memory_commands(ctx, user_message):
         return
 
-    from utils import extract_video_url
+    from utils import extract_pure_video_url
 
-    video_url = extract_video_url(user_message)
+    video_url = extract_pure_video_url(user_message)
     if video_url:
         logger.info(f"Detected video URL: {video_url}, presenting options")
         if context:

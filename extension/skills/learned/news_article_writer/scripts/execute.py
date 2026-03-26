@@ -6,6 +6,7 @@ import asyncio
 import html
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -748,8 +749,91 @@ def _condense_command_output(text: str, *, limit: int = 300) -> str:
     return condensed[: limit - 3].rstrip() + "..."
 
 
+def _resolve_opencli_path() -> str:
+    configured = str(os.getenv("OPENCLI_BIN") or "").strip()
+    if configured:
+        return configured
+    return shutil.which("opencli") or ""
+
+
+def _sanitize_opencli_publish_cmd(cmd: list[str]) -> str:
+    sanitized: list[str] = []
+    idx = 0
+    while idx < len(cmd):
+        token = str(cmd[idx] or "")
+        if idx == 3:
+            sanitized.append(f"<content:{len(token)} chars>")
+        elif token == "--images" and idx + 1 < len(cmd):
+            image_names = [
+                Path(item).name
+                for item in str(cmd[idx + 1] or "").split(",")
+                if str(item or "").strip()
+            ]
+            sanitized.extend([token, ",".join(image_names)])
+            idx += 1
+        else:
+            sanitized.append(token)
+        idx += 1
+    return " ".join(sanitized)
+
+
+def _load_json_from_mixed_text(text: str) -> Any | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    for candidate in reversed(lines):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(raw):
+        if char not in "[{":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(raw[idx:])
+        except json.JSONDecodeError:
+            continue
+        return payload
+    return None
+
+
+def _format_opencli_publish_error(
+    *,
+    code: int | None = None,
+    status: str = "",
+    detail: str = "",
+    stdout: str = "",
+    stderr: str = "",
+) -> str:
+    parts: list[str] = []
+    if status:
+        parts.append(f"status={status}")
+    if detail:
+        parts.append(detail)
+    if code not in (None, 0):
+        parts.append(f"exit={code}")
+
+    stdout_summary = _condense_command_output(stdout)
+    stderr_summary = _condense_command_output(stderr)
+    if stderr_summary:
+        parts.append(f"stderr={stderr_summary}")
+    if stdout_summary and stdout_summary not in parts and stdout_summary != detail:
+        parts.append(f"stdout={stdout_summary}")
+
+    return "; ".join(part for part in parts if part) or "unknown opencli publish error"
+
+
 async def _prepare_xiaohongshu_opencli() -> str:
-    opencli_path = shutil.which("opencli")
+    opencli_path = _resolve_opencli_path()
     if not opencli_path:
         return "⚠️ 发布中止：未找到 `opencli` 命令，请先安装并确保它在 PATH 中。"
     try:
@@ -888,9 +972,8 @@ def _parse_opencli_publish_output(stdout_text: str) -> dict[str, Any]:
     text = str(stdout_text or "").strip()
     if not text:
         return {}
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
+    payload = _load_json_from_mixed_text(text)
+    if payload is None:
         return {"detail": text}
     return _extract_opencli_result_row(payload) or {"detail": text}
 
@@ -902,7 +985,7 @@ async def _publish_to_xiaohongshu(
     cover_bytes: bytes | None,
     section_images: dict[int, bytes],
 ) -> str:
-    opencli_path = shutil.which("opencli")
+    opencli_path = _resolve_opencli_path()
     if not opencli_path:
         return "❌ 小红书发布中止：未找到 `opencli` 命令。"
 
@@ -926,11 +1009,29 @@ async def _publish_to_xiaohongshu(
     if not topics and str(topic or "").strip():
         topics = [str(topic).strip()[:24]]
 
-    async def _run_opencli_publish_once(cmd: list[str]) -> str:
+    async def _run_opencli_publish_once(cmd: list[str], *, attempt: int) -> str:
+        safe_cmd = _sanitize_opencli_publish_cmd(cmd)
+        logger.info(
+            "opencli xiaohongshu publish attempt %s starting: %s",
+            attempt,
+            safe_cmd,
+        )
         code, stdout, stderr = await _run_subprocess(cmd, timeout_seconds=300.0)
+        logger.info(
+            "opencli xiaohongshu publish attempt %s finished: code=%s stdout=%s stderr=%s",
+            attempt,
+            code,
+            _condense_command_output(stdout) or "<empty>",
+            _condense_command_output(stderr) or "<empty>",
+        )
         if code != 0:
-            detail = _condense_command_output(stderr) or _condense_command_output(stdout)
-            raise RuntimeError(detail or f"opencli exited with code {code}")
+            raise RuntimeError(
+                _format_opencli_publish_error(
+                    code=code,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+            )
 
         result = _parse_opencli_publish_output(stdout)
         status = str(result.get("status") or "").strip().lower()
@@ -938,7 +1039,14 @@ async def _publish_to_xiaohongshu(
             str(result.get("detail") or result.get("message") or stdout)
         )
         if status in {"error", "failed", "failure"}:
-            raise RuntimeError(detail or "opencli reported failure")
+            raise RuntimeError(
+                _format_opencli_publish_error(
+                    status=status,
+                    detail=detail,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+            )
         return detail
 
     with tempfile.TemporaryDirectory(prefix="ikaros-xhs-") as temp_dir:
@@ -965,24 +1073,32 @@ async def _publish_to_xiaohongshu(
 
         detail = ""
         retried = False
-        last_error: Exception | None = None
+        attempt_errors: list[str] = []
         for attempt in range(2):
+            attempt_cmd = list(cmd)
+            if attempt == 1:
+                attempt_cmd.append("--verbose")
             try:
-                detail = await _run_opencli_publish_once(cmd)
+                detail = await _run_opencli_publish_once(attempt_cmd, attempt=attempt + 1)
                 break
             except Exception as exc:
-                last_error = exc
+                error_text = str(exc).strip() or "unknown error"
+                attempt_errors.append(f"第{attempt + 1}次: {error_text}")
                 if attempt == 0:
                     retried = True
                     logger.warning(
                         "opencli xiaohongshu publish failed on first attempt, retrying in 2s: %s",
-                        exc,
+                        error_text,
                     )
                     await asyncio.sleep(2)
                     continue
-                raise
-        if last_error is not None and not detail:
-            raise last_error
+                logger.error(
+                    "opencli xiaohongshu publish failed after retry: %s",
+                    " | ".join(attempt_errors),
+                )
+                raise RuntimeError("；".join(attempt_errors))
+        if not detail and attempt_errors:
+            raise RuntimeError("；".join(attempt_errors))
 
     parts = ["✅ 已通过 opencli 提交到小红书"]
     if retried:
