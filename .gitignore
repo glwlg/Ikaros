@@ -58,3 +58,4 @@ src/api/static/dist
 scripts/init_balances.py
 
 **/.playwright-cli
+**.jpg
