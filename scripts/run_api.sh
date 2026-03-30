@@ -107,8 +107,9 @@ main() {
     home_dir="$(resolve_home_dir || true)"
     if [[ -n "${home_dir}" ]]; then
         export HOME="${home_dir}"
-        export PATH="${home_dir}/.local/bin:${PATH}"
+        export PATH="${home_dir}/.vite-plus/bin:${home_dir}/.local/bin:${PATH}"
     fi
+
 
     uv_bin="$(resolve_uv_bin)" || {
         echo "Failed to locate uv. Install uv or set IKAROS_UV_BIN." >&2

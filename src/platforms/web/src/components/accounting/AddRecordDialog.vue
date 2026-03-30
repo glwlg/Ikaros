@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { createRecord, getCategories, getAccounts, type CategoryItem, type AccountItem } from '@/api/accounting'
-import { X, Delete, Loader2 } from 'lucide-vue-next'
+import { X, Delete, Loader2, ChevronRight } from 'lucide-vue-next'
 import { appendOperationLog } from '@/utils/accountingLocal'
 import { toLocalIsoString } from '@/utils/accountingDateTime'
 
@@ -39,20 +39,53 @@ const selectedTargetAccount = ref('')
 const remark = ref('')
 const saving = ref(false)
 
-// Default categories per type
-const defaultCategories: Record<string, string[]> = {
-    '支出': ['餐饮', '购物', '日用', '交通', '买菜', '水果', '零食', '运动', '娱乐', '通讯', '服饰', '其他'],
+// Date time selection
+const selectedDate = ref('')
+const selectedTime = ref('')
+
+// Initialize date and time to now
+const initDateTime = () => {
+    const now = new Date()
+    selectedDate.value = now.toISOString().slice(0, 10)
+    selectedTime.value = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+}
+
+const buildRecordTime = () => {
+    if (!selectedDate.value || !selectedTime.value) {
+        return toLocalIsoString(new Date(), { includeSeconds: true })
+    }
+    return `${selectedDate.value}T${selectedTime.value}:00`
+}
+
+// Default categories per type - main categories shown first
+const mainCategories: Record<string, string[]> = {
+    '支出': ['买菜', '交通', '娱乐', '日用', '水果', '水电', '购物', '餐饮美食'],
     '收入': ['工资', '奖金', '红包', '理财', '报销', '兼职', '其他'],
     '转账': ['转账'],
 }
 
+const allCategories: Record<string, string[]> = {
+    '支出': ['买菜', '交通', '娱乐', '日用', '水果', '水电', '购物', '餐饮美食', '零食', '运动', '通讯', '服饰', '其他'],
+    '收入': ['工资', '奖金', '红包', '理财', '报销', '兼职', '其他'],
+    '转账': ['转账'],
+}
+
+// Category popup
+const showCategoryPopup = ref(false)
+
 const displayCategories = computed(() => {
+    // 只显示8个主要分类
+    return mainCategories[activeTab.value] || []
+})
+
+const allDisplayCategories = computed(() => {
     const userCats = categories.value
         .filter(c => c.type === activeTab.value)
         .map(c => c.name)
-    const defaults = defaultCategories[activeTab.value] || []
-    const all = [...new Set([...userCats, ...defaults])]
-    return all
+    const all = allCategories[activeTab.value] || []
+    // 合并所有分类，包括用户自定义的
+    const extraUserCats = userCats.filter(c => !all.includes(c))
+    return [...all, ...extraUserCats]
 })
 
 const formatCalculatedValue = (value: number) => {
@@ -289,7 +322,7 @@ const handleSave = async () => {
             account_name: selectedAccount.value,
             target_account_name: selectedTargetAccount.value,
             remark: remark.value,
-            record_time: toLocalIsoString(new Date(), { includeSeconds: true }),
+            record_time: buildRecordTime(),
         })
         appendOperationLog(
             props.bookId,
@@ -306,6 +339,7 @@ const handleSave = async () => {
 }
 
 onMounted(async () => {
+    initDateTime()
     try {
         const [catRes, accRes] = await Promise.all([
             getCategories(props.bookId),
@@ -386,6 +420,44 @@ const keyRows = [
           >
             {{ cat }}
           </button>
+          <!-- 全部按钮 -->
+          <button
+            @click="showCategoryPopup = true"
+            class="py-2.5 rounded-xl text-sm font-medium border border-gray-200 dark:border-slate-700 text-indigo-500 hover:bg-gray-50 dark:hover:bg-slate-800 transition flex items-center justify-center gap-1"
+          >
+            全部 <ChevronRight class="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Category Popup -->
+      <div
+        v-if="showCategoryPopup"
+        class="fixed inset-0 z-[60] bg-black/45 flex items-end justify-center"
+        @click.self="showCategoryPopup = false"
+      >
+        <div class="w-full max-h-[70vh] bg-white dark:bg-slate-800 rounded-t-3xl shadow-xl p-4 overflow-y-auto">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-theme-primary">选择分类</h3>
+            <button @click="showCategoryPopup = false" class="p-1 text-theme-secondary">
+              <X class="w-5 h-5" />
+            </button>
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            <button
+              v-for="cat in allDisplayCategories"
+              :key="cat"
+              @click="selectedCategory = cat; showCategoryPopup = false"
+              :class="[
+                'py-2.5 rounded-xl text-sm font-medium border transition',
+                selectedCategory === cat
+                  ? 'border-rose-300 dark:border-rose-700 text-rose-500 bg-rose-50 dark:bg-rose-900/20'
+                  : 'border-gray-200 dark:border-slate-700 text-theme-secondary hover:bg-gray-50 dark:hover:bg-slate-800'
+              ]"
+            >
+              {{ cat }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -426,6 +498,23 @@ const keyRows = [
           placeholder="点击添加备注"
           class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
         />
+      </div>
+
+      <!-- Date Time Selector -->
+      <div class="px-4 py-2 border-t border-gray-100 dark:border-slate-800">
+        <label class="text-xs text-indigo-500 font-medium">日期时间</label>
+        <div class="grid grid-cols-2 gap-2 mt-1">
+          <input
+            v-model="selectedDate"
+            type="date"
+            class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          <input
+            v-model="selectedTime"
+            type="time"
+            class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+        </div>
       </div>
     </div>
 

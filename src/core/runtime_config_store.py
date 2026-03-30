@@ -45,6 +45,9 @@ class RuntimeConfigStore:
                 "web_chat_tts": True,
                 "admin_console": True,
             },
+            "skills": {
+                "disabled": [],
+            },
         }
 
     def read(self) -> dict[str, Any]:
@@ -104,6 +107,46 @@ class RuntimeConfigStore:
         if not isinstance(auth, dict):
             return False
         return bool(auth.get("public_registration_enabled", False))
+
+    def get_disabled_skills(self) -> list[str]:
+        payload = self.read()
+        skills = payload.get("skills")
+        if not isinstance(skills, dict):
+            return []
+        disabled = skills.get("disabled")
+        if not isinstance(disabled, list):
+            return []
+        return [str(item).strip() for item in disabled if str(item).strip()]
+
+    def is_skill_enabled(self, skill_name: str) -> bool:
+        disabled = self.get_disabled_skills()
+        return str(skill_name).strip() not in disabled
+
+    def set_skill_enabled(
+        self,
+        skill_name: str,
+        enabled: bool,
+        *,
+        actor: str = "system",
+        reason: str = "toggle_skill",
+    ) -> dict[str, Any]:
+        current = self.read()
+        skills = dict(current.get("skills") or {})
+        disabled = list(skills.get("disabled") or [])
+        skill_key = str(skill_name).strip()
+        if not skill_key:
+            return current
+        if enabled:
+            disabled = [s for s in disabled if s != skill_key]
+        else:
+            if skill_key not in disabled:
+                disabled.append(skill_key)
+        skills["disabled"] = disabled
+        return self.update_patch(
+            {"skills": skills},
+            actor=actor,
+            reason=reason,
+        )
 
 
 runtime_config_store = RuntimeConfigStore()

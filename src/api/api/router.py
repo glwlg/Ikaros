@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from api.api.endpoints import admin, health, monitor, rss, scheduler, setup, watchlist, web_chat
+from api.api.endpoints import admin, health, monitor, rss, scheduler, setup, skills, watchlist, web_chat
 
 api_router = APIRouter()
 
@@ -11,3 +11,4 @@ api_router.include_router(watchlist.router, prefix="/watchlist", tags=["watchlis
 api_router.include_router(web_chat.router, prefix="/web-chat", tags=["web-chat"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(setup.router, prefix="/admin", tags=["admin-setup"])
+api_router.include_router(skills.router, prefix="/skills", tags=["skills"])

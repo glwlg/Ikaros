@@ -821,7 +821,18 @@ class SkillRegistry:
     def register_extensions(self, runtime: Any) -> None:
         self.scan_skills()
         self._register_skill_management(runtime)
+
+        disabled_skills: set[str] = set()
+        try:
+            from core.runtime_config_store import runtime_config_store
+            disabled_skills = set(runtime_config_store.get_disabled_skills())
+        except Exception:
+            disabled_skills = set()
+
         for skill_name, info in self.get_skill_index().items():
+            if skill_name in disabled_skills:
+                logger.info("Skipping disabled skill: %s", skill_name)
+                continue
             for module in self._load_skill_python_modules(skill_name, info):
                 for _, obj in inspect.getmembers(module, inspect.isclass):
                     if (

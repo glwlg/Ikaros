@@ -184,7 +184,7 @@ onMounted(load)
         {{ listError }}
       </div>
 
-      <div v-else class="mt-6 overflow-hidden rounded-[24px] border border-slate-200">
+      <div v-else class="mt-6 overflow-x-auto rounded-[24px] border border-slate-200">
         <table class="min-w-full divide-y divide-slate-200 text-sm">
           <thead class="bg-slate-50 text-left text-slate-500">
             <tr>
