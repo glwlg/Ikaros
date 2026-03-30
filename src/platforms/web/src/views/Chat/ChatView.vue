@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
     AudioLines,
     CircleStop,
-    Command,
     FilePlus2,
     Loader2,
     MessageSquareText,
     Mic,
+    PanelLeftClose,
+    PanelLeftOpen,
     Plus,
     RefreshCw,
     SendHorizonal,
-    Volume2
+    Volume2,
+    X
 } from 'lucide-vue-next'
 
 import {
@@ -44,6 +46,28 @@ const recorderStream = ref<MediaStream | null>(null)
 const messagesEl = ref<HTMLElement | null>(null)
 const statusTimer = ref<number | null>(null)
 const waitingAssistant = ref(false)
+const showSessions = ref(false)
+const showCommandPicker = ref(false)
+
+const filteredCommands = computed(() => {
+    const query = composer.value.trim().toLowerCase()
+    if (!query.startsWith('/')) return commandEntries
+    const search = query.slice(1).toLowerCase()
+    if (!search) return commandEntries
+    return commandEntries.filter(cmd =>
+        cmd.label.toLowerCase().includes(search) ||
+        cmd.text.toLowerCase().includes(search)
+    )
+})
+
+watch(composer, (val) => {
+    showCommandPicker.value = val.trim().startsWith('/')
+})
+
+const selectCommand = (cmd: { label: string; text: string }) => {
+    composer.value = cmd.text + ' '
+    showCommandPicker.value = false
+}
 
 const commandEntries = [
     { label: '/start', text: '/start' },
@@ -54,12 +78,6 @@ const commandEntries = [
     { label: '/heartbeat', text: '/heartbeat list' },
     { label: '/skills', text: '/skills' },
 ]
-
-const latestActions = computed(() => {
-    const reversed = [...messages.value].reverse()
-    const target = reversed.find(item => Array.isArray(item.actions) && item.actions.length > 0)
-    return target?.actions || []
-})
 
 const visibleSessions = computed(() => {
     const ordered = [...sessions.value].sort((a, b) => {
@@ -111,6 +129,7 @@ const setStatus = (text: string, timeoutMs = 0) => {
 
 const scrollToBottom = async () => {
     await nextTick()
+    await new Promise(resolve => requestAnimationFrame(resolve))
     if (messagesEl.value) {
         messagesEl.value.scrollTop = messagesEl.value.scrollHeight
     }
@@ -352,11 +371,6 @@ const toggleRecord = async () => {
     mediaRecorder.start()
 }
 
-const runCommand = async (command: string) => {
-    composer.value = command
-    await sendText()
-}
-
 const runMenuAction = async (callbackData: string) => {
     await sendEvent({
         type: 'menu_action',
@@ -401,8 +415,23 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="chat-workbench grid h-full min-h-0 gap-0 xl:grid-cols-[300px_minmax(0,1fr)_320px]">
-    <aside class="chat-panel chat-sessions-rail border-r border-slate-200 bg-slate-50/80 p-4">
+  <div class="chat-workbench grid h-full min-h-0 gap-0 md:grid-cols-[300px_minmax(0,1fr)]">
+    <!-- Mobile overlay -->
+    <div
+      v-if="showSessions"
+      class="fixed inset-0 z-30 bg-black/50 md:hidden"
+      @click="showSessions = false"
+    />
+
+    <!-- Sessions sidebar - fixed on mobile, relative on desktop -->
+    <aside
+      class="chat-panel chat-sessions-rail border-r border-slate-200 bg-slate-50/80 p-4 transition-transform duration-300 h-auto md:h-full"
+      :class="[
+        showSessions ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
+        'md:relative md:block md:w-[300px] md:flex-shrink-0',
+        'fixed top-[56px] left-0 bottom-0 z-40 w-[280px] md:static md:z-auto'
+      ]"
+    >
       <div class="flex items-center justify-between">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Sessions</div>
@@ -455,10 +484,20 @@ onBeforeUnmount(() => {
 
     <section class="chat-panel chat-canvas flex min-h-0 flex-col bg-[linear-gradient(180deg,_#ffffff_0%,_#f8fafc_100%)]" @drop="onDrop" @dragover.prevent>
       <header class="chat-canvas-header flex items-center justify-between border-b border-slate-200 px-5 py-4">
-        <div>
-          <div class="text-sm font-semibold text-slate-900">{{ currentSession?.title || '准备开始新的对话' }}</div>
-          <div class="mt-1 text-xs text-slate-500">
-            {{ currentSession ? '当前会话已就绪' : '新建会话后即可开始对话' }}
+        <div class="flex items-center gap-3">
+          <!-- Toggle sessions button (mobile) -->
+          <button
+            class="rounded-xl border border-slate-200 bg-white p-2 text-slate-700 transition hover:bg-slate-100 md:hidden"
+            @click="showSessions = !showSessions"
+          >
+            <PanelLeftOpen v-if="!showSessions" class="h-5 w-5" />
+            <PanelLeftClose v-else class="h-5 w-5" />
+          </button>
+          <div>
+            <div class="text-sm font-semibold text-slate-900">{{ currentSession?.title || '准备开始新的对话' }}</div>
+            <div class="mt-1 text-xs text-slate-500">
+              {{ currentSession ? '当前会话已就绪' : '新建会话后即可开始对话' }}
+            </div>
           </div>
         </div>
         <div class="flex items-center gap-3">
@@ -474,12 +513,12 @@ onBeforeUnmount(() => {
           </div>
           <div class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
             <MessageSquareText class="h-4 w-4 text-cyan-600" />
-            多模态 / 命令 / 菜单
+            输入 / 使用命令
           </div>
         </div>
       </header>
 
-      <div ref="messagesEl" class="min-h-0 flex-1 overflow-auto px-5 py-5">
+      <div ref="messagesEl" class="chat-messages-container min-h-0 flex-1 overflow-auto px-5 py-5">
         <div v-if="!messages.length" class="flex h-full min-h-[420px] items-center justify-center">
           <div class="max-w-xl rounded-[28px] border border-dashed border-slate-300 bg-white/80 px-8 py-10 text-center shadow-sm">
             <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-cyan-50 text-cyan-700">
@@ -487,12 +526,12 @@ onBeforeUnmount(() => {
             </div>
             <h3 class="mt-5 text-2xl font-semibold text-slate-950">开始一轮真正可用的对话</h3>
             <p class="mt-3 text-sm leading-7 text-slate-500">
-              支持文本、命令、语音、文件和菜单动作。输入一条消息，或者直接点击右侧命令面板开始。
+              支持文本、命令、语音和文件。输入 / 开始使用命令，或点击下方按钮开始。
             </p>
           </div>
         </div>
 
-        <div v-else class="space-y-4">
+        <div v-else class="space-y-4" style="height: 60vh;overflow-y: scroll;">
           <div
             v-for="message in messages"
             :key="message.id"
@@ -570,11 +609,31 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="chat-canvas-footer border-t border-slate-200 bg-white/90 p-4">
+        <!-- Command picker dropdown -->
+        <div v-if="showCommandPicker && filteredCommands.length" class="mb-3 rounded-[16px] border border-slate-200 bg-white p-2 shadow-lg">
+          <div class="mb-2 flex items-center justify-between px-2 py-1">
+            <span class="text-xs font-medium text-slate-500">可用命令</span>
+            <button class="text-slate-400 hover:text-slate-600" @click="showCommandPicker = false">
+              <X class="h-3 w-3" />
+            </button>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="cmd in filteredCommands"
+              :key="cmd.text"
+              class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+              @click="selectCommand(cmd)"
+            >
+              {{ cmd.label }}
+            </button>
+          </div>
+        </div>
+
         <div class="rounded-[28px] border border-slate-200 bg-slate-50 p-3">
           <textarea
             v-model="composer"
             class="min-h-[110px] w-full resize-none bg-transparent px-2 py-2 text-sm leading-7 text-slate-800 outline-none"
-            placeholder="输入消息，或直接输入 /start /help /model /usage /task ..."
+            placeholder="输入消息，或输入 / 查看命令..."
             @keydown.enter.exact.prevent="sendText"
           />
           <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
@@ -607,61 +666,21 @@ onBeforeUnmount(() => {
         </div>
       </footer>
     </section>
-
-    <aside class="chat-panel chat-command-rail hidden border-l border-slate-200 bg-slate-50/70 p-5 xl:block">
-      <section class="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div class="flex items-center gap-2 text-sm font-semibold text-slate-900">
-          <Command class="h-4 w-4 text-cyan-600" />
-          命令面板
-        </div>
-        <div class="mt-4 flex flex-wrap gap-2">
-          <button
-            v-for="command in commandEntries"
-            :key="command.text"
-            class="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
-            @click="runCommand(command.text)"
-          >
-            {{ command.label }}
-          </button>
-        </div>
-      </section>
-
-      <section class="mt-5 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div class="flex items-center gap-2 text-sm font-semibold text-slate-900">
-          <AudioLines class="h-4 w-4 text-emerald-600" />
-          菜单动作
-        </div>
-        <div v-if="latestActions.length" class="mt-4 space-y-2">
-          <div v-for="(row, index) in latestActions" :key="`latest-${index}`" class="flex flex-wrap gap-2">
-            <button
-              v-for="action in row"
-              :key="action.callback_data"
-              class="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
-              @click="runMenuAction(action.callback_data)"
-            >
-              {{ action.text }}
-            </button>
-          </div>
-        </div>
-        <p v-else class="mt-4 text-sm leading-7 text-slate-500">
-          当助手返回按钮菜单时，这里会同步出现可执行动作。
-        </p>
-      </section>
-    </aside>
   </div>
 </template>
 
 <style scoped>
 .chat-workbench {
-  min-height: calc(100vh - 9.8rem);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .chat-panel {
-  position: relative;
+  /* Let Tailwind control position for responsive behavior */
 }
 
-.chat-sessions-rail,
-.chat-command-rail {
+.chat-sessions-rail {
   background: rgba(16, 19, 26, 0.34);
   backdrop-filter: blur(24px);
 }
@@ -669,6 +688,29 @@ onBeforeUnmount(() => {
 .chat-canvas {
   background:
     linear-gradient(180deg, rgba(25, 28, 34, 0.9), rgba(16, 19, 26, 0.96));
+  overflow: hidden;
+}
+
+.chat-messages-container {
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.chat-messages-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-messages-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+}
+
+.chat-messages-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .chat-canvas-header,

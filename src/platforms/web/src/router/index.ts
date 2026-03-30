@@ -91,6 +91,12 @@ const router = createRouter({
                     meta: { title: '统计' },
                 },
                 {
+                    path: 'stats/amount',
+                    name: 'StatsAmountDetail',
+                    component: () => import('@/views/Accounting/StatsAmountDetailView.vue'),
+                    meta: { title: '收支统计' },
+                },
+                {
                     path: 'stats/category',
                     name: 'StatsCategoryDetail',
                     component: () => import('@/views/Accounting/StatsCategoryDetailView.vue'),
@@ -209,6 +215,12 @@ const router = createRouter({
             name: 'AdminDiagnostics',
             component: () => import('@/views/Admin/DiagnosticsView.vue'),
             meta: { title: '诊断中心', requiresOperator: true },
+        },
+        {
+            path: '/admin/skills',
+            name: 'AdminSkills',
+            component: () => import('@/views/Admin/SkillsView.vue'),
+            meta: { title: '技能管理', requiresOperator: true },
         },
     ]
 })

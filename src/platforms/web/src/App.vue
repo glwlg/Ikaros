@@ -12,7 +12,7 @@ const isFullscreen = computed(() =>
 
 <template>
   <!-- Public pages (login etc) -->
-  <div v-if="isPublicLayout" class="h-full w-full">
+  <div v-if="isPublicLayout" class="w-full min-h-screen">
     <RouterView />
   </div>
   <!-- Fullscreen modules (accounting etc) — no sidebar -->
@@ -27,6 +27,12 @@ const isFullscreen = computed(() =>
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
 
 *, *::before, *::after {
   box-sizing: border-box;

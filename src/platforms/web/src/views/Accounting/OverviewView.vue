@@ -511,7 +511,7 @@ onBeforeUnmount(() => {
       <!-- Monthly Summary Card -->
       <div class="mx-4 mt-2 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 overflow-hidden">
         <div class="p-4">
-          <RouterLink to="/accounting/stats" class="flex items-center justify-between mb-2 cursor-pointer hover:opacity-80 transition">
+          <RouterLink :to="{ name: 'StatsAmountDetail', query: { year: currentYear, month: currentMonth, type: '支出' } }" class="flex items-center justify-between mb-2 cursor-pointer hover:opacity-80 transition">
             <span class="text-sm text-theme-muted">{{ monthLabel }}支出</span>
             <ChevronRight class="w-4 h-4 text-indigo-500" />
           </RouterLink>
