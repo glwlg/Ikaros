@@ -8,6 +8,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from core.app_paths import data_dir
 from services.ai_service import AiService
 from shared.contracts.dispatch import TaskEnvelope, TaskResult
 
@@ -106,10 +107,7 @@ def _load_image(task: TaskEnvelope) -> tuple[bytes, str]:
     if not path_text:
         raise RuntimeError("missing web_accounting_image_path")
 
-    data_dir = str(os.getenv("DATA_DIR", "/app/data")).strip() or "/app/data"
-    allow_root = (
-        Path(data_dir).expanduser().resolve() / "system" / "web_accounting_uploads"
-    )
+    allow_root = (data_dir().resolve() / "system" / "web_accounting_uploads").resolve()
     image_path = Path(path_text).expanduser().resolve()
     if not str(image_path).startswith(str(allow_root)):
         raise RuntimeError("invalid image path")

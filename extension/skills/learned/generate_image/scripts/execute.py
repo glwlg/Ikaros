@@ -26,7 +26,11 @@ from core.skill_cli import (
 prepare_default_env(REPO_ROOT)
 
 from core.config import get_client_for_model
-from core.model_config import get_image_generation_model, get_model_id_for_api
+from core.model_config import (
+    get_image_generation_model,
+    get_model_id_for_api,
+    resolve_models_config_path,
+)
 from core.platform.models import UnifiedContext
 
 logger = logging.getLogger(__name__)
@@ -181,7 +185,7 @@ async def execute(
             "success": False,
             "failure_mode": "fatal",
             "text": (
-                "❌ 未配置生图模型。请在 config/models.json 中设置 "
+                f"❌ 未配置生图模型。请在 {resolve_models_config_path()} 中设置 "
                 "`model.image_generation`。"
             ),
         }

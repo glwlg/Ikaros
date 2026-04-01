@@ -13,6 +13,7 @@ from core.model_config import (
     get_model_id_for_api,
     mark_model_failed,
     mark_model_success,
+    resolve_models_config_path,
 )
 from services.openai_adapter import build_messages
 
@@ -34,14 +35,15 @@ def _resolve_async_client(model_name: str) -> Any:
 
 def _missing_model_error_message(input_type: str) -> str:
     normalized_input_type = str(input_type or "text").strip().lower() or "text"
+    config_path = resolve_models_config_path()
     if normalized_input_type == "image":
         return (
-            "当前未配置可用的图片识别模型，请在 config/models.json 的 "
+            f"当前未配置可用的图片识别模型，请在 {config_path} 的 "
             "model.image / model.vision 与 models.image / models.vision 中配置支持 image 输入的模型"
         )
     if normalized_input_type == "voice":
         return (
-            "当前未配置可用的语音模型，请在 config/models.json 中配置支持 voice 输入的模型"
+            f"当前未配置可用的语音模型，请在 {config_path} 中配置支持 voice 输入的模型"
         )
     return "No candidate model available for current request"
 

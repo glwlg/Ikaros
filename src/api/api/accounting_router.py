@@ -36,6 +36,7 @@ from api.models.accounting import (
     StatsPanel,
     OperationLog,
 )
+from core.app_paths import data_dir
 from ikaros.dispatch.web_accounting_auto_image import run_web_accounting_auto_image_task
 from shared.contracts.dispatch import TaskEnvelope
 
@@ -462,8 +463,7 @@ async def _create_record_entity(
 
 
 def _web_accounting_upload_root() -> Path:
-    data_dir = str(os.getenv("DATA_DIR", "/app/data")).strip() or "/app/data"
-    root = Path(data_dir).expanduser().resolve() / "system" / "web_accounting_uploads"
+    root = data_dir().resolve() / "system" / "web_accounting_uploads"
     root.mkdir(parents=True, exist_ok=True)
     return root
 

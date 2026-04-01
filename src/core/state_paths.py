@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import importlib
-import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-DATA_DIR = importlib.import_module("core.config").DATA_DIR
+from core.app_paths import data_dir
+
 _PRIVATE_DIR_NAME = "user"
 SINGLE_USER_SCOPE = "user"
 
 
 def _runtime_data_dir() -> Path:
-    return Path(os.getenv("DATA_DIR", DATA_DIR)).resolve()
+    return data_dir()
 
 
 def single_user_root() -> Path:

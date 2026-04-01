@@ -122,9 +122,9 @@ extension/
 - `src/core/orchestrator_runtime_tools.py`：工具装配与执行策略
 - `src/core/orchestrator_context.py`：task/session 运行时上下文
 - `src/core/subagent_supervisor.py`：内部 `subagent` 启动、等待、后台交付
-- `src/core/model_config.py`：`config/models.json` 读写、角色模型解析与运行时重载
+- `src/core/model_config.py`：`~/.ikaros/config/models.json` 读写、角色模型解析与运行时重载
 - `src/core/llm_usage_store.py`：LLM 用量聚合存储、token 估算与 OpenAI client 包装
-- `src/core/storage_service.py`：`data/` 根目录下的通用状态存储服务，只负责安全路径、读写和计数器
+- `src/core/storage_service.py`：`~/.ikaros/data/` 根目录下的通用状态存储服务，只负责安全路径、读写和计数器
 - `extension/skills/*/scripts/store.py`：skill 自己的持久化封装；具体文件路径由对应 skill 定义
 
 ## 4. Extension Runtime 约束
@@ -340,20 +340,20 @@ extension/
 
 ### 7.1 Task Inbox 存储边界
 
-`data/task_inbox/tasks/*.json` 是任务级真源。  
+`~/.ikaros/data/task_inbox/tasks/*.json` 是任务级真源。  
 运行时查询应基于 task 文件中的 `TaskEnvelope.events`，而不是全局 `events.jsonl`。
 
 ### 7.2 Legacy Task Event Log
 
-`data/task_inbox/events.jsonl` 已降级为 legacy 文件：
+`~/.ikaros/data/task_inbox/events.jsonl` 已降级为 legacy 文件：
 
 - 默认不再写入
-- 若历史文件存在，启动维护时转存到 `data/task_inbox/archive/`
+- 若历史文件存在，启动维护时转存到 `~/.ikaros/data/task_inbox/archive/`
 - 代码不应再把它当作运行态查询入口
 
 ### 7.3 Model Config 与 LLM 用量统计
 
-模型配置的单一真源是 `config/models.json`：
+模型配置的单一真源默认是 `~/.ikaros/config/models.json`：
 
 - 角色模型：`primary`、`routing`、`vision`、`image_generation`、`voice`
 - provider 连接信息与模型池都在同一个配置文件中维护
@@ -362,7 +362,7 @@ extension/
 LLM 用量统计当前约束：
 
 - 命令入口是 `/usage`
-- 存储真源是 `data/bot_data.db` 的聚合表，不再向 `events.jsonl` 逐条追加
+- 存储真源是 `~/.ikaros/data/bot_data.db` 的聚合表，不再向 `events.jsonl` 逐条追加
 - 聚合粒度是 `day + session_id + model_key`
 
 ## 8. 审计与版本快照

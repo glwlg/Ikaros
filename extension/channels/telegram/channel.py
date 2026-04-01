@@ -10,7 +10,9 @@ from telegram.ext import (
     filters,
 )
 
-from core.config import LOG_LEVEL, TELEGRAM_BOT_TOKEN
+from pathlib import Path
+
+from core.config import DATA_DIR, LOG_LEVEL, TELEGRAM_BOT_TOKEN
 from core.extension_base import ChannelExtension
 from core.runtime_config_store import runtime_config_store
 
@@ -55,7 +57,9 @@ class TelegramChannelExtension(ChannelExtension):
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-        persistence = PicklePersistence(filepath="data/bot_persistence.pickle")
+        persistence_path = (Path(DATA_DIR).resolve() / "bot_persistence.pickle").resolve()
+        persistence_path.parent.mkdir(parents=True, exist_ok=True)
+        persistence = PicklePersistence(filepath=str(persistence_path))
         tg_app = (
             Application.builder()
             .token(TELEGRAM_BOT_TOKEN)

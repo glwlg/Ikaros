@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import os
-from pathlib import Path
-
-from core.config import DATA_DIR
+from core.app_paths import data_dir
 from core.heartbeat_store import HeartbeatStore
 from core import state_io
 from core.state_io import now_iso
@@ -42,7 +39,7 @@ async def _persist_report(report: dict[str, Any]) -> None:
 
 async def migrate_legacy_user_state() -> dict[str, Any]:
     store = HeartbeatStore()
-    store.root = (Path(os.getenv("DATA_DIR", str(DATA_DIR))).resolve() / "runtime_tasks").resolve()
+    store.root = (data_dir() / "runtime_tasks").resolve()
     store.root.mkdir(parents=True, exist_ok=True)
     cleaned = await store.normalize_runtime_tree()
     domain_counts = {name: _empty_counts() for name in DOMAIN_ORDER}

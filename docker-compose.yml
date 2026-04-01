@@ -12,16 +12,20 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+      - DATA_DIR=/app/data
+      - MODELS_CONFIG_PATH=/app/config/models.json
+      - MEMORY_CONFIG_PATH=/app/config/memory.json
+      - X_DEPLOYMENT_TARGETS_FILE=/app/config/deployment_targets.yaml
       - SEARXNG_URL=${SEARXNG_URL:-http://127.0.0.1:28080}
     network_mode: "host"
     command: ["python", "main.py"]
     volumes:
       - ./downloads:/app/downloads
-      - ./data:/app/data
+      - ${HOME}/.ikaros/data:/app/data
       - ~/.codex:/root/.codex
       - ~/.gemini:/root/.gemini
       - ~/.local/share/opencode:/root/.local/share/opencode
-      - ./config:/app/config
+      - ${HOME}/.ikaros/config:/app/config
       # Deployment Staging: 宿主机路径必须与容器内路径一致
       # 这是因为 Ikaros 调度的是宿主机 Docker，docker compose 会使用宿主机路径
       - ${X_DEPLOYMENT_STAGING_PATH:-/tmp}:${X_DEPLOYMENT_STAGING_PATH:-/tmp}
@@ -42,8 +46,12 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+      - DATA_DIR=/app/data
+      - MODELS_CONFIG_PATH=/app/config/models.json
+      - MEMORY_CONFIG_PATH=/app/config/memory.json
+      - X_DEPLOYMENT_TARGETS_FILE=/app/config/deployment_targets.yaml
     network_mode: "host"
     command: [ "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8764" ]
     volumes:
-      - ./data:/app/data
-      - ./config:/app/config
+      - ${HOME}/.ikaros/data:/app/data
+      - ${HOME}/.ikaros/config:/app/config

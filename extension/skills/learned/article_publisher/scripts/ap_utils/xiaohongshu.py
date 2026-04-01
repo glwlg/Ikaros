@@ -80,7 +80,7 @@ async def generate_xiaohongshu_note_json(
     article_data: dict[str, Any],
 ) -> dict[str, Any]:
     from core.config import get_client_for_model
-    from core.model_config import get_current_model
+    from core.model_config import get_current_model, resolve_models_config_path
     from services.openai_adapter import generate_text
 
     article_plain = article_plain_text(article_data)
@@ -100,7 +100,9 @@ async def generate_xiaohongshu_note_json(
 
     model_to_use = get_current_model()
     if not model_to_use:
-        raise RuntimeError("No text model configured in config/models.json")
+        raise RuntimeError(
+            f"No text model configured in {resolve_models_config_path()}"
+        )
     async_client = get_client_for_model(model_to_use, is_async=True)
     if async_client is None:
         raise RuntimeError("OpenAI async client is not initialized")

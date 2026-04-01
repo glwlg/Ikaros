@@ -8,6 +8,7 @@ import pytest
 generate_image_module = pytest.importorskip(
     "skills.learned.generate_image.scripts.execute"
 )
+from core.model_config import resolve_models_config_path
 from core.skill_cli import prepare_default_env, _infer_skill_name, _resolve_output_dir
 
 
@@ -55,24 +56,32 @@ async def test_learned_generate_image_returns_recoverable_failure_when_prompt_mi
     assert result.get("failure_mode") == "recoverable"
 
 
-def test_prepare_default_env_sets_absolute_models_config_path(monkeypatch):
+def test_prepare_default_env_defaults_to_ikaros_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("DATA_DIR", raising=False)
     monkeypatch.delenv("MODELS_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("X_DEPLOYMENT_STAGING_PATH", raising=False)
+    monkeypatch.setenv("IKAROS_HOME", str(tmp_path / ".ikaros"))
 
     repo_root = Path(__file__).resolve().parents[2]
     prepare_default_env(repo_root)
 
+    assert Path(str(os.environ["DATA_DIR"])) == (
+        tmp_path / ".ikaros" / "data"
+    ).resolve()
     assert Path(str(os.environ["MODELS_CONFIG_PATH"])) == (
-        repo_root / "config" / "models.json"
+        tmp_path / ".ikaros" / "config" / "models.json"
+    ).resolve()
+    assert Path(str(os.environ["X_DEPLOYMENT_STAGING_PATH"])) == (
+        tmp_path / ".ikaros" / "data" / "system" / "deployment_staging"
     ).resolve()
 
 
-def test_prepare_default_env_normalizes_relative_models_config_path(monkeypatch):
+def test_resolve_models_config_path_normalizes_relative_env_path(monkeypatch):
     monkeypatch.setenv("MODELS_CONFIG_PATH", "config/models.json")
 
     repo_root = Path(__file__).resolve().parents[2]
-    prepare_default_env(repo_root)
 
-    assert Path(str(os.environ["MODELS_CONFIG_PATH"])) == (
+    assert resolve_models_config_path() == (
         repo_root / "config" / "models.json"
     ).resolve()
 

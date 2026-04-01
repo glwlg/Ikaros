@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-import os
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict
 
-from core.config import DATA_DIR
+from core.app_paths import data_dir
 
 
 def _now_iso() -> str:
@@ -21,11 +20,7 @@ class ChannelRuntimeStore:
 
     @property
     def path(self) -> Path:
-        return (
-            Path(os.getenv("DATA_DIR", DATA_DIR)).resolve()
-            / "system"
-            / "channel_runtime.json"
-        ).resolve()
+        return (data_dir() / "system" / "channel_runtime.json").resolve()
 
     @staticmethod
     def _safe_text(value: Any, limit: int = 0) -> str:

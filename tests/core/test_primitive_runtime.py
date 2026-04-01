@@ -132,7 +132,7 @@ async def test_primitive_runtime_bash_tool_result_marker_preserves_terminal_succ
 def test_primitive_runtime_classifies_fatal_config_failure_output():
     output = (
         "[stderr]\n"
-        "❌ 未配置生图模型。请在 config/models.json 中设置 model.image_generation\n"
+        "❌ 未配置生图模型。请在 ~/.ikaros/config/models.json 中设置 model.image_generation\n"
     )
 
     summary = PrimitiveRuntime._summarize_command_failure_output(output)

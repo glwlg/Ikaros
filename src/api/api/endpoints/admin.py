@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +11,16 @@ from api.auth.router import require_admin, require_operator
 from api.auth.schemas import RuntimeConfigPatch
 from api.services.admin_audit import list_admin_audits, record_admin_audit
 from api.services.env_config import env_bool, read_managed_env
+from core.app_paths import env_path, memory_config_path
 from core.audit_store import audit_store
 from core.config import (
     MODELS_CONFIG_PATH,
 )
-from core.memory_config import MEMORY_CONFIG_PATH, get_memory_provider_name, load_memory_config, reset_memory_config_cache
+from core.memory_config import (
+    get_memory_provider_name,
+    load_memory_config,
+    reset_memory_config_cache,
+)
 from core.model_config import (
     get_configured_model,
     load_models_config,
@@ -132,9 +136,9 @@ def _runtime_snapshot() -> dict[str, Any]:
         "config_files": {
             "models": str(resolve_models_config_path()),
             "models_exists": _path_exists(MODELS_CONFIG_PATH),
-            "memory": str(Path(os.getenv("MEMORY_CONFIG_PATH", MEMORY_CONFIG_PATH)).expanduser().resolve()),
-            "memory_exists": _path_exists(os.getenv("MEMORY_CONFIG_PATH", MEMORY_CONFIG_PATH)),
-            "env_exists": Path(".env").exists(),
+            "memory": str(memory_config_path()),
+            "memory_exists": _path_exists(str(memory_config_path())),
+            "env_exists": env_path().exists(),
         },
         "version": {
             "git_head": _git_head(),
@@ -146,7 +150,7 @@ def _update_memory_provider(provider: str, *, actor: str) -> dict[str, Any]:
     normalized_provider = str(provider or "").strip().lower()
     if not normalized_provider:
         raise HTTPException(status_code=400, detail="memory_provider 不能为空")
-    config_path = Path(os.getenv("MEMORY_CONFIG_PATH", MEMORY_CONFIG_PATH)).expanduser().resolve()
+    config_path = memory_config_path()
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))

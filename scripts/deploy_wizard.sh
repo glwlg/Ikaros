@@ -4,12 +4,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+IKAROS_HOME="${IKAROS_HOME:-${HOME}/.ikaros}"
+IKAROS_DATA_DIR="${IKAROS_HOME}/data"
+IKAROS_CONFIG_DIR="${IKAROS_HOME}/config"
 ENV_FILE="${PROJECT_DIR}/.env"
 ENV_TEMPLATE="${PROJECT_DIR}/.env.example"
-MODELS_FILE="${PROJECT_DIR}/config/models.json"
+MODELS_FILE="${IKAROS_CONFIG_DIR}/models.json"
 MODELS_TEMPLATE="${PROJECT_DIR}/config/models.example.json"
-LOG_DIR="${PROJECT_DIR}/data/logs"
-RUN_DIR="${PROJECT_DIR}/data/run"
+LOG_DIR="${IKAROS_DATA_DIR}/logs"
+RUN_DIR="${IKAROS_DATA_DIR}/run"
 API_PORT="8764"
 COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
 
@@ -21,7 +24,7 @@ Usage:
 Description:
   Interactive deployment wizard for Ikaros Core and Ikaros API.
   It can:
-    - initialize .env / config/models.json from templates
+    - initialize .env / ~/.ikaros/config/models.json from templates
     - optionally configure primary / routing provider, baseUrl, apiKey, and model bindings
     - deploy ikaros and ikaros-api with shell background, systemd / launchd, or docker compose
     - print the Web URL for finishing bootstrap in browser
@@ -866,7 +869,7 @@ main() {
     choose_option ikaros_mode "选择 Ikaros Core 的部署方式" 1 "${core_options[@]}"
     choose_option api_mode "选择 Ikaros API 的部署方式" 1 "${api_options[@]}"
     choose_option model_mode "Primary / Routing 模型现在怎么处理？" 2 \
-        "now|现在写入 config/models.json" \
+        "now|现在写入 ~/.ikaros/config/models.json" \
         "later|稍后到 Web 初始化页配置"
 
     local primary_key=""

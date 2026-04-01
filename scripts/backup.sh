@@ -3,11 +3,12 @@
 # ================= 配置区 =================
 # 获取当前脚本所在的项目根目录
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." &> /dev/null && pwd)"
+IKAROS_HOME="${IKAROS_HOME:-${HOME}/.ikaros}"
 
 # 想要备份的文件或目录列表（绝对路径，空格分隔）
 SOURCE_DIRS=(
-  "$PROJECT_DIR/data"
-  "$PROJECT_DIR/config"
+  "$IKAROS_HOME/data"
+  "$IKAROS_HOME/config"
   "$PROJECT_DIR/.env"
   # 这里可以继续添加系统中的其他目录
 )

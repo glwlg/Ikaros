@@ -10,7 +10,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,6 +31,7 @@ from core.skill_cli import (
     prepare_default_env,
     run_execute_cli,
 )
+from core.app_paths import data_dir
 
 prepare_default_env(REPO_ROOT)
 
@@ -68,10 +68,11 @@ def _resolve_article_output_dir(params: dict[str, Any]) -> str:
     explicit = str(params.get("output_dir") or "").strip()
     if explicit:
         return explicit
-    data_dir = Path(str(os.getenv("DATA_DIR", "data") or "data")).expanduser()
-    if not data_dir.is_absolute():
-        data_dir = data_dir.resolve()
-    return str((data_dir / "user" / "skills" / "article_publisher" / "articles").resolve())
+    return str(
+        (
+            data_dir() / "user" / "skills" / "article_publisher" / "articles"
+        ).resolve()
+    )
 
 
 # ---------------------------------------------------------------------------

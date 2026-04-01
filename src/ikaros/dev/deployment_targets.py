@@ -6,9 +6,7 @@ from typing import Any, Dict
 
 import yaml
 
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+from core.app_paths import deployment_targets_path
 
 
 def _default_targets() -> Dict[str, Dict[str, str]]:
@@ -20,11 +18,11 @@ def _default_targets() -> Dict[str, Dict[str, str]]:
 
 class DeploymentTargets:
     def __init__(self, config_path: str | None = None) -> None:
-        env_path = str(os.getenv("X_DEPLOYMENT_TARGETS_FILE", "") or "").strip()
-        resolved = str(config_path or env_path).strip()
-        if not resolved:
-            resolved = str((_repo_root() / "config" / "deployment_targets.yaml").resolve())
-        self.config_path = resolved
+        resolved = str(config_path or "").strip()
+        if resolved:
+            self.config_path = str(Path(resolved).expanduser().resolve())
+            return
+        self.config_path = str(deployment_targets_path())
 
     def load(self) -> Dict[str, Dict[str, str]]:
         defaults = _default_targets()

@@ -1,11 +1,11 @@
 """
 配置模块 - 管理环境变量和常量
-
-模型配置已统一迁移到 config/models.json
 """
 
 import os
 from dotenv import load_dotenv
+
+from core.app_paths import data_dir, env_path, models_config_path
 
 try:
     from openai import AsyncOpenAI, OpenAI  # type: ignore[reportMissingImports]
@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover - optional during migration bootstrap
 
 # 加载环境变量（如果 .env 文件存在）
 # Docker 容器中通过 docker-compose 的 env_file 直接注入环境变量
-load_dotenv(override=False)
+load_dotenv(dotenv_path=env_path(), override=False)
 
 # Telegram Bot 配置
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -50,7 +50,7 @@ WEIXIN_DEBUG_UPDATES = os.getenv("WEIXIN_DEBUG_UPDATES", "false").lower() == "tr
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # 模型配置路径
-MODELS_CONFIG_PATH = os.getenv("MODELS_CONFIG_PATH", "config/models.json")
+MODELS_CONFIG_PATH = str(models_config_path())
 
 
 # ============================================================================
@@ -161,28 +161,8 @@ def is_user_admin(user_id: int | str) -> bool:
 # ============================================================================
 
 
-def _is_docker_runtime() -> bool:
-    return os.path.exists("/.dockerenv") or (
-        os.getenv("RUNNING_IN_DOCKER", "").lower() == "true"
-    )
-
-
-def _default_data_dir() -> str:
-    app_root = "/app"
-    app_data = "/app/data"
-    if (
-        _is_docker_runtime()
-        and os.path.isdir(app_root)
-        and os.access(app_root, os.W_OK | os.X_OK)
-    ):
-        return app_data
-    if os.path.isdir(app_data) and os.access(app_data, os.W_OK | os.X_OK):
-        return app_data
-    return "data"
-
-
 DOWNLOAD_DIR = "downloads"
-DATA_DIR = os.getenv("DATA_DIR", _default_data_dir())
+DATA_DIR = str(data_dir())
 PERMANENT_STORAGE_DIR = "/app/media"  # For files > 49MB
 UPDATE_INTERVAL_SECONDS = 2  # 进度更新间隔（秒）
 MAX_FILE_SIZE_MB = 49  # Telegram 最大文件大小限制

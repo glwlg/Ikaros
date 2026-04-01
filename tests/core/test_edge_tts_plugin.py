@@ -170,6 +170,38 @@ async def test_edge_tts_plugin_skips_command_responses(tmp_path, monkeypatch):
     assert adapter.audio_calls == []
 
 
+@pytest.mark.asyncio
+async def test_edge_tts_plugin_skips_warning_prefixes(tmp_path, monkeypatch):
+    runtime_config_store.path = (tmp_path / "runtime-config.json").resolve()
+    runtime_config_store.path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_config_store.set_voice_output_enabled(True, actor="test", reason="enable_test")
+
+    async def _fake_speech(*args, **kwargs):
+        _ = (args, kwargs)
+        return b"edge-audio"
+
+    monkeypatch.setattr(
+        "extension.plugins.edge_tts.synthesize_edge_tts_speech",
+        _fake_speech,
+    )
+    monkeypatch.setattr(
+        "extension.plugins.edge_tts.transcode_audio_bytes_to_ogg_opus",
+        lambda audio_bytes: _fake_speech(audio_bytes),
+    )
+
+    plugin = EdgeTtsPlugin()
+    plugin.register(SimpleNamespace(register_command=lambda *args, **kwargs: None))
+
+    adapter = _FakeAdapter()
+    ctx = _build_context(adapter, "总结一下")
+
+    await ctx.reply("⚠️ 不支持的文档格式。")
+    await ctx.reply("🔇🔇🔇 这是一条静音提示。")
+
+    assert adapter.voice_calls == []
+    assert adapter.audio_calls == []
+
+
 def test_plain_text_for_tts_strips_emoji():
     from extension.plugins.edge_tts import _plain_text_for_tts
 

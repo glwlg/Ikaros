@@ -10,9 +10,9 @@
 
 | 脚本 | 用途 |
 |---|---|
-| `scripts/deploy_wizard.sh` | Linux / macOS 交互式部署向导：初始化 `.env` / `models.json`、可选完整设置 Primary / Routing 的 provider、baseUrl、apiKey 与模型绑定，并按选择自动部署 Core / API |
+| `scripts/deploy_wizard.sh` | Linux / macOS 交互式部署向导：初始化仓库根 `.env` / `~/.ikaros/config/models.json`、可选完整设置 Primary / Routing 的 provider、baseUrl、apiKey 与模型绑定，并按选择自动部署 Core / API |
 | `scripts/deploy_wizard_macos.sh` | macOS 一键部署入口，内部复用 `deploy_wizard.sh` 并限制只在 macOS 运行 |
-| `scripts/deploy_wizard.ps1` | Windows PowerShell 一键部署向导：初始化 `.env` / `models.json`、可选完整设置 Primary / Routing，并按选择自动部署 Core / API |
+| `scripts/deploy_wizard.ps1` | Windows PowerShell 一键部署向导：初始化仓库根 `.env` / `~/.ikaros/config/models.json`、可选完整设置 Primary / Routing，并按选择自动部署 Core / API |
 | `scripts/build_web.sh` | 构建 Web 前端到 `src/api/static/dist` |
 | `scripts/run_api.sh` | 非 Docker 方式启动 API |
 | `scripts/deploy_api_compose.sh` | 用 `docker-compose.yml` 部署 API |
@@ -47,7 +47,7 @@ Windows PowerShell 使用：
 
 它会交互式完成这些事情：
 
-- 自动补齐缺失的 `.env` 和 `config/models.json`
+- 自动补齐缺失的 `.env` 和 `~/.ikaros/config/models.json`
 - 让你选择 `Ikaros Core` 和 `Ikaros API` 各自的部署方式
 - 可选直接写入 `Primary` / `Routing` 的 provider、`baseUrl`、`apiKey`、模型绑定；也可以留到 Web 初始化页再配置
 - 按你的选择自动执行 `uv sync`、前端构建和部署
@@ -75,7 +75,8 @@ Windows PowerShell 使用：
 
 ```bash
 cp .env.example .env
-cp config/models.example.json config/models.json
+mkdir -p ~/.ikaros/config
+cp config/models.example.json ~/.ikaros/config/models.json
 ```
 
 至少建议确认这些配置：
@@ -147,7 +148,7 @@ Windows PowerShell:
 
 - API 容器名称是 `ikaros-api`
 - compose 内使用 `network_mode: "host"`，默认暴露 `8764`
-- 容器会挂载 `./data` 和 `./config`
+- 容器会挂载 `${HOME}/.ikaros/data` 和 `${HOME}/.ikaros/config`
 - 前端静态资源由 Dockerfile 在镜像构建阶段自动打包
 
 ### 2.2 API 不使用 Docker 部署
@@ -229,7 +230,8 @@ macOS 推荐使用宿主机直接运行，服务化采用 `launchd`。
 
 ```bash
 cp .env.example .env
-cp config/models.example.json config/models.json
+mkdir -p ~/.ikaros/config
+cp config/models.example.json ~/.ikaros/config/models.json
 uv sync
 ./scripts/build_web.sh --install
 ```
@@ -255,8 +257,8 @@ launchctl print gui/$(id -u)/com.ikaros.api
 日志默认落在：
 
 ```bash
-data/logs/com.ikaros.api.out.log
-data/logs/com.ikaros.api.err.log
+~/.ikaros/data/logs/com.ikaros.api.out.log
+~/.ikaros/data/logs/com.ikaros.api.err.log
 ```
 
 ### 3.4 使用 launchd 常驻 Core
@@ -338,7 +340,7 @@ Get-ScheduledTask -TaskName IkarosCore | Get-ScheduledTaskInfo
 - API 默认端口：`8764`
 - 如果要对公网开放，建议放到 Nginx / Caddy / Traefik 后面
 - 生产环境建议只暴露反向代理端口，不直接暴露 Python 进程
-- `data/`、`config/`、`.env` 必须持久化备份
+- `~/.ikaros/data`、`~/.ikaros/config` 和仓库根 `.env` 必须持久化备份
 
 ## 6. 部署自检清单
 

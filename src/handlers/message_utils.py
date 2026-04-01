@@ -3,6 +3,7 @@ import os
 import re
 import aiofiles
 
+from core.app_paths import data_dir
 from core.agent_input import (
     InlineInputResolution,
     MAX_INLINE_IMAGE_INPUTS,
@@ -46,7 +47,7 @@ async def process_and_send_code_files(ctx: UnifiedContext, text: str) -> str:
         return text
 
     sent_count = 0
-    temp_dir = "data/temp_code"
+    temp_dir = (data_dir() / "temp_code").resolve()
     os.makedirs(temp_dir, exist_ok=True)
 
     # We will rebuild the text with replacements
@@ -73,7 +74,7 @@ async def process_and_send_code_files(ctx: UnifiedContext, text: str) -> str:
             continue
 
         filename = f"code_snippet_{original_index + 1}.{ext}"
-        filepath = os.path.join(temp_dir, filename)
+        filepath = str((temp_dir / filename).resolve())
 
         try:
             if ext == "html":
