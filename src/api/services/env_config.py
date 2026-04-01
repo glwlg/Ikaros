@@ -8,10 +8,11 @@ from typing import Any
 
 from dotenv import dotenv_values
 
+from core.app_paths import env_path
 from core.audit_store import audit_store
 
 
-ENV_PATH = Path(".env").resolve()
+ENV_PATH = env_path()
 ENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 MANAGED_ENV_DEFAULTS: dict[str, str] = {
@@ -176,4 +177,3 @@ def ensure_admin_user_id_present(
         reason=reason,
     )
     return current_ids
-

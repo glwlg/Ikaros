@@ -104,7 +104,7 @@ class PrimitiveRuntime:
     def _classify_command_failure_mode(output: str) -> str:
         lowered = str(output or "").lower()
         fatal_markers = (
-            "请在 config/models.json 中设置",
+            "请在 ",
             "未配置生图模型",
             "当前没有可用的图像模型",
             "no available image model",

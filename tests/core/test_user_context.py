@@ -148,3 +148,12 @@ def test_channel_runtime_store_strips_session_event_history_on_write(
     assert "last_chat_target" not in state
     assert "session_events" not in state
     assert "last_event" not in state
+
+
+def test_channel_runtime_store_expands_tilde_data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("DATA_DIR", "~/.ikaros/data")
+
+    assert channel_runtime_store.path == (
+        tmp_path / ".ikaros" / "data" / "system" / "channel_runtime.json"
+    ).resolve()

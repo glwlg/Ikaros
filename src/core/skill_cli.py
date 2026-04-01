@@ -8,24 +8,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.app_paths import data_dir, models_config_path
 from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
 
 TOOL_RESULT_PREFIX = "tool_result="
 
 
 def prepare_default_env(repo_root: Path) -> None:
-    data_dir = (repo_root / "data").resolve()
-    raw_models_config_path = str(
-        os.getenv("MODELS_CONFIG_PATH", "config/models.json") or "config/models.json"
-    ).strip()
-    models_config_path = Path(raw_models_config_path)
-    if not models_config_path.is_absolute():
-        models_config_path = (repo_root / models_config_path).resolve()
-    os.environ.setdefault("DATA_DIR", str(data_dir))
-    os.environ["MODELS_CONFIG_PATH"] = str(models_config_path)
+    _ = repo_root
+    resolved_data_dir = data_dir()
+    resolved_models_config_path = models_config_path()
+    os.environ.setdefault("DATA_DIR", str(resolved_data_dir))
+    os.environ.setdefault("MODELS_CONFIG_PATH", str(resolved_models_config_path))
     os.environ.setdefault(
         "X_DEPLOYMENT_STAGING_PATH",
-        str((data_dir / "system" / "deployment_staging").resolve()),
+        str((resolved_data_dir / "system" / "deployment_staging").resolve()),
     )
 
 
@@ -218,12 +215,13 @@ def _resolve_output_dir(args: argparse.Namespace, *, execute_fn: Any) -> str:
     if configured:
         return configured
 
-    data_dir = Path(str(os.getenv("DATA_DIR", "data") or "data")).expanduser()
-    if not data_dir.is_absolute():
-        data_dir = data_dir.resolve()
+    data_dir_value = Path(str(os.getenv("DATA_DIR") or str(data_dir()))).expanduser()
+    data_dir_value = data_dir_value.resolve()
 
     skill_name = _infer_skill_name(execute_fn)
-    return str((data_dir / "user" / "skills" / skill_name / "outputs").resolve())
+    return str(
+        (data_dir_value / "user" / "skills" / skill_name / "outputs").resolve()
+    )
 
 
 def _infer_skill_name(execute_fn: Any) -> str:

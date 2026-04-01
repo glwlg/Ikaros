@@ -28,16 +28,17 @@ _EMOJI_RE = re.compile(
     "]+",
     flags=re.UNICODE,
 )
-_SKIP_PREFIXES = (
+_RAW_SKIP_PREFIXES = (
     "🤔",
     "📄 正在",
     "🎤 正在",
     "⏳",
-    "⚠️",
+    "⚠",
     "❌",
     "🔄",
     "🔍",
     "🛑",
+    "🔇",
 )
 
 
@@ -119,6 +120,9 @@ def _should_emit_voice_output(ctx, text: str) -> bool:
         return False
     if _is_control_interaction(ctx):
         return False
+    raw_text = _safe_text(text)
+    if raw_text.startswith(_RAW_SKIP_PREFIXES):
+        return False
     platform = _safe_text(getattr(getattr(ctx, "message", None), "platform", "")).lower()
     if platform not in _SUPPORTED_PLATFORMS:
         return False
@@ -134,8 +138,6 @@ def _should_emit_voice_output(ctx, text: str) -> bool:
 
     rendered = _plain_text_for_tts(text)
     if not rendered:
-        return False
-    if rendered.startswith(_SKIP_PREFIXES):
         return False
     if "http://" in rendered or "https://" in rendered:
         return False

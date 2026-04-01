@@ -7,12 +7,15 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
+$IkarosHome = if ($env:IKAROS_HOME) { $env:IKAROS_HOME } else { Join-Path $HOME ".ikaros" }
+$IkarosDataDir = Join-Path $IkarosHome "data"
+$IkarosConfigDir = Join-Path $IkarosHome "config"
 $EnvFile = Join-Path $ProjectDir ".env"
 $EnvTemplate = Join-Path $ProjectDir ".env.example"
-$ModelsFile = Join-Path $ProjectDir "config\models.json"
+$ModelsFile = Join-Path $IkarosConfigDir "models.json"
 $ModelsTemplate = Join-Path $ProjectDir "config\models.example.json"
-$LogDir = Join-Path $ProjectDir "data\logs"
-$RunDir = Join-Path $ProjectDir "data\run"
+$LogDir = Join-Path $IkarosDataDir "logs"
+$RunDir = Join-Path $IkarosDataDir "run"
 $ApiPort = 8764
 $ComposeFile = Join-Path $ProjectDir "docker-compose.yml"
 
@@ -22,7 +25,7 @@ if ($Help) {
     Write-Host
     Write-Host "Description:"
     Write-Host "  Interactive deployment wizard for Windows."
-    Write-Host "  It can initialize .env / config\models.json, optionally configure"
+    Write-Host "  It can initialize .env / ~/.ikaros/config/models.json, optionally configure"
     Write-Host "  Primary / Routing provider settings, and deploy ikaros + ikaros-api."
     exit 0
 }
@@ -746,7 +749,7 @@ $deploymentOptions = @(
 )
 
 $modelOptions = @(
-    @{ value = "now"; label = "现在写入 config\models.json" }
+    @{ value = "now"; label = "现在写入 ~/.ikaros/config/models.json" }
     @{ value = "later"; label = "稍后到 Web 初始化页配置" }
 )
 

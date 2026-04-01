@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict
@@ -9,7 +8,7 @@ from urllib.parse import quote
 
 import yaml
 
-from core.config import DATA_DIR
+from core.app_paths import data_dir
 
 
 DEFAULT_ACCESS: Dict[str, bool] = {
@@ -51,11 +50,7 @@ class ChannelUserStore:
 
     @property
     def path(self) -> Path:
-        return (
-            Path(os.getenv("DATA_DIR", DATA_DIR)).resolve()
-            / "system"
-            / "channel_users.yaml"
-        ).resolve()
+        return (data_dir() / "system" / "channel_users.yaml").resolve()
 
     @staticmethod
     def _safe_text(value: Any) -> str:
@@ -121,7 +116,7 @@ class ChannelUserStore:
         safe_platform = self._safe_part(platform, "platform")
         safe_user_id = self._safe_part(platform_user_id, "user")
         return (
-            Path(os.getenv("DATA_DIR", DATA_DIR)).resolve()
+            data_dir()
             / "userland"
             / "channel-users"
             / safe_platform
@@ -275,9 +270,7 @@ class ChannelUserStore:
                 role="admin",
                 is_admin=True,
                 access={key: True for key in DEFAULT_ACCESS},
-                user_md_path=str(
-                    (Path(os.getenv("DATA_DIR", DATA_DIR)).resolve() / "USER.md").resolve()
-                ),
+                user_md_path=str((data_dir() / "USER.md").resolve()),
             )
 
         with self._lock:

@@ -1,12 +1,13 @@
 import importlib
 import logging
-import os
 import re
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+from core.app_paths import data_dir
 
 _state_io = importlib.import_module("core.state_io")
 init_db = _state_io.init_db
@@ -18,7 +19,6 @@ _state_paths = importlib.import_module("core.state_paths")
 system_path = _state_paths.system_path
 user_path = _state_paths.user_path
 SINGLE_USER_SCOPE = _state_paths.SINGLE_USER_SCOPE
-DATA_DIR = importlib.import_module("core.config").DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +49,7 @@ def _legacy_chat_root() -> Path:
 
 def _scoped_chat_root(user_id: int | str) -> Path:
     scope = _safe_user_scope(user_id)
-    root = (
-        Path(os.getenv("DATA_DIR", DATA_DIR)).resolve()
-        / "user"
-        / "chat_scoped"
-        / scope
-    ).resolve()
+    root = (data_dir() / "user" / "chat_scoped" / scope).resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
 

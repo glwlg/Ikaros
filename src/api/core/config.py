@@ -2,11 +2,13 @@
 配置管理模块
 """
 
-import os
 import toml
+from pathlib import Path
 from typing import Dict, Any
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from core.app_paths import data_dir, env_path, project_root
 
 
 class GeneralConfig(BaseModel):
@@ -14,7 +16,7 @@ class GeneralConfig(BaseModel):
 
 
 class SQLiteConfig(BaseModel):
-    database: str = "sqlite.db"
+    database: str = str((data_dir() / "bot_data.db").resolve())
 
 
 class AuthConfig(BaseModel):
@@ -35,7 +37,7 @@ class AppConfig(BaseSettings):
     auth: AuthConfig = Field(default_factory=AuthConfig)
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(env_path()),
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
         case_sensitive=False,
@@ -56,15 +58,20 @@ class AppConfig(BaseSettings):
         return values
 
 
-def load_config(path: str = "config.toml") -> AppConfig:
+def load_config(path: str | None = None) -> AppConfig:
     global _toml_config_data
     _toml_config_data = {}
-    if os.path.exists(path):
+    config_path = (
+        Path(path).expanduser().resolve()
+        if path
+        else (project_root() / "config.toml").resolve()
+    )
+    if config_path.exists():
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with config_path.open("r", encoding="utf-8") as f:
                 _toml_config_data = toml.load(f)
         except Exception as e:
-            print(f"Warning: Error loading TOML config file '{path}': {e}")
+            print(f"Warning: Error loading TOML config file '{config_path}': {e}")
 
     try:
         return AppConfig()

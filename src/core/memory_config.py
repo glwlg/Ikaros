@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.app_paths import memory_config_path
 
-MEMORY_CONFIG_PATH = os.getenv("MEMORY_CONFIG_PATH", "config/memory.json")
+
+MEMORY_CONFIG_PATH = str(memory_config_path())
 
 
 @dataclass
@@ -32,7 +33,7 @@ def load_memory_config(config_path: str | None = None) -> MemoryConfig:
     if _memory_config is not None:
         return _memory_config
 
-    path = Path(config_path or os.getenv("MEMORY_CONFIG_PATH", MEMORY_CONFIG_PATH))
+    path = Path(str(config_path or MEMORY_CONFIG_PATH)).expanduser().resolve()
     if not path.exists():
         _memory_config = MemoryConfig(
             provider="file",

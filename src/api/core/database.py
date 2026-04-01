@@ -2,6 +2,7 @@
 SQLite 数据库连接管理模块
 """
 
+from pathlib import Path
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -11,16 +12,25 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import declarative_base
 
+from api.core.config import settings
+
 Base = declarative_base()
 
 _engine: AsyncEngine | None = None
 _async_session_maker: async_sessionmaker[AsyncSession] | None = None
 
 
+def _resolve_sqlite_path() -> Path:
+    raw = str(settings.sqlite.database or "").strip()
+    if not raw:
+        raise RuntimeError("sqlite database path is empty")
+    return Path(raw).expanduser().resolve()
+
+
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        db_url = "sqlite+aiosqlite:///data/bot_data.db"
+        db_url = f"sqlite+aiosqlite:///{_resolve_sqlite_path()}"
         _engine = create_async_engine(
             db_url,
             echo=False,

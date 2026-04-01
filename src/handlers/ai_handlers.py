@@ -17,6 +17,10 @@ from core.platform.models import (
 from core.long_term_memory import long_term_memory
 
 from core.config import get_client_for_model
+from core.document_artifacts import (
+    build_document_forward_text,
+    pop_pending_document_artifacts,
+)
 from core.file_artifacts import (
     extract_saved_file_rows,
     merge_file_rows,
@@ -773,11 +777,6 @@ async def handle_ai_chat(
     if not await require_feature_access(ctx, "chat"):
         return
 
-    await _acknowledge_received(ctx)
-
-    await bind_delivery_target(ctx, user_id)
-    await add_message(ctx, user_id, "user", user_message)
-
     if await _try_handle_waiting_confirmation(ctx, user_message):
         return
 
@@ -808,6 +807,18 @@ async def handle_ai_chat(
             }
         )
         return
+
+    pending_document_artifacts = pop_pending_document_artifacts(ctx.user_data)
+    if pending_document_artifacts:
+        user_message = build_document_forward_text(
+            pending_document_artifacts,
+            user_message,
+        )
+
+    await _acknowledge_received(ctx)
+
+    await bind_delivery_target(ctx, user_id)
+    await add_message(ctx, user_id, "user", user_message)
 
     from core.agent_input import MAX_INLINE_IMAGE_INPUTS, build_agent_message_history
     from core.agent_orchestrator import agent_orchestrator

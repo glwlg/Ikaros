@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
 
-from core.config import DATA_DIR
+from core.app_paths import data_dir
 
 
 def _system_root() -> Path:
-    configured = str(os.getenv("DATA_DIR", DATA_DIR) or DATA_DIR).strip()
-    return (Path(configured).resolve() / "system").resolve()
+    return (data_dir() / "system").resolve()
 
 
 def _safe_token(value: str, fallback: str) -> str:

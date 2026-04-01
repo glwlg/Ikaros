@@ -26,7 +26,7 @@ from core.skill_cli import (
 prepare_default_env(REPO_ROOT)
 
 from core.config import get_client_for_model
-from core.model_config import get_current_model
+from core.model_config import get_current_model, resolve_models_config_path
 from services.openai_adapter import generate_text
 from services.web_summary_service import fetch_webpage_content
 
@@ -161,7 +161,9 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None):
     try:
         model_to_use = get_current_model()
         if not model_to_use:
-            raise RuntimeError("No text model configured in config/models.json")
+            raise RuntimeError(
+                f"No text model configured in {resolve_models_config_path()}"
+            )
         async_client = get_client_for_model(model_to_use, is_async=True)
         if async_client is None:
             raise RuntimeError("OpenAI async client is not initialized")

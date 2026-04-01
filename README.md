@@ -5,7 +5,7 @@ Ikaros 是一个 Python 多平台 AI Bot，当前采用 `Ikaros Core + API Servi
 - `ikaros`：唯一用户可见的 Ikaros Core，负责请求编排、任务治理、模型路由、心跳、状态访问和 extension runtime
 - `ikaros-api`：FastAPI + SPA，提供 Web/API 能力
 
-运行时状态统一落在 `data/` 下，主体仍是文件系统优先；需要聚合查询的部分使用 `data/bot_data.db` 做 SQLite 存储。
+运行时状态默认落在 `~/.ikaros/data/` 下，运行配置默认落在 `~/.ikaros/config/` 下；主体仍是文件系统优先，需要聚合查询的部分使用 `~/.ikaros/data/bot_data.db` 做 SQLite 存储。
 
 ![logo](logo.jpg)
 
@@ -19,8 +19,8 @@ Ikaros 是一个 Python 多平台 AI Bot，当前采用 `Ikaros Core + API Servi
   - `extension/memories`：长期记忆 provider 扩展，启动时必须且只能有一个 active provider
   - `extension/plugins`：普通扩展，承接控制面命令、菜单和其他 runtime 注入能力
 - 任务治理：真实任务具备 task/session/heartbeat 闭环，普通闲聊不写入 `task_inbox`
-- 模型配置：统一使用 `config/models.json`，支持在聊天内通过 `/model` 查看和切换
-- LLM 用量统计：通过 `/usage` 查看按天 + 会话 + 模型聚合的 token 使用；数据持久化到 `data/bot_data.db`
+- 模型配置：默认使用 `~/.ikaros/config/models.json`，支持在聊天内通过 `/model` 查看和切换
+- LLM 用量统计：通过 `/usage` 查看按天 + 会话 + 模型聚合的 token 使用；数据持久化到 `~/.ikaros/data/bot_data.db`
 - Ikaros 开发链路：仓库类任务优先使用 `repo_workspace`、`codex_session`、`git_ops`、`gh_cli`
 
 ## 架构概览
@@ -119,8 +119,8 @@ Core 只暴露运行时基础设施，不再在 core 里硬编码 channel / memo
 │   ├── memories/         # file / mem0 等记忆扩展
 │   ├── plugins/          # 普通扩展
 │   └── skills/           # builtin + learned skills
-├── data/                 # 运行时状态与持久化数据
-├── config/               # 结构化运行配置
+├── data/                 # 仓库内旧数据目录；迁移后默认不再作为运行时路径
+├── config/               # 仓库内模板与文档目录
 ├── tests/                # pytest 测试
 ├── docker-compose.yml
 ├── README.md
@@ -207,15 +207,30 @@ Core 只暴露运行时基础设施，不再在 core 里硬编码 channel / memo
 
 统计数据写入：
 
-- `data/bot_data.db`
+- `~/.ikaros/data/bot_data.db`
 
 ## 运行时目录
 
-- `data/`：聊天、任务、记忆、心跳、审计、SQLite 聚合数据等运行时状态
-- `data/bot_data.db`：Web/API 与 LLM 用量等聚合型 SQLite 数据
+- `~/.ikaros/data/`：聊天、任务、记忆、心跳、审计、SQLite 聚合数据等运行时状态
+- `~/.ikaros/data/bot_data.db`：Web/API 与 LLM 用量等聚合型 SQLite 数据
 - `downloads/`：媒体下载产物
 - `extension/`：四类运行时扩展
-- `config/`：结构化运行配置，当前主要包括 `models.json`、`memory.json` 和 `deployment_targets.yaml`
+- `~/.ikaros/config/`：结构化运行配置，当前主要包括 `models.json`、`memory.json` 和 `deployment_targets.yaml`
+- 仓库 `config/`：运行配置模板与文档，例如 `models.example.json`
+
+## 手动迁移旧目录
+
+这次运行时默认不再读取仓库内 `./data` 和 `./config`。升级现有部署时，请手动迁移需要保留的运行文件：
+
+```bash
+mkdir -p ~/.ikaros/data ~/.ikaros/config
+cp -R data/. ~/.ikaros/data/
+[ -f config/models.json ] && cp config/models.json ~/.ikaros/config/models.json || cp config/models.example.json ~/.ikaros/config/models.json
+[ -f config/memory.json ] && cp config/memory.json ~/.ikaros/config/memory.json || cp config/memory.example.json ~/.ikaros/config/memory.json
+[ -f config/deployment_targets.yaml ] && cp config/deployment_targets.yaml ~/.ikaros/config/deployment_targets.yaml
+```
+
+`.env` 仍保留在仓库根目录。
 
 ## 当前维护原则
 

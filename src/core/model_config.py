@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 from pathlib import Path
 
+from core.app_paths import models_config_path
 from core.audit_store import audit_store
 
 logger = logging.getLogger(__name__)
@@ -55,13 +56,9 @@ def normalize_model_role(role: str) -> str:
 
 def resolve_models_config_path(config_path: Optional[str] = None) -> Path:
     """解析 models.json 路径。"""
-    raw_path = str(
-        config_path or os.getenv("MODELS_CONFIG_PATH", "config/models.json")
-    ).strip() or "config/models.json"
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        path = path.resolve()
-    return path
+    if config_path is not None and str(config_path).strip():
+        return Path(str(config_path).strip()).expanduser().resolve()
+    return models_config_path()
 
 
 def _resolve_model_storage_key(role: str, model_section: dict[str, Any]) -> str:

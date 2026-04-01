@@ -4,12 +4,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+IKAROS_HOME="${IKAROS_HOME:-${HOME}/.ikaros}"
 
 LABEL="com.ikaros.ikaros"
 RUNNER_PATH="${PROJECT_DIR}/scripts/run_ikaros.sh"
 PRINT_ONLY=0
 NO_START=0
-LOG_DIR="${PROJECT_DIR}/data/logs"
+LOG_DIR="${IKAROS_HOME}/data/logs"
 
 usage() {
     cat <<'EOF'
