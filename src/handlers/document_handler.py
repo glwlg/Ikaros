@@ -190,7 +190,11 @@ async def handle_document(ctx: UnifiedContext) -> None:
         response_text = str(response_text or "")
 
         if response_text:
-            await ctx.edit_message(get_message_id(thinking_msg), response_text)
+            await ctx.edit_message(
+                get_message_id(thinking_msg),
+                response_text,
+                run_after_reply_hooks=True,
+            )
             # 记录模型回复到上下文
             await add_message(ctx, user_id, "model", response_text)
             # 记录统计

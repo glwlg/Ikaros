@@ -787,7 +787,11 @@ async def process_as_text_message(ctx: UnifiedContext, text: str, thinking_msg) 
 
         # 发送最终回复
         if final_text_response:
-            await ctx.edit_message(msg_id, final_text_response)
+            await ctx.edit_message(
+                msg_id,
+                final_text_response,
+                run_after_reply_hooks=True,
+            )
             await add_message(ctx, user_id, "model", final_text_response)
             await increment_stat(user_id, "voice_chats")
         else:

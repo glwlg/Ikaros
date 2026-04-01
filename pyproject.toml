@@ -35,6 +35,7 @@ ikaros-runtime = [
     "cryptography>=46.0.3",
     "discord-py>=2.6.4",
     "dingtalk-stream>=0.24.3",
+    "edge-tts>=7.2.8",
 ]
 # Heavy or currently-unused skill packs stay opt-in so the default
 # ikaros image remains lean. Install `optional-skill-runtime`

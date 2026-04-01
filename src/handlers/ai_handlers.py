@@ -1294,7 +1294,11 @@ async def handle_ai_chat(
                         ):
                             msg_id = _message_id_of(thinking_msg)
                             if msg_id is not None:
-                                await ctx.edit_message(msg_id, rendered_response)
+                                await ctx.edit_message(
+                                    msg_id,
+                                    rendered_response,
+                                    run_after_reply_hooks=True,
+                                )
                                 sent_msg = thinking_msg
                             else:
                                 sent_msg = await ctx.reply(payload)
@@ -1496,7 +1500,11 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
                         msg_id = getattr(
                             thinking_msg, "message_id", getattr(thinking_msg, "id", None)
                         )
-                        await ctx.edit_message(msg_id, rendered_response)
+                        await ctx.edit_message(
+                            msg_id,
+                            rendered_response,
+                            run_after_reply_hooks=True,
+                        )
                         sent_msg = thinking_msg
                     else:
                         sent_msg = await ctx.reply({"text": rendered_response})
