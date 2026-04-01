@@ -400,6 +400,35 @@ class TelegramAdapter(BotAdapter):
             logger.error(f"Telegram send_audio failed: {e}")
             raise MessageSendError(str(e))
 
+    async def send_voice(
+        self,
+        chat_id: int | str,
+        voice: Union[str, bytes],
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        try:
+            formatted_caption = markdown_to_telegram_html(caption) if caption else None
+            outgoing_voice: Union[str, bytes, io.BytesIO] = voice
+            filename = str(kwargs.pop("filename", "") or "").strip() or "voice.ogg"
+            if isinstance(voice, bytes):
+                file_obj = io.BytesIO(voice)
+                file_obj.name = filename
+                outgoing_voice = file_obj
+            return await self._send_with_retry(
+                lambda: self.bot.send_voice(
+                    chat_id=self._coerce_chat_id(chat_id),
+                    voice=outgoing_voice,
+                    caption=formatted_caption,
+                    parse_mode="HTML",
+                    **kwargs,
+                ),
+                label="send_voice",
+            )
+        except Exception as e:
+            logger.error(f"Telegram send_voice failed: {e}")
+            raise MessageSendError(str(e))
+
     async def edit_text(
         self,
         context: UnifiedContext,
@@ -510,16 +539,49 @@ class TelegramAdapter(BotAdapter):
         try:
             chat_id = context.message.chat.id
             formatted_caption = markdown_to_telegram_html(caption) if caption else None
+            outgoing_audio: Union[str, bytes, io.BytesIO] = audio
+            if isinstance(audio, bytes):
+                file_obj = io.BytesIO(audio)
+                file_obj.name = "audio.mp3"
+                outgoing_audio = file_obj
 
             return await self.bot.send_audio(
                 chat_id=chat_id,
-                audio=audio,
+                audio=outgoing_audio,
                 caption=formatted_caption,
                 parse_mode="HTML",
                 **kwargs,
             )
         except Exception as e:
             logger.error(f"Telegram reply_audio failed: {e}")
+            raise MessageSendError(str(e))
+
+    async def reply_voice(
+        self,
+        context: UnifiedContext,
+        voice: Union[str, bytes],
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        try:
+            chat_id = context.message.chat.id
+            formatted_caption = markdown_to_telegram_html(caption) if caption else None
+            outgoing_voice: Union[str, bytes, io.BytesIO] = voice
+            filename = str(kwargs.pop("filename", "") or "").strip() or "voice.ogg"
+            if isinstance(voice, bytes):
+                file_obj = io.BytesIO(voice)
+                file_obj.name = filename
+                outgoing_voice = file_obj
+
+            return await self.bot.send_voice(
+                chat_id=chat_id,
+                voice=outgoing_voice,
+                caption=formatted_caption,
+                parse_mode="HTML",
+                **kwargs,
+            )
+        except Exception as e:
+            logger.error(f"Telegram reply_voice failed: {e}")
             raise MessageSendError(str(e))
 
     async def delete_message(

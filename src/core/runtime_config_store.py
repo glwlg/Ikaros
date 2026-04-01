@@ -45,6 +45,17 @@ class RuntimeConfigStore:
                 "web_chat_tts": True,
                 "admin_console": True,
             },
+            "voice_output": {
+                "enabled": False,
+                "provider": "edge_tts",
+                "voice": "zh-CN-XiaoxiaoNeural",
+                "rate": "+0%",
+                "volume": "+0%",
+                "pitch": "+0Hz",
+                "platforms": ["telegram", "discord", "web"],
+                "min_chars": 12,
+                "max_chars": 1200,
+            },
             "skills": {
                 "disabled": [],
             },
@@ -107,6 +118,33 @@ class RuntimeConfigStore:
         if not isinstance(auth, dict):
             return False
         return bool(auth.get("public_registration_enabled", False))
+
+    def get_voice_output_config(self) -> dict[str, Any]:
+        payload = self.read()
+        voice_output = payload.get("voice_output")
+        if not isinstance(voice_output, dict):
+            return dict(self._default_payload().get("voice_output") or {})
+        return dict(voice_output)
+
+    def is_voice_output_enabled(self, *, default: bool = False) -> bool:
+        config = self.get_voice_output_config()
+        value = config.get("enabled")
+        if value is None:
+            return default
+        return bool(value)
+
+    def set_voice_output_enabled(
+        self,
+        enabled: bool,
+        *,
+        actor: str = "system",
+        reason: str = "toggle_voice_output",
+    ) -> dict[str, Any]:
+        return self.update_patch(
+            {"voice_output": {"enabled": bool(enabled)}},
+            actor=actor,
+            reason=reason,
+        )
 
     def get_disabled_skills(self) -> list[str]:
         payload = self.read()

@@ -4,6 +4,7 @@ from enum import Enum
 from datetime import datetime
 from typing import Final
 from core.platform.exceptions import MessageSendError
+from core.reply_hooks import text_reply_hook_registry
 
 
 class MessageType(Enum):
@@ -157,7 +158,14 @@ class UnifiedContext:
                 )
             return last_response
 
-        return await self._adapter.reply_text(self, text, ui=ui, **kwargs)
+        response = await self._adapter.reply_text(self, text, ui=ui, **kwargs)
+        if (
+            isinstance(text, str)
+            and text.strip()
+            and getattr(self._adapter, "platform_name", "")
+        ):
+            await text_reply_hook_registry.dispatch_after_reply(self, text, response)
+        return response
 
     @staticmethod
     def _split_reply_text(text: str, max_chars: int) -> list[str]:
@@ -189,12 +197,25 @@ class UnifiedContext:
         Unified edit method.
         If platform doesn't support editing, it should fallback to sending a new message.
         """
+        run_after_reply_hooks = bool(kwargs.pop("run_after_reply_hooks", False))
         safe_text = text
         if isinstance(text, str) and len(text) > MAX_EDIT_PREVIEW_CHARS:
             safe_text = self._truncate_edit_preview(text, MAX_EDIT_PREVIEW_CHARS)
 
         try:
-            return await self._adapter.edit_text(self, message_id, safe_text, **kwargs)
+            response = await self._adapter.edit_text(self, message_id, safe_text, **kwargs)
+            if (
+                run_after_reply_hooks
+                and isinstance(safe_text, str)
+                and safe_text.strip()
+                and getattr(self._adapter, "platform_name", "")
+            ):
+                await text_reply_hook_registry.dispatch_after_reply(
+                    self,
+                    safe_text,
+                    response,
+                )
+            return response
         except MessageSendError as exc:
             lowered = str(exc).lower()
             if isinstance(text, str) and (
