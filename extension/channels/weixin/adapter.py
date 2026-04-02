@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
+from api.services.env_config import ensure_admin_user_id_present
 from core.config import DATA_DIR, WEIXIN_DEBUG_UPDATES
 from core.platform.adapter import BotAdapter
 from core.platform.exceptions import MediaDownloadUnavailableError, MessageSendError
@@ -374,6 +375,10 @@ class WeixinAdapter(BotAdapter):
 
         bound_at = self._now_iso()
         bindings = self._load_bindings()
+        existing_bound_users = self._normalize_bound_users(
+            bindings.get("bound_users") or {}
+        )
+        is_first_bound_user = bool(bound_user_id) and not existing_bound_users
         sessions = self._normalize_sessions(bindings.get("sessions") or {})
         sessions[account_id] = {
             "token": token,
@@ -414,6 +419,12 @@ class WeixinAdapter(BotAdapter):
                 added_by=bound_by or bound_user_id,
                 description=f"weixin:{self._safe_text(source) or 'bind'}",
             )
+            if is_first_bound_user and not is_user_admin(bound_user_id):
+                ensure_admin_user_id_present(
+                    bound_user_id,
+                    actor=bound_by or bound_user_id or "weixin",
+                    reason="weixin_first_bound_user",
+                )
             if not is_user_admin(bound_user_id):
                 channel_user_store.ensure_user(
                     platform="weixin",

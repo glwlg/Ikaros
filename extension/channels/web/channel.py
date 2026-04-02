@@ -20,7 +20,9 @@ WEB_CHANNEL_ENABLE = str(os.getenv("WEB_CHANNEL_ENABLE", "true")).strip().lower(
 class WebChannelExtension(ChannelExtension):
     name = "web_channel"
     platform_name = "web"
-    priority = 45
+    # Register the web adapter before channel extensions that selectively bind
+    # commands to already-available platforms, such as weixin `/wxbind`.
+    priority = 35
 
     def enabled(self, runtime) -> bool:
         _ = runtime

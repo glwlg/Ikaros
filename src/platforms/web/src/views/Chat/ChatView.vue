@@ -17,13 +17,14 @@ import {
 } from 'lucide-vue-next'
 
 import {
-    chatFileUrl,
     createSession,
+    fetchChatFileBlob,
     generateTts,
     getSessionMessages,
     listSessions,
     postSessionEvent,
     streamSessionEvents,
+    type ChatAttachment,
     type ChatMessage,
     type ChatSession,
     uploadChatFile,
@@ -77,7 +78,130 @@ const commandEntries = [
     { label: '/task', text: '/task recent' },
     { label: '/heartbeat', text: '/heartbeat list' },
     { label: '/skills', text: '/skills' },
+    { label: '/wxbind', text: '/wxbind' },
 ]
+
+const attachmentKind = (attachment: ChatAttachment) =>
+    String(attachment.kind || '').trim().toLowerCase()
+
+const attachmentMimeType = (attachment: ChatAttachment) =>
+    String(attachment.mime_type || '').trim().toLowerCase()
+
+const attachmentName = (attachment: ChatAttachment) =>
+    String(attachment.name || '').trim().toLowerCase()
+
+const normalizeAttachment = (attachment: Record<string, unknown>): ChatAttachment => ({
+    id: String(attachment.id || attachment.file_id || ''),
+    file_id: String(attachment.file_id || attachment.id || ''),
+    kind: String(attachment.kind || ''),
+    name: String(attachment.name || ''),
+    mime_type: String(attachment.mime_type || 'application/octet-stream'),
+    size: Number(attachment.size || 0),
+})
+
+const isImageAttachment = (attachment: ChatAttachment) => {
+    const kind = attachmentKind(attachment)
+    const mimeType = attachmentMimeType(attachment)
+    const name = attachmentName(attachment)
+    return (
+        kind === 'image' ||
+        mimeType.startsWith('image/') ||
+        /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(name)
+    )
+}
+
+const isAudioAttachment = (attachment: ChatAttachment) => {
+    const kind = attachmentKind(attachment)
+    const mimeType = attachmentMimeType(attachment)
+    const name = attachmentName(attachment)
+    return (
+        kind === 'audio' ||
+        kind === 'voice' ||
+        mimeType.startsWith('audio/') ||
+        /\.(aac|flac|m4a|mp3|ogg|opus|wav|webm)$/i.test(name)
+    )
+}
+
+const attachmentBlobUrls = ref<Record<string, string>>({})
+const loadingAttachmentIds = new Set<string>()
+
+const attachmentFileId = (attachment: ChatAttachment) =>
+    String(attachment.file_id || attachment.id || '').trim()
+
+const attachmentObjectUrl = (attachment: ChatAttachment) =>
+    attachmentBlobUrls.value[attachmentFileId(attachment)] || ''
+
+const cacheAttachmentObjectUrl = (fileId: string, url: string) => {
+    const safeFileId = String(fileId || '').trim()
+    if (!safeFileId || !url) return
+    const current = attachmentBlobUrls.value[safeFileId]
+    if (current && current !== url) {
+        URL.revokeObjectURL(current)
+    }
+    attachmentBlobUrls.value = {
+        ...attachmentBlobUrls.value,
+        [safeFileId]: url,
+    }
+}
+
+const ensureAttachmentUrl = async (attachment: ChatAttachment) => {
+    const fileId = attachmentFileId(attachment)
+    if (!fileId) return ''
+    const cached = attachmentBlobUrls.value[fileId]
+    if (cached) return cached
+    if (loadingAttachmentIds.has(fileId)) return ''
+
+    loadingAttachmentIds.add(fileId)
+    try {
+        const blob = await fetchChatFileBlob(fileId)
+        const url = URL.createObjectURL(blob)
+        cacheAttachmentObjectUrl(fileId, url)
+        return url
+    } catch (error) {
+        console.error('Failed to load chat attachment', error)
+        return ''
+    } finally {
+        loadingAttachmentIds.delete(fileId)
+    }
+}
+
+const primeMessageAttachments = (message?: ChatMessage | null) => {
+    if (!message?.attachments?.length) return
+    for (const attachment of message.attachments) {
+        void ensureAttachmentUrl(attachment)
+    }
+}
+
+const primeMessagesAttachments = (items: ChatMessage[]) => {
+    for (const message of items) {
+        primeMessageAttachments(message)
+    }
+}
+
+const revokeAttachmentUrls = () => {
+    for (const url of Object.values(attachmentBlobUrls.value)) {
+        URL.revokeObjectURL(url)
+    }
+    attachmentBlobUrls.value = {}
+}
+
+const openAttachment = async (attachment: ChatAttachment) => {
+    const url = attachmentObjectUrl(attachment) || await ensureAttachmentUrl(attachment)
+    if (!url) return
+    const opened = window.open(url, '_blank', 'noopener,noreferrer')
+    if (opened) return
+
+    const link = document.createElement('a')
+    link.href = url
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    if (attachment.name) {
+        link.download = attachment.name
+    }
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+}
 
 const visibleSessions = computed(() => {
     const ordered = [...sessions.value].sort((a, b) => {
@@ -147,8 +271,10 @@ const mergeMessage = (message: ChatMessage) => {
             actions: message.actions || currentMessage.actions || [],
             meta: message.meta || currentMessage.meta || {},
         }
+        primeMessageAttachments(messages.value[index])
     } else {
         messages.value.push(message)
+        primeMessageAttachments(message)
     }
 }
 
@@ -167,11 +293,13 @@ const updateSessionSummary = (message: ChatMessage) => {
 const attachAudioToMessage = (messageId: string, attachment: Record<string, unknown>) => {
     const target = messages.value.find(item => item.id === messageId)
     if (!target) return
+    const normalizedAttachment = normalizeAttachment(attachment)
     const nextAttachments = [...(target.attachments || [])]
-    const exists = nextAttachments.some(item => item.file_id === String(attachment.file_id || ''))
+    const exists = nextAttachments.some(item => item.file_id === normalizedAttachment.file_id)
     if (!exists) {
-        nextAttachments.push(attachment as any)
+        nextAttachments.push(normalizedAttachment)
         target.attachments = nextAttachments
+        void ensureAttachmentUrl(normalizedAttachment)
     }
 }
 
@@ -257,6 +385,7 @@ const openSession = async (sessionId: string) => {
     waitingAssistant.value = false
     const response = await getSessionMessages(sessionId)
     messages.value = response.items || []
+    primeMessagesAttachments(messages.value)
     await scrollToBottom()
     startStream(sessionId)
 }
@@ -379,9 +508,11 @@ const runMenuAction = async (callbackData: string) => {
 }
 
 const playMessage = async (message: ChatMessage) => {
-    const existingAudio = (message.attachments || []).find(item => item.kind === 'audio')
+    const existingAudio = (message.attachments || []).find(isAudioAttachment)
     if (existingAudio) {
-        const audio = new Audio(chatFileUrl(existingAudio.file_id))
+        const audioUrl = attachmentObjectUrl(existingAudio) || await ensureAttachmentUrl(existingAudio)
+        if (!audioUrl) return
+        const audio = new Audio(audioUrl)
         await audio.play()
         return
     }
@@ -389,7 +520,9 @@ const playMessage = async (message: ChatMessage) => {
     if (!sessionId) return
     const result = await generateTts(sessionId, message.id)
     mergeMessage(result.message)
-    const audio = new Audio(chatFileUrl(result.attachment.file_id))
+    const audioUrl = await ensureAttachmentUrl(result.attachment)
+    if (!audioUrl) return
+    const audio = new Audio(audioUrl)
     await audio.play()
 }
 
@@ -411,6 +544,7 @@ onBeforeUnmount(() => {
     }
     streamAbort.value?.abort()
     recorderStream.value?.getTracks().forEach(track => track.stop())
+    revokeAttachmentUrls()
 })
 </script>
 
@@ -554,28 +688,57 @@ onBeforeUnmount(() => {
                 <div
                   v-for="attachment in message.attachments"
                   :key="`${message.id}-${attachment.file_id}`"
-                  class="rounded-2xl border border-slate-200 bg-slate-50 p-3"
+                  class="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50"
                 >
-                  <div class="flex items-center justify-between gap-3">
-                    <div class="min-w-0">
-                      <div class="truncate text-sm font-medium text-slate-900">{{ attachment.name }}</div>
-                      <div class="text-xs text-slate-500">{{ attachment.mime_type }}</div>
+                  <button
+                    v-if="isImageAttachment(attachment) && attachmentObjectUrl(attachment)"
+                    type="button"
+                    class="block w-full bg-slate-100 text-left"
+                    @click="openAttachment(attachment)"
+                  >
+                    <img
+                      :src="attachmentObjectUrl(attachment)"
+                      :alt="attachment.name || '图片附件'"
+                      class="block max-h-[420px] w-full object-contain"
+                      loading="lazy"
+                    >
+                  </button>
+
+                  <div
+                    v-else-if="isImageAttachment(attachment)"
+                    class="flex min-h-[180px] items-center justify-center bg-slate-100 px-4 py-8 text-sm text-slate-500"
+                  >
+                    正在加载图片…
+                  </div>
+
+                  <div class="space-y-3 p-3">
+                    <audio
+                      v-if="isAudioAttachment(attachment) && attachmentObjectUrl(attachment)"
+                      :src="attachmentObjectUrl(attachment)"
+                      controls
+                      preload="metadata"
+                      class="w-full"
+                    />
+
+                    <div
+                      v-else-if="isAudioAttachment(attachment)"
+                      class="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-4 text-sm text-slate-500"
+                    >
+                      正在加载音频…
                     </div>
-                    <div class="flex items-center gap-2">
-                      <audio
-                        v-if="attachment.kind === 'audio'"
-                        :src="chatFileUrl(attachment.file_id)"
-                        controls
-                        class="max-w-[220px]"
-                      />
-                      <a
-                        v-else
-                        :href="chatFileUrl(attachment.file_id)"
-                        target="_blank"
+
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="min-w-0">
+                        <div class="truncate text-sm font-medium text-slate-900">{{ attachment.name }}</div>
+                        <div class="text-xs text-slate-500">{{ attachment.mime_type }}</div>
+                      </div>
+                      <button
+                        type="button"
                         class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+                        @click="openAttachment(attachment)"
                       >
                         打开
-                      </a>
+                      </button>
                     </div>
                   </div>
                 </div>

@@ -126,7 +126,21 @@ async def test_send_chat_action_reuses_cached_typing_ticket_and_can_cancel():
 async def test_persist_binding_writes_bindings_and_allow_list(tmp_path, monkeypatch):
     monkeypatch.setattr("extension.channels.weixin.adapter.DATA_DIR", str(tmp_path))
     monkeypatch.setattr("core.config.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("core.config.ADMIN_USER_IDS", set())
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    promoted: list[tuple[str, str, str]] = []
+
+    def _promote_admin(user_id, *, actor="system", reason="ensure_admin_user_id"):
+        promoted.append((str(user_id), str(actor), str(reason)))
+        current = set(getattr(__import__("core.config", fromlist=["ADMIN_USER_IDS"]), "ADMIN_USER_IDS"))
+        current.add(str(user_id))
+        monkeypatch.setattr("core.config.ADMIN_USER_IDS", current)
+        return sorted(current)
+
+    monkeypatch.setattr(
+        "extension.channels.weixin.adapter.ensure_admin_user_id_present",
+        _promote_admin,
+    )
 
     adapter = WeixinAdapter()
     result = await adapter._persist_binding(
@@ -152,13 +166,30 @@ async def test_persist_binding_writes_bindings_and_allow_list(tmp_path, monkeypa
     assert bindings["bound_users"]["wx-user-9"]["account_id"] == "bot-1"
     assert allow_ok is True
     assert allow_list[0]["user_id"] == "wx-user-9"
+    assert promoted == [("wx-user-9", "admin-user", "weixin_first_bound_user")]
 
 
 @pytest.mark.asyncio
 async def test_persist_binding_keeps_existing_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr("extension.channels.weixin.adapter.DATA_DIR", str(tmp_path))
     monkeypatch.setattr("core.config.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("core.config.ADMIN_USER_IDS", set())
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    promoted: list[str] = []
+
+    def _promote_admin(user_id, *, actor="system", reason="ensure_admin_user_id"):
+        _ = actor
+        _ = reason
+        promoted.append(str(user_id))
+        current = set(getattr(__import__("core.config", fromlist=["ADMIN_USER_IDS"]), "ADMIN_USER_IDS"))
+        current.add(str(user_id))
+        monkeypatch.setattr("core.config.ADMIN_USER_IDS", current)
+        return sorted(current)
+
+    monkeypatch.setattr(
+        "extension.channels.weixin.adapter.ensure_admin_user_id_present",
+        _promote_admin,
+    )
 
     adapter = WeixinAdapter()
     await adapter._persist_binding(
@@ -193,6 +224,7 @@ async def test_persist_binding_keeps_existing_sessions(tmp_path, monkeypatch):
     assert bindings["sessions"]["bot-2"]["token"] == "token-2"
     assert bindings["bound_users"]["wx-user-1"]["account_id"] == "bot-1"
     assert bindings["bound_users"]["wx-user-2"]["account_id"] == "bot-2"
+    assert promoted == ["wx-user-1"]
 
 
 def test_render_qr_png_returns_png_bytes():
