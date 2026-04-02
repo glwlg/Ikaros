@@ -17,6 +17,11 @@ export interface RuntimeSnapshot {
         all: string[]
         pools: Record<string, string[]>
     }
+    models_config: {
+        path: string
+        exists: boolean
+        payload: Record<string, unknown>
+    }
     memory: {
         provider: string
         providers: string[]
@@ -34,6 +39,7 @@ export interface RuntimePatchPayload {
     features?: Record<string, boolean>
     cors_allowed_origins?: string[]
     model_roles?: Record<string, string>
+    models_config?: Record<string, unknown>
     memory_provider?: string
 }
 

@@ -29,9 +29,11 @@ from core.audit_store import audit_store
 from core.channel_user_store import DEFAULT_USER_MD, channel_user_store
 from core.config import get_client_for_model
 from core.model_config import (
+    _parse_models_config_data,
     get_configured_model,
     get_model_id_for_api,
     load_models_config,
+    normalize_model_role,
     reload_models_config,
     resolve_models_config_path,
 )
@@ -43,6 +45,17 @@ SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 DEFAULT_ROLE_INPUTS: dict[str, list[str]] = {
     "primary": ["text", "image", "voice"],
     "routing": ["text"],
+}
+ALLOWED_MODEL_INPUTS = {"text", "image", "voice"}
+ALLOWED_MODEL_OUTPUTS = {"text", "image", "voice", "video"}
+ROLE_REQUIRED_INPUTS: dict[str, list[str]] = {
+    "primary": ["text"],
+    "routing": ["text"],
+    "vision": ["image"],
+    "voice": ["voice"],
+}
+ROLE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
+    "image_generation": ["image"],
 }
 
 
@@ -76,17 +89,55 @@ def _read_text(path: Path) -> str:
 
 
 def _normalize_input_types(role: str, values: list[str] | None) -> list[str]:
-    allowed = {"text", "image", "voice"}
     normalized: list[str] = []
     for value in values or []:
         token = _safe_text(value).lower()
-        if token and token in allowed and token not in normalized:
+        if token and token in ALLOWED_MODEL_INPUTS and token not in normalized:
             normalized.append(token)
     if not normalized:
         normalized = list(DEFAULT_ROLE_INPUTS.get(role, ["text"]))
     if role in {"primary", "routing"} and "text" not in normalized:
         normalized.insert(0, "text")
     return normalized
+
+
+def _normalize_generic_input_types(values: Any) -> list[str]:
+    normalized: list[str] = []
+    raw_values = values if isinstance(values, list) else []
+    for value in raw_values:
+        token = _safe_text(value).lower()
+        if token and token in ALLOWED_MODEL_INPUTS and token not in normalized:
+            normalized.append(token)
+    return normalized or ["text"]
+
+
+def _normalize_generic_output_types(values: Any) -> list[str]:
+    normalized: list[str] = []
+    raw_values = values if isinstance(values, list) else []
+    for value in raw_values:
+        token = _safe_text(value).lower()
+        if token and token in ALLOWED_MODEL_OUTPUTS and token not in normalized:
+            normalized.append(token)
+    return normalized
+
+
+def _coerce_int(value: Any, *, field_name: str, default: int, minimum: int = 0) -> int:
+    if value in {None, ""}:
+        return default
+    try:
+        parsed = int(value)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} 必须是整数") from exc
+    return max(minimum, parsed)
+
+
+def _coerce_float(value: Any, *, field_name: str, default: float = 0.0) -> float:
+    if value in {None, ""}:
+        return default
+    try:
+        return float(value)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} 必须是数字") from exc
 
 
 def _normalize_provider_name(value: Any) -> str:
@@ -125,6 +176,249 @@ def _load_models_payload() -> tuple[Path, dict[str, Any]]:
     if not isinstance(data, dict):
         raise HTTPException(status_code=500, detail="models.json 根节点必须是对象")
     return config_path, data
+
+
+def _normalize_models_document(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="models_config 必须是对象")
+
+    normalized = {
+        key: value
+        for key, value in payload.items()
+        if str(key).strip() and key not in {"mode", "model", "models", "providers"}
+    }
+    normalized["mode"] = _safe_text(payload.get("mode")) or "merge"
+
+    raw_model_bindings = payload.get("model") or {}
+    if not isinstance(raw_model_bindings, dict):
+        raise HTTPException(status_code=400, detail="models_config.model 必须是对象")
+    normalized["model"] = {
+        safe_role: _safe_text(model_key)
+        for raw_role, model_key in raw_model_bindings.items()
+        if (safe_role := _safe_text(raw_role))
+    }
+
+    raw_pools = payload.get("models") or {}
+    if not isinstance(raw_pools, dict):
+        raise HTTPException(status_code=400, detail="models_config.models 必须是对象")
+    normalized_pools: dict[str, Any] = {}
+    for raw_pool_name, pool_value in raw_pools.items():
+        pool_name = _safe_text(raw_pool_name)
+        if not pool_name:
+            continue
+        if isinstance(pool_value, list):
+            normalized_pools[pool_name] = [
+                model_key
+                for item in pool_value
+                if (model_key := _safe_text(item))
+            ]
+            continue
+        if isinstance(pool_value, dict):
+            normalized_pools[pool_name] = {
+                model_key: dict(meta) if isinstance(meta, dict) else {}
+                for raw_model_key, meta in pool_value.items()
+                if (model_key := _safe_text(raw_model_key))
+            }
+            continue
+        raise HTTPException(
+            status_code=400,
+            detail=f"models_config.models.{pool_name} 必须是对象或数组",
+        )
+    normalized["models"] = normalized_pools
+
+    raw_providers = payload.get("providers") or {}
+    if not isinstance(raw_providers, dict):
+        raise HTTPException(status_code=400, detail="models_config.providers 必须是对象")
+
+    normalized_providers: dict[str, Any] = {}
+    for raw_provider_name, raw_provider in raw_providers.items():
+        provider_name = _normalize_provider_name(raw_provider_name)
+        if not isinstance(raw_provider, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"models_config.providers.{provider_name} 必须是对象",
+            )
+        raw_provider_models = raw_provider.get("models") or []
+        if not isinstance(raw_provider_models, list):
+            raise HTTPException(
+                status_code=400,
+                detail=f"models_config.providers.{provider_name}.models 必须是数组",
+            )
+        normalized_provider_models: list[dict[str, Any]] = []
+        seen_model_ids: set[str] = set()
+        for index, item in enumerate(raw_provider_models):
+            if not isinstance(item, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"models_config.providers.{provider_name}.models[{index}] 必须是对象",
+                )
+            model_id = _normalize_model_id(item.get("id"))
+            if model_id in seen_model_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"provider {provider_name} 存在重复模型 id: {model_id}",
+                )
+            seen_model_ids.add(model_id)
+            raw_cost = item.get("cost")
+            cost_payload = dict(raw_cost) if isinstance(raw_cost, dict) else {}
+            normalized_cost = dict(cost_payload)
+            normalized_cost.update(
+                {
+                    "input": _coerce_float(
+                        cost_payload.get("input"),
+                        field_name=f"providers.{provider_name}.models[{index}].cost.input",
+                    ),
+                    "output": _coerce_float(
+                        cost_payload.get("output"),
+                        field_name=f"providers.{provider_name}.models[{index}].cost.output",
+                    ),
+                    "cacheRead": _coerce_float(
+                        cost_payload.get("cacheRead"),
+                        field_name=f"providers.{provider_name}.models[{index}].cost.cacheRead",
+                    ),
+                    "cacheWrite": _coerce_float(
+                        cost_payload.get("cacheWrite"),
+                        field_name=f"providers.{provider_name}.models[{index}].cost.cacheWrite",
+                    ),
+                }
+            )
+            normalized_model = dict(item)
+            normalized_model.update(
+                {
+                    "id": model_id,
+                    "name": _safe_text(item.get("name")) or model_id,
+                    "reasoning": bool(item.get("reasoning")),
+                    "input": _normalize_generic_input_types(item.get("input")),
+                    "output": _normalize_generic_output_types(item.get("output")),
+                    "cost": normalized_cost,
+                    "contextWindow": _coerce_int(
+                        item.get("contextWindow"),
+                        field_name=f"providers.{provider_name}.models[{index}].contextWindow",
+                        default=1000000,
+                        minimum=1,
+                    ),
+                    "maxTokens": _coerce_int(
+                        item.get("maxTokens"),
+                        field_name=f"providers.{provider_name}.models[{index}].maxTokens",
+                        default=65536,
+                        minimum=1,
+                    ),
+                }
+            )
+            normalized_provider_models.append(
+                normalized_model
+            )
+
+        normalized_provider = dict(raw_provider)
+        normalized_provider.update(
+            {
+                "baseUrl": _safe_text(raw_provider.get("baseUrl")),
+                "apiKey": _safe_text(raw_provider.get("apiKey")),
+                "api": _safe_text(raw_provider.get("api")) or "openai-completions",
+                "models": normalized_provider_models,
+            }
+        )
+        normalized_providers[provider_name] = normalized_provider
+    normalized["providers"] = normalized_providers
+
+    try:
+        parsed = _parse_models_config_data(normalized)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"models_config 配置无效: {exc}",
+        ) from exc
+
+    available_model_keys = set(parsed.list_models())
+    for raw_role, model_key in normalized["model"].items():
+        if model_key and model_key not in available_model_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"models_config.model.{raw_role} 引用了未定义模型: {model_key}",
+            )
+        normalized_role = normalize_model_role(raw_role)
+        if normalized_role and model_key:
+            _validate_role_model_capability(
+                normalized_role,
+                model_key,
+                parsed,
+                field_name=f"models_config.model.{raw_role}",
+            )
+    for pool_name, pool_value in normalized["models"].items():
+        pool_keys = pool_value if isinstance(pool_value, list) else list(pool_value.keys())
+        for model_key in pool_keys:
+            if model_key and model_key not in available_model_keys:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"models_config.models.{pool_name} 引用了未定义模型: {model_key}",
+                )
+            normalized_role = normalize_model_role(pool_name)
+            if normalized_role and model_key:
+                _validate_role_model_capability(
+                    normalized_role,
+                    model_key,
+                    parsed,
+                    field_name=f"models_config.models.{pool_name}",
+                )
+    return normalized
+
+
+def _validate_role_model_capability(
+    role: str,
+    model_key: str,
+    parsed: Any,
+    *,
+    field_name: str,
+) -> None:
+    model = parsed.get_model(model_key)
+    if model is None:
+        return
+
+    for input_type in ROLE_REQUIRED_INPUTS.get(role, []):
+        if model.supports_input(input_type):
+            continue
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} 里的模型 {model_key} 必须支持 {input_type} 输入",
+        )
+
+    for output_type in ROLE_REQUIRED_OUTPUTS.get(role, []):
+        if not model.output:
+            continue
+        if model.supports_output(output_type):
+            continue
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} 里的模型 {model_key} 必须支持 {output_type} 输出",
+        )
+
+
+def build_models_config_editor_snapshot() -> dict[str, Any]:
+    config_path, data = _load_models_payload()
+    return {
+        "path": str(config_path),
+        "exists": config_path.exists(),
+        "payload": data,
+    }
+
+
+def apply_models_document_patch(
+    payload: dict[str, Any],
+    *,
+    actor: str,
+) -> dict[str, Any]:
+    config_path = resolve_models_config_path()
+    normalized = _normalize_models_document(payload)
+    rendered = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
+    audit_store.write_versioned(
+        config_path,
+        rendered,
+        actor=actor,
+        reason="runtime_update_models_document",
+        category="models_config",
+    )
+    reload_models_config(str(config_path))
+    return build_models_config_editor_snapshot()
 
 
 def _role_snapshot(role: str) -> dict[str, Any]:
