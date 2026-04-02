@@ -92,6 +92,7 @@ class ModelConfig:
     input: list[str] = field(
         default_factory=lambda: ["text"]
     )  # 支持的输入类型: text, image
+    output: list[str] = field(default_factory=list)  # 支持的输出类型: text, image, voice, video
     cost: ModelCost = field(default_factory=ModelCost)
     contextWindow: int = 1000000
     maxTokens: int = 65536
@@ -99,6 +100,10 @@ class ModelConfig:
     def supports_input(self, input_type: str) -> bool:
         """检查模型是否支持指定的输入类型"""
         return input_type in self.input
+
+    def supports_output(self, output_type: str) -> bool:
+        """检查模型是否支持指定的输出类型"""
+        return output_type in self.output
 
 
 @dataclass
@@ -144,6 +149,14 @@ class ModelsConfig:
             key
             for key, model in self._model_index.items()
             if model.supports_input(input_type)
+        ]
+
+    def get_models_by_output(self, output_type: str) -> list[str]:
+        """获取支持指定输出类型的所有模型。"""
+        return [
+            key
+            for key, model in self._model_index.items()
+            if model.supports_output(output_type)
         ]
 
     def get_primary_model(self) -> str:
@@ -364,6 +377,7 @@ def _parse_models_config_data(data: dict[str, Any]) -> ModelsConfig:
                 name=model_data.get("name", model_data["id"]),
                 reasoning=model_data.get("reasoning", False),
                 input=model_data.get("input", ["text"]),
+                output=model_data.get("output", []),
                 cost=ModelCost(
                     input=cost_data.get("input", 0),
                     output=cost_data.get("output", 0),

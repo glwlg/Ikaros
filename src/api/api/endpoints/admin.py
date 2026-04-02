@@ -11,11 +11,12 @@ from api.auth.router import require_admin, require_operator
 from api.auth.schemas import RuntimeConfigPatch
 from api.services.admin_audit import list_admin_audits, record_admin_audit
 from api.services.env_config import env_bool, read_managed_env
+from api.services.setup_service import (
+    apply_models_document_patch,
+    build_models_config_editor_snapshot,
+)
 from core.app_paths import env_path, memory_config_path
 from core.audit_store import audit_store
-from core.config import (
-    MODELS_CONFIG_PATH,
-)
 from core.memory_config import (
     get_memory_provider_name,
     load_memory_config,
@@ -23,8 +24,8 @@ from core.memory_config import (
 )
 from core.model_config import (
     get_configured_model,
-    load_models_config,
     normalize_model_role,
+    reload_models_config,
     resolve_models_config_path,
     update_configured_model,
 )
@@ -110,14 +111,15 @@ def _redact_settings(payload: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
-def _runtime_snapshot() -> dict[str, Any]:
+def _runtime_snapshot(*, include_models_config: bool = False) -> dict[str, Any]:
     runtime_payload = runtime_config_store.read()
-    models = load_models_config()
+    models = reload_models_config()
+    models_path = resolve_models_config_path()
     memory = load_memory_config()
     model_roles = {}
     for role in ("primary", "routing", "vision", "image_generation", "voice"):
         model_roles[role] = get_configured_model(role)
-    return {
+    snapshot = {
         "runtime_config": runtime_payload,
         "model_roles": model_roles,
         "model_catalog": {
@@ -134,8 +136,8 @@ def _runtime_snapshot() -> dict[str, Any]:
         },
         "platform_env": _platform_env_summary(),
         "config_files": {
-            "models": str(resolve_models_config_path()),
-            "models_exists": _path_exists(MODELS_CONFIG_PATH),
+            "models": str(models_path),
+            "models_exists": _path_exists(str(models_path)),
             "memory": str(memory_config_path()),
             "memory_exists": _path_exists(str(memory_config_path())),
             "env_exists": env_path().exists(),
@@ -144,6 +146,9 @@ def _runtime_snapshot() -> dict[str, Any]:
             "git_head": _git_head(),
         },
     }
+    if include_models_config:
+        snapshot["models_config"] = build_models_config_editor_snapshot()
+    return snapshot
 
 
 def _update_memory_provider(provider: str, *, actor: str) -> dict[str, Any]:
@@ -180,9 +185,9 @@ def _update_memory_provider(provider: str, *, actor: str) -> dict[str, Any]:
 
 @router.get("/runtime")
 async def get_runtime_snapshot(
-    _: User = Depends(require_operator),
+    _: User = Depends(require_admin),
 ):
-    return _runtime_snapshot()
+    return _runtime_snapshot(include_models_config=True)
 
 
 @router.patch("/runtime")
@@ -193,6 +198,13 @@ async def patch_runtime_snapshot(
 ):
     changes: list[str] = []
     actor = _actor(admin_user)
+
+    if payload.models_config is not None:
+        apply_models_document_patch(
+            dict(payload.models_config),
+            actor=actor,
+        )
+        changes.append("models_config")
 
     if payload.platforms:
         runtime_config_store.update_patch(
@@ -241,7 +253,7 @@ async def patch_runtime_snapshot(
             "status": "success",
         }
     )
-    return _runtime_snapshot()
+    return _runtime_snapshot(include_models_config=True)
 
 
 @router.get("/diagnostics")

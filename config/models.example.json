@@ -39,6 +39,9 @@
             "image",
             "voice"
           ],
+          "output": [
+            "text"
+          ],
           "cost": {
             "input": 0,
             "output": 0,
@@ -54,6 +57,29 @@
           "reasoning": true,
           "input": [
             "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 128000,
+          "maxTokens": 32768
+        },
+        {
+          "id": "gpt-image-1",
+          "name": "gpt-image-1",
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
             "image"
           ],
           "cost": {

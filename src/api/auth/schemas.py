@@ -83,6 +83,7 @@ class RuntimeConfigPatch(BaseModel):
     features: Optional[dict[str, bool]] = None
     cors_allowed_origins: Optional[list[str]] = None
     model_roles: Optional[dict[str, str]] = None
+    models_config: Optional[dict[str, Any]] = None
     memory_provider: Optional[str] = None
 
 
