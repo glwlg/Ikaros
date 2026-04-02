@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_client_for_model
-    from core.model_config import get_current_model, resolve_models_config_path
+from core.model_config import get_current_model, resolve_models_config_path
 from services.openai_adapter import generate_text
 
 from ap_utils import (
