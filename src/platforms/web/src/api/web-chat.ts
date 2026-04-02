@@ -96,6 +96,13 @@ export const generateTts = async (sessionId: string, messageId: string, voice = 
 
 export const chatFileUrl = (fileId: string) => `/api/v1/web-chat/files/${fileId}`
 
+export const fetchChatFileBlob = async (fileId: string) => {
+    const response = await request.get(`/web-chat/files/${fileId}`, {
+        responseType: 'blob',
+    })
+    return response.data as Blob
+}
+
 export async function streamSessionEvents(
     sessionId: string,
     after: number,

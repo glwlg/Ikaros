@@ -85,7 +85,9 @@ class WeixinChannelExtension(ChannelExtension):
             return
 
         if action == "qr":
-            requester_platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
+            requester_platform = (
+                str(getattr(ctx.message, "platform", "") or "").strip().lower()
+            )
             requester_chat_id = str(
                 getattr(getattr(ctx.message, "chat", None), "id", "") or ""
             ).strip()
@@ -98,7 +100,9 @@ class WeixinChannelExtension(ChannelExtension):
                 notification_platform=requester_platform,
                 notification_chat_id=requester_chat_id or user_id,
             )
-            qr_content = str(payload.get("qr_content") or payload.get("qr_url") or "").strip()
+            qr_content = str(
+                payload.get("qr_content") or payload.get("qr_url") or ""
+            ).strip()
             caption = (
                 "请让对方扫码完成微信绑定。\n"
                 "扫码成功后，我会自动把该微信加入 allow-list，并回消息通知你。"
@@ -140,7 +144,9 @@ class WeixinChannelExtension(ChannelExtension):
         self.adapter.register_message_handler(route_message_by_type)
         self.adapter.on_callback_query(COMMON_CALLBACK_PATTERN, button_callback)
 
-        platforms = [name for name in ("telegram", "weixin") if runtime.has_adapter(name)]
+        platforms = [
+            name for name in ("telegram", "weixin", "web") if runtime.has_adapter(name)
+        ]
         if platforms:
             runtime.register_command(
                 "wxbind",
