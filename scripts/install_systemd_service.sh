@@ -7,7 +7,7 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
 RUNNER_PATH="${PROJECT_DIR}/scripts/run_ikaros.sh"
 
 SERVICE_NAME="ikaros"
-INSTALL_MODE="system"
+INSTALL_MODE="user"
 TARGET_USER=""
 PRINT_ONLY=0
 NO_START=0
@@ -18,14 +18,18 @@ Usage:
   scripts/install_systemd_service.sh [options]
 
 Options:
-  --system               Install a system service under /etc/systemd/system (default)
-  --user                 Install a user service under ~/.config/systemd/user
+  --user                 Install a user service under ~/.config/systemd/user (default, recommended)
+  --system               Install a system service under /etc/systemd/system (requires sudo)
   --runner PATH          Runner script to execute (default: scripts/run_ikaros.sh)
-  --target-user USER     Override the inferred runtime user for --system mode
+  --target-user USER     Override the inferred runtime user for --system mode only
   --service-name NAME    Override the unit name (default: ikaros)
   --print-unit           Print the rendered unit file instead of installing it
   --no-start             Install the unit but do not enable/start it
   -h, --help             Show this help text
+
+Notes:
+  - `--user` is recommended for single-user/self-hosted deployments and works well with `/restart`
+  - use `--system` when you explicitly need a machine-wide service managed by root
 EOF
 }
 
@@ -201,6 +205,7 @@ print_next_steps() {
     if [[ "${NO_START}" -eq 1 ]]; then
         if [[ "${INSTALL_MODE}" == "user" ]]; then
             echo "Next: systemctl --user enable --now ${SERVICE_NAME}"
+            echo "Hint: if you want user services to auto-start before login, run: sudo loginctl enable-linger $(id -un)"
         else
             echo "Next: sudo systemctl enable --now ${SERVICE_NAME}"
         fi
@@ -210,6 +215,7 @@ print_next_steps() {
     if [[ "${INSTALL_MODE}" == "user" ]]; then
         echo "Check status: systemctl --user status ${SERVICE_NAME}"
         echo "Stream logs: journalctl --user -u ${SERVICE_NAME} -f"
+        echo "Hint: if you want user services to auto-start before login, run: sudo loginctl enable-linger $(id -un)"
         return 0
     fi
 

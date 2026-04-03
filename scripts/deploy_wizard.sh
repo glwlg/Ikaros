@@ -26,7 +26,7 @@ Description:
   It can:
     - initialize .env / ~/.ikaros/config/models.json from templates
     - optionally configure primary / routing provider, baseUrl, apiKey, and model bindings
-    - deploy ikaros and ikaros-api with shell background, systemd / launchd, or docker compose
+    - deploy ikaros and ikaros-api with shell background, systemd(user/system) / launchd, or docker compose
     - print the Web URL for finishing bootstrap in browser
 EOF
 }
@@ -495,8 +495,13 @@ PY
 
 print_model_reference() {
     local -a keys=()
+    local item=""
 
-    mapfile -t keys < <(available_model_keys)
+    while IFS= read -r item; do
+        if [[ -n "${item}" ]]; then
+            keys+=("${item}")
+        fi
+    done < <(available_model_keys)
 
     echo
     echo "当前 models.json 里的已知模型键："
@@ -723,10 +728,17 @@ PY
 install_service_mode() {
     local service_kind="$1"
     local os_name="$2"
+    local deploy_mode="${3:-}"
 
     if [[ "${service_kind}" == "ikaros" ]]; then
         if [[ "${os_name}" == "linux" ]]; then
-            "${SCRIPT_DIR}/install_systemd_service.sh" --service-name ikaros --runner scripts/run_ikaros.sh
+            local -a argv=(--service-name ikaros --runner scripts/run_ikaros.sh)
+            if [[ "${deploy_mode}" == "systemd_user" ]]; then
+                argv=(--user "${argv[@]}")
+            else
+                argv=(--system "${argv[@]}")
+            fi
+            "${SCRIPT_DIR}/install_systemd_service.sh" "${argv[@]}"
             return 0
         fi
         if [[ "${os_name}" == "macos" ]]; then
@@ -737,7 +749,13 @@ install_service_mode() {
 
     if [[ "${service_kind}" == "api" ]]; then
         if [[ "${os_name}" == "linux" ]]; then
-            "${SCRIPT_DIR}/install_systemd_service.sh" --service-name ikaros-api --runner scripts/run_api.sh
+            local -a argv=(--service-name ikaros-api --runner scripts/run_api.sh)
+            if [[ "${deploy_mode}" == "systemd_user" ]]; then
+                argv=(--user "${argv[@]}")
+            else
+                argv=(--system "${argv[@]}")
+            fi
+            "${SCRIPT_DIR}/install_systemd_service.sh" "${argv[@]}"
             return 0
         fi
         if [[ "${os_name}" == "macos" ]]; then
@@ -748,6 +766,20 @@ install_service_mode() {
 
     echo "Unsupported service install combination: ${service_kind} / ${os_name}" >&2
     exit 1
+}
+
+mode_label() {
+    case "${1:-}" in
+        shell_bg) printf 'shell_bg\n' ;;
+        systemd_user) printf 'systemd(user)\n' ;;
+        systemd_system) printf 'systemd(system)\n' ;;
+        launchd) printf 'launchd\n' ;;
+        compose) printf 'compose\n' ;;
+        skip) printf 'skip\n' ;;
+        *)
+            printf '%s\n' "${1:-unknown}"
+            ;;
+    esac
 }
 
 print_next_steps() {
@@ -761,8 +793,8 @@ print_next_steps() {
     echo
     echo "Deployment summary"
     echo "------------------"
-    echo "Ikaros Core : ${ikaros_mode}"
-    echo "Ikaros API  : ${api_mode}"
+    echo "Ikaros Core : $(mode_label "${ikaros_mode}")"
+    echo "Ikaros API  : $(mode_label "${api_mode}")"
     echo "Models      : ${model_mode}"
     if [[ -n "${primary_key}" ]]; then
         echo "Primary     : ${primary_key}"
@@ -785,7 +817,11 @@ print_next_steps() {
 
     if [[ "${ikaros_mode}" == "shell_bg" ]]; then
         echo "Core logs: tail -f ${LOG_DIR}/ikaros.out.log"
-    elif [[ "${ikaros_mode}" == "systemd" ]]; then
+    elif [[ "${ikaros_mode}" == "systemd_user" ]]; then
+        echo "Core status: systemctl --user status ikaros"
+        echo "Core logs:   journalctl --user -u ikaros -f"
+        echo "Hint: enable lingering if you want user services to auto-start before login: sudo loginctl enable-linger $(id -un)"
+    elif [[ "${ikaros_mode}" == "systemd_system" ]]; then
         echo "Core status: sudo systemctl status ikaros"
     elif [[ "${ikaros_mode}" == "launchd" ]]; then
         echo "Core status: launchctl print gui/$(id -u)/com.ikaros.core"
@@ -795,7 +831,10 @@ print_next_steps() {
 
     if [[ "${api_mode}" == "shell_bg" ]]; then
         echo "API logs:  tail -f ${LOG_DIR}/ikaros-api.out.log"
-    elif [[ "${api_mode}" == "systemd" ]]; then
+    elif [[ "${api_mode}" == "systemd_user" ]]; then
+        echo "API status: systemctl --user status ikaros-api"
+        echo "API logs:   journalctl --user -u ikaros-api -f"
+    elif [[ "${api_mode}" == "systemd_system" ]]; then
         echo "API status: sudo systemctl status ikaros-api"
     elif [[ "${api_mode}" == "launchd" ]]; then
         echo "API status: launchctl print gui/$(id -u)/com.ikaros.api"
@@ -826,13 +865,15 @@ main() {
         linux)
             core_options=(
                 "shell_bg|后台脚本模式（nohup 启动）"
-                "systemd|systemd 服务"
+                "systemd_user|systemd 用户服务（推荐，当前用户）"
+                "systemd_system|systemd 系统服务（需要 sudo）"
                 "compose|Docker Compose"
                 "skip|暂不部署"
             )
             api_options=(
                 "shell_bg|后台脚本模式（nohup 启动）"
-                "systemd|systemd 服务"
+                "systemd_user|systemd 用户服务（推荐，当前用户）"
+                "systemd_system|systemd 系统服务（需要 sudo）"
                 "compose|Docker Compose"
                 "skip|暂不部署"
             )
@@ -942,7 +983,7 @@ main() {
     local need_compose=0
 
     case "${ikaros_mode}" in
-        shell_bg|systemd|launchd)
+        shell_bg|systemd_user|systemd_system|launchd)
             need_uv_sync=1
             ;;
         compose)
@@ -951,7 +992,7 @@ main() {
     esac
 
     case "${api_mode}" in
-        shell_bg|systemd|launchd)
+        shell_bg|systemd_user|systemd_system|launchd)
             need_uv_sync=1
             need_web_build=1
             ;;
@@ -976,8 +1017,8 @@ main() {
                 "${LOG_DIR}/ikaros.out.log" \
                 "${SCRIPT_DIR}/run_ikaros.sh"
             ;;
-        systemd|launchd)
-            install_service_mode "ikaros" "${current_os}"
+        systemd_user|systemd_system|launchd)
+            install_service_mode "ikaros" "${current_os}" "${ikaros_mode}"
             ;;
     esac
 
@@ -989,8 +1030,8 @@ main() {
                 "${LOG_DIR}/ikaros-api.out.log" \
                 "${SCRIPT_DIR}/run_api.sh" --skip-build --host 0.0.0.0 --port "${API_PORT}"
             ;;
-        systemd|launchd)
-            install_service_mode "api" "${current_os}"
+        systemd_user|systemd_system|launchd)
+            install_service_mode "api" "${current_os}" "${api_mode}"
             ;;
     esac
 

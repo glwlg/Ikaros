@@ -19,6 +19,7 @@ from handlers import (
     heartbeat_command,
     help_command,
     model_command,
+    restart_command,
     save_feature_command,
     start,
     stop_command,
@@ -44,6 +45,7 @@ class CoreCommandsPlugin(PluginExtension):
         runtime.register_command("task", task_command, description="查看 ikaros 任务")
         runtime.register_command("model", model_command, description="查看和切换模型")
         runtime.register_command("usage", usage_command, description="查看 LLM 用量")
+        runtime.register_command("restart", restart_command, description="重启 ikaros 服务")
 
         runtime.register_callback("^home_", handle_home_callback)
         runtime.register_callback("^helpm_", handle_home_callback)

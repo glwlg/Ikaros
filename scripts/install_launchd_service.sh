@@ -107,8 +107,13 @@ bootstrap_service() {
     domain="gui/$(id -u)"
 
     launchctl bootout "${domain}" "${destination}" >/dev/null 2>&1 || true
-    launchctl bootstrap "${domain}" "${destination}"
-    launchctl kickstart -k "${domain}/${LABEL}" >/dev/null 2>&1 || true
+    if launchctl bootstrap "${domain}" "${destination}" >/dev/null 2>&1; then
+        launchctl kickstart -k "${domain}/${LABEL}" >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    launchctl unload "${destination}" >/dev/null 2>&1 || true
+    launchctl load "${destination}"
 }
 
 print_next_steps() {
@@ -118,11 +123,11 @@ print_next_steps() {
 
     echo "Installed plist: ${destination}"
     if [[ "${NO_START}" -eq 1 ]]; then
-        echo "Next: launchctl bootstrap ${domain} ${destination}"
+        echo "Next: launchctl bootstrap ${domain} ${destination}  (older macOS can use: launchctl load ${destination})"
         return 0
     fi
 
-    echo "Check status: launchctl print ${domain}/${LABEL}"
+    echo "Check status: launchctl print ${domain}/${LABEL}  (older macOS can use: launchctl list | grep ${LABEL})"
     echo "Logs: tail -f ${LOG_DIR}/${LABEL}.out.log ${LOG_DIR}/${LABEL}.err.log"
 }
 
