@@ -3,6 +3,7 @@ from pathlib import Path
 
 from handlers.heartbeat_handlers import _parse_subcommand as parse_heartbeat_subcommand
 from handlers.model_handlers import _parse_subcommand as parse_model_subcommand
+from handlers.restart_handlers import _parse_subcommand as parse_restart_subcommand
 from handlers.usage_handlers import _parse_subcommand as parse_usage_subcommand
 
 
@@ -47,6 +48,11 @@ def test_heartbeat_default_subcommands():
         "use",
         "primary demo/fallback",
     )
+    assert parse_restart_subcommand("/restart") == ("run", "all")
+    assert parse_restart_subcommand("/restart api") == ("run", "api")
+    assert parse_restart_subcommand("/restart core") == ("run", "ikaros")
+    assert parse_restart_subcommand("/restart status") == ("status", "")
+    assert parse_restart_subcommand("/restart help") == ("help", "")
     assert parse_usage_subcommand("/usage") == ("show", "")
     assert parse_usage_subcommand("/usage help") == ("help", "")
     assert parse_usage_subcommand("/usage today") == ("today", "")

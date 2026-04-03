@@ -16,7 +16,7 @@
 | `scripts/build_web.sh` | 构建 Web 前端到 `src/api/static/dist` |
 | `scripts/run_api.sh` | 非 Docker 方式启动 API |
 | `scripts/deploy_api_compose.sh` | 用 `docker-compose.yml` 部署 API |
-| `scripts/install_systemd_service.sh` | Linux systemd 服务安装，支持自定义 runner |
+| `scripts/install_systemd_service.sh` | Linux systemd 服务安装，默认使用 `--user`，也支持 `--system` |
 | `scripts/install_launchd_service.sh` | macOS launchd 服务安装 |
 | `scripts/build_web.ps1` | Windows 构建 Web 前端 |
 | `scripts/run_api.ps1` | Windows 非 Docker 启动 API |
@@ -180,7 +180,7 @@ uv sync
 - 如果你已经手动构建过，可加 `--skip-build`
 - 本地非 Docker 模式下，脚本会自动补 `PYTHONPATH=src`，避免 `uvicorn api.main:app` 找不到模块
 
-### 2.3 Core 使用 systemd 常驻
+### 2.3 Core 使用 systemd 用户服务常驻（推荐）
 
 先确认直接运行没问题：
 
@@ -191,30 +191,42 @@ uv sync
 安装 systemd 服务：
 
 ```bash
-./scripts/install_systemd_service.sh --service-name ikaros --runner scripts/run_ikaros.sh
+./scripts/install_systemd_service.sh --user --service-name ikaros --runner scripts/run_ikaros.sh
 ```
 
 查看状态：
 
 ```bash
-sudo systemctl status ikaros
-journalctl -u ikaros -f
+systemctl --user status ikaros
+journalctl --user -u ikaros -f
 ```
 
-### 2.4 API 使用 systemd 常驻
+如果你明确需要机器级 service，再改用：
+
+```bash
+./scripts/install_systemd_service.sh --system --service-name ikaros --runner scripts/run_ikaros.sh
+```
+
+### 2.4 API 使用 systemd 用户服务常驻（推荐）
 
 如果 API 也不想放到 Docker，可以直接把 `run_api.sh` 注册成 systemd 服务：
 
 ```bash
-./scripts/install_systemd_service.sh --service-name ikaros-api --runner scripts/run_api.sh
+./scripts/install_systemd_service.sh --user --service-name ikaros-api --runner scripts/run_api.sh
 ```
 
 查看状态：
 
 ```bash
-sudo systemctl status ikaros-api
-journalctl -u ikaros-api -f
+systemctl --user status ikaros-api
+journalctl --user -u ikaros-api -f
 ```
+
+说明：
+
+- `--user` 适合单用户 / 自托管部署，也是当前默认值
+- 如果希望用户未登录前也能在开机后自动拉起，可执行 `sudo loginctl enable-linger <user>`
+- 如果你明确需要机器级 service，再改用 `--system`
 
 ## 3. macOS 部署
 

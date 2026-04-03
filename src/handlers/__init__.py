@@ -29,3 +29,4 @@ from .heartbeat_handlers import heartbeat_command, handle_heartbeat_callback
 from .task_handlers import task_command, handle_task_callback
 from .model_handlers import model_command, handle_model_callback
 from .usage_handlers import usage_command, handle_usage_callback
+from .restart_handlers import restart_command
