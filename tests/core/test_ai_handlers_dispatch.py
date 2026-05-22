@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -306,6 +307,15 @@ def test_build_ikaros_progress_text_includes_loop_guard_details():
 
 @pytest.mark.asyncio
 async def test_try_handle_waiting_confirmation_treats_text_as_adjustment(monkeypatch):
+    class _FakeChannelRuntimeStore:
+        def get_active_task(self, **kwargs):
+            _ = kwargs
+            return {"id": "mgr-1", "status": "waiting_user"}
+
+        def update_active_task(self, **kwargs):
+            _ = kwargs
+            return None
+
     class _FakeHeartbeatStore:
         async def get_session_active_task(self, user_id: str):
             _ = user_id
@@ -335,6 +345,10 @@ async def test_try_handle_waiting_confirmation_treats_text_as_adjustment(monkeyp
             }
 
     fake_service = _FakeClosureService()
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        _FakeChannelRuntimeStore(),
+    )
     monkeypatch.setattr("core.heartbeat_store.heartbeat_store", _FakeHeartbeatStore())
     monkeypatch.setattr(
         "ikaros.relay.closure_service.ikaros_closure_service",
@@ -365,6 +379,275 @@ async def test_try_handle_waiting_confirmation_treats_text_as_adjustment(monkeyp
         }
     ]
     assert "已记录你的补充说明" in replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_try_handle_waiting_confirmation_ignores_cross_channel_new_video_request(
+    monkeypatch,
+):
+    class _FakeChannelRuntimeStore:
+        def get_active_task(self, **kwargs):
+            _ = kwargs
+            return None
+
+    class _FakeHeartbeatStore:
+        async def get_session_active_task(self, user_id: str):
+            _ = user_id
+            return {"id": "mgr-telegram", "status": "waiting_user"}
+
+    class _FakeClosureService:
+        async def resume_waiting_task(self, **kwargs):
+            _ = kwargs
+            raise AssertionError("new request should not resume the waiting task")
+
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        _FakeChannelRuntimeStore(),
+    )
+    monkeypatch.setattr("core.heartbeat_store.heartbeat_store", _FakeHeartbeatStore())
+    monkeypatch.setattr(
+        "ikaros.relay.closure_service.ikaros_closure_service",
+        _FakeClosureService(),
+    )
+
+    replies: list[str] = []
+
+    class _Ctx:
+        message = SimpleNamespace(
+            user=SimpleNamespace(id="u-1"),
+            platform="weixin",
+        )
+
+        async def reply(self, text, **kwargs):
+            _ = kwargs
+            replies.append(str(text))
+            return SimpleNamespace(id="reply")
+
+    handled = await ai_handlers._try_handle_waiting_confirmation(
+        _Ctx(),
+        "下载视频 https://x.com/wangchangfu88/status/2057414957743120721/video/1?s=46",
+    )
+
+    assert handled is False
+    assert replies == []
+
+
+@pytest.mark.asyncio
+async def test_try_handle_waiting_confirmation_allows_explicit_continue_from_fallback(
+    monkeypatch,
+):
+    class _FakeChannelRuntimeStore:
+        def get_active_task(self, **kwargs):
+            _ = kwargs
+            return None
+
+    class _FakeHeartbeatStore:
+        async def get_session_active_task(self, user_id: str):
+            _ = user_id
+            return {"id": "mgr-telegram", "status": "waiting_user"}
+
+    class _FakeClosureService:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def resume_waiting_task(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {"ok": True, "message": "✅ 已恢复执行，正在继续推进阶段 2/3。"}
+
+    fake_service = _FakeClosureService()
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        _FakeChannelRuntimeStore(),
+    )
+    monkeypatch.setattr("core.heartbeat_store.heartbeat_store", _FakeHeartbeatStore())
+    monkeypatch.setattr(
+        "ikaros.relay.closure_service.ikaros_closure_service",
+        fake_service,
+    )
+
+    replies: list[str] = []
+
+    class _Ctx:
+        message = SimpleNamespace(
+            user=SimpleNamespace(id="u-1"),
+            platform="weixin",
+        )
+
+        async def reply(self, text, **kwargs):
+            _ = kwargs
+            replies.append(str(text))
+            return SimpleNamespace(id="reply")
+
+    handled = await ai_handlers._try_handle_waiting_confirmation(_Ctx(), "继续")
+
+    assert handled is True
+    assert fake_service.calls == [
+        {
+            "user_id": "u-1",
+            "user_message": "",
+            "source": "text",
+        }
+    ]
+    assert "已恢复执行" in replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_try_handle_waiting_confirmation_stops_on_explicit_stop(monkeypatch):
+    class _FakeChannelRuntimeStore:
+        def __init__(self):
+            self.updated: list[dict] = []
+
+        def get_active_task(self, **kwargs):
+            _ = kwargs
+            return {"id": "mgr-stop", "status": "waiting_user"}
+
+        def update_active_task(self, **kwargs):
+            self.updated.append(dict(kwargs))
+            return None
+
+    class _FakeHeartbeatStore:
+        def __init__(self):
+            self.updated: list[tuple[str, dict]] = []
+            self.released: list[str] = []
+            self.events: list[tuple[str, str]] = []
+
+        async def get_session_active_task(self, user_id: str):
+            _ = user_id
+            return {"id": "mgr-stop", "status": "waiting_user"}
+
+        async def update_session_active_task(self, user_id: str, **kwargs):
+            self.updated.append((str(user_id), dict(kwargs)))
+
+        async def release_lock(self, user_id: str):
+            self.released.append(str(user_id))
+
+        async def append_session_event(self, user_id: str, event: str):
+            self.events.append((str(user_id), str(event)))
+
+    class _FakeClosureService:
+        async def resume_waiting_task(self, **kwargs):
+            _ = kwargs
+            raise AssertionError("stop should not resume the waiting task")
+
+    fake_channel_store = _FakeChannelRuntimeStore()
+    fake_heartbeat_store = _FakeHeartbeatStore()
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        fake_channel_store,
+    )
+    monkeypatch.setattr("core.heartbeat_store.heartbeat_store", fake_heartbeat_store)
+    monkeypatch.setattr(
+        "ikaros.relay.closure_service.ikaros_closure_service",
+        _FakeClosureService(),
+    )
+
+    replies: list[str] = []
+
+    class _Ctx:
+        message = SimpleNamespace(
+            user=SimpleNamespace(id="u-1"),
+            platform="telegram",
+        )
+
+        async def reply(self, text, **kwargs):
+            _ = kwargs
+            replies.append(str(text))
+            return SimpleNamespace(id="reply")
+
+    handled = await ai_handlers._try_handle_waiting_confirmation(_Ctx(), "停止")
+
+    assert handled is True
+    assert fake_channel_store.updated[-1]["clear_active"] is True
+    assert fake_heartbeat_store.updated[-1][1]["clear_active"] is True
+    assert fake_heartbeat_store.released == ["u-1"]
+    assert fake_heartbeat_store.events == [("u-1", "user_confirm_stop:mgr-stop")]
+    assert "已停止" in replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_try_handle_waiting_confirmation_expires_stale_confirmation(monkeypatch):
+    expired = (datetime.now().astimezone() - timedelta(minutes=5)).isoformat(
+        timespec="seconds"
+    )
+
+    class _FakeChannelRuntimeStore:
+        def __init__(self):
+            self.updated: list[dict] = []
+
+        def get_active_task(self, **kwargs):
+            _ = kwargs
+            return {
+                "id": "mgr-expired",
+                "status": "waiting_user",
+                "confirmation_deadline": expired,
+            }
+
+        def update_active_task(self, **kwargs):
+            self.updated.append(dict(kwargs))
+            return None
+
+    class _FakeHeartbeatStore:
+        def __init__(self):
+            self.updated: list[tuple[str, dict]] = []
+            self.released: list[str] = []
+            self.events: list[tuple[str, str]] = []
+
+        async def get_session_active_task(self, user_id: str):
+            _ = user_id
+            return {
+                "id": "mgr-expired",
+                "status": "waiting_user",
+                "confirmation_deadline": expired,
+            }
+
+        async def update_session_active_task(self, user_id: str, **kwargs):
+            self.updated.append((str(user_id), dict(kwargs)))
+
+        async def release_lock(self, user_id: str):
+            self.released.append(str(user_id))
+
+        async def append_session_event(self, user_id: str, event: str):
+            self.events.append((str(user_id), str(event)))
+
+    class _FakeClosureService:
+        async def resume_waiting_task(self, **kwargs):
+            _ = kwargs
+            raise AssertionError("expired confirmation should not resume")
+
+    fake_channel_store = _FakeChannelRuntimeStore()
+    fake_heartbeat_store = _FakeHeartbeatStore()
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        fake_channel_store,
+    )
+    monkeypatch.setattr("core.heartbeat_store.heartbeat_store", fake_heartbeat_store)
+    monkeypatch.setattr(
+        "ikaros.relay.closure_service.ikaros_closure_service",
+        _FakeClosureService(),
+    )
+
+    replies: list[str] = []
+
+    class _Ctx:
+        message = SimpleNamespace(
+            user=SimpleNamespace(id="u-1"),
+            platform="telegram",
+        )
+
+        async def reply(self, text, **kwargs):
+            _ = kwargs
+            replies.append(str(text))
+            return SimpleNamespace(id="reply")
+
+    handled = await ai_handlers._try_handle_waiting_confirmation(_Ctx(), "继续")
+
+    assert handled is True
+    assert fake_channel_store.updated[-1]["clear_active"] is True
+    assert fake_heartbeat_store.updated[-1][1]["clear_active"] is True
+    assert fake_heartbeat_store.events == [
+        ("u-1", "confirmation_expired:mgr-expired")
+    ]
+    assert "已超过 3 分钟" in replies[-1]
 
 
 def test_build_runtime_phrase_pools_uses_static_indicator_frames():

@@ -14,6 +14,10 @@ from core.skill_menu import (
     menu_store,
     parse_callback,
 )
+from core.task_confirmation import (
+    clear_expired_waiting_confirmation,
+    is_confirmation_expired,
+)
 from core.task_inbox import task_inbox
 
 from .base_handlers import (
@@ -111,6 +115,12 @@ async def _active_confirmation_row(user_id: str) -> list[dict[str, str]]:
     if not active_task:
         active_task = await heartbeat_store.get_session_active_task(user_id)
     if not active_task or str(active_task.get("status") or "") != "waiting_user":
+        return []
+    if is_confirmation_expired(active_task):
+        await clear_expired_waiting_confirmation(
+            user_id=user_id,
+            active_task=active_task,
+        )
         return []
     return [
         {"text": "继续当前任务", "callback_data": "task_continue"},

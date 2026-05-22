@@ -29,6 +29,10 @@ from core.file_artifacts import (
 from core.model_config import select_model_for_role
 from core.platform.exceptions import MediaProcessingError, MessageSendError
 from core.runtime_callbacks import pop_runtime_callback, set_runtime_callback
+from core.task_confirmation import (
+    clear_expired_waiting_confirmation,
+    is_confirmation_expired,
+)
 from services.openai_adapter import generate_text
 
 from user_context import add_message, bind_delivery_target, get_user_context
@@ -51,6 +55,28 @@ DEFAULT_LOADING_PHRASES = [
 ]
 
 ACK_REACTION_EMOJI = "👀"
+
+WAITING_CONTINUE_TEXTS = {
+    "continue",
+    "resume",
+    "继续",
+    "继续当前任务",
+    "继续执行",
+    "确认继续",
+}
+
+WAITING_STOP_TEXTS = {
+    "cancel",
+    "stop",
+    "不继续",
+    "取消",
+    "取消任务",
+    "停",
+    "停止",
+    "停止任务",
+    "终止",
+    "终止任务",
+}
 
 
 def _env_int(name: str, default: int, minimum: int) -> int:
@@ -175,6 +201,36 @@ def _compact_text(text: str, limit: int = 220) -> str:
     if len(raw) <= limit:
         return raw
     return raw[:limit].rstrip() + "..."
+
+
+def _waiting_control_intent(text: str) -> str:
+    normalized = re.sub(r"[\s`'\"“”‘’。！!,.，、]+", "", str(text or "").lower())
+    if not normalized:
+        return ""
+    if normalized in WAITING_CONTINUE_TEXTS:
+        return "continue"
+    if normalized in WAITING_STOP_TEXTS:
+        return "stop"
+    return ""
+
+
+def _looks_like_new_request_while_waiting(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if raw.startswith("/"):
+        return True
+    lowered = raw.lower()
+    if lowered.startswith(("download ", "下载视频", "下载 视频")):
+        return True
+    try:
+        from utils import extract_pure_video_url
+
+        if extract_pure_video_url(raw):
+            return True
+    except Exception:
+        logger.debug("Failed to classify possible video request.", exc_info=True)
+    return False
 
 
 _VERBOSE_PROGRESS_MARKERS = (
@@ -696,18 +752,64 @@ async def _try_handle_waiting_confirmation(
     from ikaros.relay.closure_service import ikaros_closure_service
 
     user_id = str(ctx.message.user.id)
+    platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
     active_task = channel_runtime_store.get_active_task(
-        platform=str(getattr(ctx.message, "platform", "") or "").strip().lower(),
+        platform=platform,
         platform_user_id=user_id,
     )
-    if not active_task:
+    channel_waiting = bool(active_task and active_task.get("status") == "waiting_user")
+    control_intent = _waiting_control_intent(user_message)
+
+    if not channel_waiting and control_intent:
         active_task = await heartbeat_store.get_session_active_task(user_id)
     if not active_task or active_task.get("status") != "waiting_user":
+        return False
+    if not channel_waiting and not control_intent:
+        return False
+    if is_confirmation_expired(active_task):
+        await clear_expired_waiting_confirmation(
+            user_id=user_id,
+            platform=platform,
+            active_task=active_task,
+        )
+        if control_intent:
+            await ctx.reply("⌛ 等待确认已超过 3 分钟，任务已过期。请重新发送请求。")
+            return True
+        return False
+
+    if control_intent == "stop":
+        task_id = str(active_task.get("id") or "").strip()
+        channel_runtime_store.update_active_task(
+            platform=platform,
+            platform_user_id=user_id,
+            status="cancelled",
+            needs_confirmation=False,
+            confirmation_deadline="",
+            clear_active=True,
+            result_summary="Cancelled during text confirmation stage.",
+        )
+        await heartbeat_store.update_session_active_task(
+            user_id,
+            status="cancelled",
+            needs_confirmation=False,
+            confirmation_deadline="",
+            clear_active=True,
+            result_summary="Cancelled during text confirmation stage.",
+        )
+        await heartbeat_store.release_lock(user_id)
+        await heartbeat_store.append_session_event(
+            user_id,
+            f"user_confirm_stop:{task_id or 'waiting_task'}",
+        )
+        await ctx.reply("🛑 已停止当前等待中的任务。")
+        return True
+
+    if not control_intent and _looks_like_new_request_while_waiting(user_message):
         return False
 
     resume = await ikaros_closure_service.resume_waiting_task(
         user_id=user_id,
-        user_message=user_message,
+        user_message="" if control_intent == "continue" else user_message,
         source="text",
     )
     if bool(resume.get("ok")):

@@ -8,6 +8,10 @@ from core.file_artifacts import extract_saved_file_rows, merge_file_rows, normal
 from core.heartbeat_store import heartbeat_store
 from core.subagent_supervisor import subagent_supervisor
 from core.task_cards import format_stage_continue_card, format_waiting_user_card
+from core.task_confirmation import (
+    clear_expired_waiting_confirmation,
+    is_confirmation_expired,
+)
 from core.task_inbox import task_inbox
 from core.tool_registry import tool_registry
 from ikaros.planning.stage_planner import (
@@ -1026,6 +1030,15 @@ class IkarosClosureService:
             return {
                 "ok": False,
                 "message": "当前没有等待继续的任务。",
+            }
+        if is_confirmation_expired(active_task):
+            await clear_expired_waiting_confirmation(
+                user_id=safe_user_id,
+                active_task=active_task,
+            )
+            return {
+                "ok": False,
+                "message": "等待确认已超过 3 分钟，任务已过期。请重新发送请求。",
             }
 
         task_inbox_id = _safe_text(

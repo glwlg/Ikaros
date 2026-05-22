@@ -64,6 +64,7 @@ const saving = ref(false)
 const testingId = ref<number | null>(null)
 const ptzAction = ref<PtzAction | ''>('')
 const ptzSpeed = ref(0.4)
+const ptzSpeedPercent = computed(() => Math.round(ptzSpeed.value * 100))
 
 const emptyForm = (): CameraForm => ({
     name: '',
@@ -287,7 +288,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <div class="order-1 grid gap-4 md:order-2 md:gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+    <div class="camera-main-grid order-1 grid gap-4 md:order-2 md:gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
       <section class="camera-live-card overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
         <div class="camera-live-header flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4">
           <div class="min-w-0">
@@ -392,10 +393,23 @@ onMounted(() => {
               <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Control</div>
               <h3 class="mt-1 text-lg font-semibold text-slate-950">云台控制</h3>
             </div>
-            <input v-model.number="ptzSpeed" class="w-24" type="range" min="0.05" max="1" step="0.05">
+            <span class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-600">{{ ptzSpeedPercent }}%</span>
           </div>
 
-          <div class="mt-5 grid grid-cols-3 gap-2">
+          <label class="mt-4 flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+            <span class="shrink-0 text-sm font-medium text-slate-600">速度</span>
+            <input
+              v-model.number="ptzSpeed"
+              class="camera-speed-slider min-w-0 flex-1"
+              type="range"
+              min="0.05"
+              max="1"
+              step="0.05"
+              aria-label="云台速度"
+            >
+          </label>
+
+          <div class="mt-3 grid grid-cols-3 gap-2">
             <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowUpLeft class="h-5 w-5" /></button>
             <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowUp class="h-5 w-5" /></button>
             <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowUpRight class="h-5 w-5" /></button>
@@ -481,6 +495,94 @@ onMounted(() => {
 
 .camera-player iframe {
   border: 0;
+}
+
+.camera-speed-slider {
+  accent-color: #2f7cf6;
+}
+
+@media (min-width: 769px) {
+  .camera-page {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    gap: 12px;
+    overflow: hidden;
+    padding: 16px !important;
+  }
+
+  .camera-summary {
+    flex: 0 0 auto;
+    padding: 14px 20px !important;
+  }
+
+  .camera-summary h2 {
+    margin-top: 2px !important;
+    font-size: 1.25rem;
+    line-height: 1.3;
+  }
+
+  .camera-summary > div:first-child {
+    align-items: center;
+  }
+
+  .camera-summary > div:first-child + div {
+    margin-top: 12px !important;
+    gap: 10px;
+  }
+
+  .camera-summary > div:first-child + div > div {
+    padding: 10px 14px !important;
+  }
+
+  .camera-summary > div:first-child + div > div > div:last-child {
+    margin-top: 6px !important;
+    font-size: 1.45rem;
+    line-height: 1.1;
+  }
+
+  .camera-main-grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    gap: 14px !important;
+    grid-template-columns: minmax(0, 1fr) 352px;
+  }
+
+  .camera-live-card {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .camera-live-header {
+    flex: 0 0 auto;
+    padding: 10px 14px !important;
+  }
+
+  .camera-live-header h3 {
+    margin-top: 2px !important;
+    font-size: 1.05rem;
+    line-height: 1.25;
+  }
+
+  .camera-player {
+    min-height: 0;
+    flex: 1 1 auto;
+    aspect-ratio: auto;
+  }
+
+  .camera-side {
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .camera-side > section {
+    padding: 14px !important;
+  }
+
+  .ptz-btn {
+    min-height: 38px !important;
+  }
 }
 
 .ptz-btn {
