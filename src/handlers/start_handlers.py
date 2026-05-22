@@ -1,6 +1,10 @@
 import logging
 from core.channel_user_store import DEFAULT_ACCESS
 from core.platform.models import UnifiedContext
+from core.task_confirmation import (
+    clear_expired_waiting_confirmation,
+    is_confirmation_expired,
+)
 from core.skill_menu import make_callback, parse_callback
 from core.session_task_store import session_task_store
 from core.task_cards import build_session_brief_lines
@@ -571,14 +575,23 @@ async def button_callback(ctx: UnifiedContext) -> int:
             from ikaros.relay.closure_service import ikaros_closure_service
 
             hb_user_id = str(ctx.callback_user_id or ctx.message.user.id)
+            platform = str(ctx.message.platform or "").strip().lower()
             active_task = channel_runtime_store.get_active_task(
-                platform=str(ctx.message.platform or "").strip().lower(),
+                platform=platform,
                 platform_user_id=hb_user_id,
             )
             if not active_task:
                 active_task = await heartbeat_store.get_session_active_task(hb_user_id)
             if not active_task or active_task.get("status") != "waiting_user":
                 await ctx.reply("ℹ️ 当前没有等待确认的任务。")
+                return CONVERSATION_END
+            if is_confirmation_expired(active_task):
+                await clear_expired_waiting_confirmation(
+                    user_id=hb_user_id,
+                    platform=platform,
+                    active_task=active_task,
+                )
+                await ctx.reply("⌛ 这个确认已超过 3 分钟，任务已过期。请重新发送请求。")
                 return CONVERSATION_END
 
             task_id = str(active_task.get("id"))
@@ -602,7 +615,7 @@ async def button_callback(ctx: UnifiedContext) -> int:
                     )
             else:
                 channel_runtime_store.update_active_task(
-                    platform=str(ctx.message.platform or "").strip().lower(),
+                    platform=platform,
                     platform_user_id=hb_user_id,
                     status="cancelled",
                     needs_confirmation=False,

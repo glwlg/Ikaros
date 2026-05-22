@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -337,6 +337,61 @@ async def test_button_callback_continue_resumes_waiting_task(monkeypatch):
         ("u-callback", "user_confirm_continue:mgr-continue")
     ]
     assert "已恢复执行" in ctx.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_button_callback_continue_expires_stale_confirmation(monkeypatch):
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr(start_handlers, "check_permission_unified", _allow)
+
+    expired = (datetime.now().astimezone() - timedelta(minutes=5)).isoformat(
+        timespec="seconds"
+    )
+    fake_heartbeat_store = _FakeHeartbeatStore(
+        active_task={
+            "id": "mgr-expired",
+            "status": "waiting_user",
+            "confirmation_deadline": expired,
+        }
+    )
+    fake_channel_store = _FakeChannelRuntimeStore(
+        active_task={
+            "id": "mgr-expired",
+            "status": "waiting_user",
+            "confirmation_deadline": expired,
+        }
+    )
+
+    class _FakeClosureService:
+        async def resume_waiting_task(self, **kwargs):
+            _ = kwargs
+            raise AssertionError("expired confirmation should not resume")
+
+    monkeypatch.setattr(heartbeat_store_module, "heartbeat_store", fake_heartbeat_store)
+    monkeypatch.setattr(
+        channel_runtime_store_module,
+        "channel_runtime_store",
+        fake_channel_store,
+    )
+    monkeypatch.setattr(
+        "ikaros.relay.closure_service.ikaros_closure_service",
+        _FakeClosureService(),
+    )
+
+    ctx = _DummyContext("u-callback", text="noop")
+    ctx.callback_data = "task_continue"
+
+    result = await start_handlers.button_callback(ctx)
+
+    assert result == start_handlers.CONVERSATION_END
+    assert fake_channel_store.updated[-1]["clear_active"] is True
+    assert fake_heartbeat_store.updated[-1][1]["clear_active"] is True
+    assert fake_heartbeat_store.events == [
+        ("u-callback", "confirmation_expired:mgr-expired")
+    ]
+    assert "已超过 3 分钟" in ctx.replies[-1]
 
 
 @pytest.mark.asyncio

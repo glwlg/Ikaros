@@ -201,6 +201,59 @@ async def test_task_command_keeps_heartbeat_followup_tasks(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_active_confirmation_row_clears_expired_waiting_task(monkeypatch):
+    expired_active = {
+        "id": "mgr-expired",
+        "status": "waiting_user",
+        "confirmation_deadline": "2000-01-01T00:00:00+00:00",
+    }
+    channel_updates: list[dict] = []
+    heartbeat_updates: list[tuple[str, dict]] = []
+    released: list[str] = []
+    events: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        task_handlers_module.channel_runtime_store,
+        "get_active_task",
+        lambda **_kwargs: expired_active,
+    )
+    monkeypatch.setattr(
+        task_handlers_module.channel_runtime_store,
+        "update_active_task",
+        lambda **kwargs: channel_updates.append(dict(kwargs)),
+    )
+
+    async def _update_active(user_id: str, **kwargs):
+        heartbeat_updates.append((str(user_id), dict(kwargs)))
+
+    async def _release(user_id: str):
+        released.append(str(user_id))
+
+    async def _append_event(user_id: str, event: str):
+        events.append((str(user_id), str(event)))
+
+    monkeypatch.setattr(
+        task_handlers_module.heartbeat_store,
+        "update_session_active_task",
+        _update_active,
+    )
+    monkeypatch.setattr(task_handlers_module.heartbeat_store, "release_lock", _release)
+    monkeypatch.setattr(
+        task_handlers_module.heartbeat_store,
+        "append_session_event",
+        _append_event,
+    )
+
+    row = await task_handlers_module._active_confirmation_row("u-task")
+
+    assert row == []
+    assert channel_updates[-1]["clear_active"] is True
+    assert heartbeat_updates[-1][1]["clear_active"] is True
+    assert released == ["u-task"]
+    assert events == [("u-task", "confirmation_expired:mgr-expired")]
+
+
+@pytest.mark.asyncio
 async def test_task_command_hides_completed_heartbeat_followup_tasks(
     monkeypatch, tmp_path
 ):

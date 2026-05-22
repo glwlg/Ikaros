@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -522,6 +523,69 @@ async def test_resume_waiting_task_treats_text_as_adjustment(monkeypatch, _isola
     assert adjustments[-1]["message"] == "把范围限制在最近 7 天，并先检查现有容器状态"
     assert metadata["task_inbox_id"] == session.task_id
     assert metadata["session_task_id"] == session.task_id
+
+
+@pytest.mark.asyncio
+async def test_resume_waiting_task_rejects_expired_confirmation(
+    monkeypatch, _isolated_state
+):
+    session = await task_inbox.submit(
+        source="user_chat",
+        goal="帮我修复并验证部署流程",
+        user_id="u-expired",
+        metadata={
+            "original_user_request": "帮我修复并验证部署流程",
+            "stage_plan": _two_stage_plan("帮我修复并验证部署流程"),
+        },
+    )
+    await task_inbox.update_status(
+        session.task_id,
+        "waiting_user",
+        event="stage_blocked",
+        detail="blocked",
+    )
+    expired = (datetime.now().astimezone() - timedelta(minutes=5)).isoformat(
+        timespec="seconds"
+    )
+    await heartbeat_store.set_session_active_task(
+        "u-expired",
+        {
+            "id": "mgr-expired",
+            "session_task_id": session.task_id,
+            "task_inbox_id": session.task_id,
+            "goal": session.goal,
+            "status": "waiting_user",
+            "source": "user_chat",
+            "stage_index": 1,
+            "stage_total": 2,
+            "stage_id": "stage-1",
+            "stage_title": "收集信息",
+            "attempt_index": 1,
+            "needs_confirmation": True,
+            "confirmation_deadline": expired,
+            "last_blocking_reason": "需要确认是否继续",
+        },
+    )
+
+    async def fake_spawn(**kwargs):
+        _ = kwargs
+        raise AssertionError("expired confirmation should not spawn a resume task")
+
+    monkeypatch.setattr(
+        closure_module.subagent_supervisor,
+        "spawn",
+        fake_spawn,
+    )
+
+    resume = await closure_module.ikaros_closure_service.resume_waiting_task(
+        user_id="u-expired",
+        user_message="",
+        source="button",
+    )
+
+    assert resume["ok"] is False
+    assert "已超过 3 分钟" in resume["message"]
+    assert await heartbeat_store.get_session_active_task("u-expired") is None
 
 
 @pytest.mark.asyncio
