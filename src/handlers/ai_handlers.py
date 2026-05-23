@@ -16,7 +16,7 @@ from core.platform.models import (
 )
 from core.long_term_memory import long_term_memory
 
-from core.config import get_client_for_model
+from core.config import get_client_for_model, ikaros_kernel_provider
 from core.document_artifacts import (
     build_document_forward_text,
     pop_pending_document_artifacts,
@@ -402,6 +402,14 @@ def _summarize_ikaros_tool_args(
 def _build_ikaros_progress_text(snapshot: dict[str, Any]) -> str:
     payload = dict(snapshot or {})
     event = str(payload.get("event") or "").strip().lower()
+    final_preview = _compact_text(str(payload.get("final_preview") or ""), limit=220)
+    summary = _compact_text(str(payload.get("summary") or ""), limit=220)
+
+    if event == "codex_agent_message":
+        return final_preview
+    if event.startswith("codex_"):
+        return ""
+
     turn = max(0, int(payload.get("turn") or 0))
     task_id = str(payload.get("task_id") or "").strip()
     recent_steps = [
@@ -415,7 +423,7 @@ def _build_ikaros_progress_text(snapshot: dict[str, Any]) -> str:
     )
     detail_label = str(latest_step.get("detail_label") or "").strip()
     detail_value = _compact_text(str(latest_step.get("detail") or ""), limit=200)
-    summary = _format_ikaros_progress_summary(
+    formatted_summary = _format_ikaros_progress_summary(
         str(latest_step.get("name") or payload.get("name") or "").strip(),
         str(latest_step.get("summary") or payload.get("summary") or ""),
         ok=(
@@ -433,7 +441,6 @@ def _build_ikaros_progress_text(snapshot: dict[str, Any]) -> str:
         for item in list(payload.get("failures") or [])
         if str(item or "").strip()
     ]
-    final_preview = _compact_text(str(payload.get("final_preview") or ""), limit=160)
 
     lines = ["⏳ Ikaros 正在处理请求"]
     if task_id:
@@ -471,8 +478,8 @@ def _build_ikaros_progress_text(snapshot: dict[str, Any]) -> str:
     if detail_label and detail_value:
         lines.append(f"{detail_label}：`{detail_value}`")
 
-    if summary:
-        lines.append(f"结果：{summary}")
+    if formatted_summary:
+        lines.append(f"结果：{formatted_summary}")
     elif failures:
         lines.append("最近失败：" + "；".join(failures[:2]))
     elif final_preview:
@@ -748,7 +755,9 @@ async def _try_handle_waiting_confirmation(
         return False
 
     from core.channel_runtime_store import channel_runtime_store
+    from core.codex_kernel import codex_kernel_provider, interrupt_codex_kernel_task
     from core.heartbeat_store import heartbeat_store
+    from core.task_inbox import task_inbox
     from ikaros.relay.closure_service import ikaros_closure_service
 
     user_id = str(ctx.message.user.id)
@@ -779,6 +788,16 @@ async def _try_handle_waiting_confirmation(
 
     if control_intent == "stop":
         task_id = str(active_task.get("id") or "").strip()
+        task_inbox_id = str(
+            active_task.get("task_inbox_id")
+            or active_task.get("session_task_id")
+            or ""
+        ).strip()
+        await interrupt_codex_kernel_task(
+            user_id=user_id,
+            task_id=task_id,
+            task_inbox_id=task_inbox_id,
+        )
         channel_runtime_store.update_active_task(
             platform=platform,
             platform_user_id=user_id,
@@ -801,11 +820,49 @@ async def _try_handle_waiting_confirmation(
             user_id,
             f"user_confirm_stop:{task_id or 'waiting_task'}",
         )
+        if task_inbox_id:
+            await task_inbox.update_status(
+                task_inbox_id,
+                "cancelled",
+                event="user_confirm_stop",
+                detail="Cancelled during text confirmation stage.",
+                result={"summary": "Cancelled during text confirmation stage."},
+                output={"text": "已停止当前等待中的任务。"},
+            )
         await ctx.reply("🛑 已停止当前等待中的任务。")
         return True
 
     if not control_intent and _looks_like_new_request_while_waiting(user_message):
         return False
+
+    codex_resume = await codex_kernel_provider.resume_waiting_task(
+        user_id=user_id,
+        platform=platform,
+        user_message="" if control_intent == "continue" else user_message,
+        source="text",
+    )
+    if bool(codex_resume.get("handled")):
+        message = str(
+            codex_resume.get("message")
+            or "⚠️ Codex kernel 暂时无法继续，请重新发送请求。"
+        )
+        if "3分钟内有效" in message:
+            await ctx.reply(
+                {
+                    "text": message,
+                    "ui": {
+                        "actions": [
+                            [
+                                {"text": "继续执行", "callback_data": "task_continue"},
+                                {"text": "停止任务", "callback_data": "task_stop"},
+                            ]
+                        ]
+                    },
+                }
+            )
+        else:
+            await ctx.reply(message)
+        return True
 
     resume = await ikaros_closure_service.resume_waiting_task(
         user_id=user_id,
@@ -1036,6 +1093,7 @@ async def handle_ai_chat(
         "max_turn_limit",
         "semantic_loop_guard",
         "tool_budget_guard",
+        "codex_agent_message",
         "final_response",
     }
     ikaros_progress_thread_id = None
@@ -1051,6 +1109,8 @@ async def handle_ai_chat(
         "AI_MANAGER_PROGRESS_STREAM_ENABLED",
         False,
     )
+    codex_progress_stream_enabled = _env_flag("IKAROS_CODEX_STREAM_ENABLED", True)
+    codex_kernel_ui = ikaros_kernel_provider() == "codex"
     stream_segment_enabled = (
         _env_flag("AI_SEGMENT_STREAM_ENABLED", True)
         and str(platform_name or "").lower() in {"telegram", "discord"}
@@ -1072,14 +1132,22 @@ async def handle_ai_chat(
             return thinking_msg
         if thinking_deleted or state["response_visible"]:
             return None
+        if codex_kernel_ui and not str(initial_text or "").strip():
+            return None
         if time.time() - float(state.get("request_started_at") or 0.0) < 1.0:
             return None
         text = str(initial_text or default_thinking_text or "⏳ 正在处理").strip() or "⏳ 正在处理"
         thinking_msg = await ctx.reply(text)
         return thinking_msg
 
-    async def _push_ikaros_progress_update(*, force: bool) -> None:
-        if not ikaros_progress_stream_enabled:
+    async def _push_ikaros_progress_update(
+        *,
+        force: bool,
+        allow_when_disabled: bool = False,
+        use_draft: bool = True,
+    ) -> None:
+        nonlocal can_update
+        if not ikaros_progress_stream_enabled and not allow_when_disabled:
             return
         progress_text = str(state.get("ikaros_progress_text") or "").strip()
         if not progress_text:
@@ -1097,7 +1165,11 @@ async def handle_ai_chat(
 
         adapter = getattr(ctx, "_adapter", None)
         send_draft = getattr(adapter, "send_message_draft", None)
-        if callable(send_draft) and str(platform_name or "").lower() == "telegram":
+        if (
+            use_draft
+            and callable(send_draft)
+            and str(platform_name or "").lower() == "telegram"
+        ):
             task_id = str(state.get("ikaros_progress_task_id") or "").strip()
             draft_id = int(state.get("ikaros_progress_draft_id") or 0)
             if not draft_id:
@@ -1120,7 +1192,17 @@ async def handle_ai_chat(
             msg_id = _message_id_of(target)
             if msg_id is None:
                 return
-            await ctx.edit_message(msg_id, progress_text)
+            try:
+                await ctx.edit_message(msg_id, progress_text)
+            except MessageSendError as edit_err:
+                if _is_message_too_long_error(edit_err):
+                    return
+                logger.warning(
+                    "Ikaros progress edit failed; disabling message edits: %s",
+                    edit_err,
+                )
+                can_update = False
+                return
             state["ikaros_progress_last_rendered"] = progress_text
             state["ikaros_progress_last_sent_at"] = now
 
@@ -1203,6 +1285,10 @@ async def handle_ai_chat(
             state["ikaros_progress_final_preview"] = str(
                 payload.get("text_preview") or ""
             )[:180]
+        elif event_name == "codex_agent_message":
+            preview = str(payload.get("text_preview") or "").strip()
+            if preview:
+                state["ikaros_progress_final_preview"] = preview[-220:]
 
         ikaros_progress_steps[:] = ikaros_progress_steps[-20:]
         progress_snapshot = dict(payload)
@@ -1213,8 +1299,17 @@ async def handle_ai_chat(
         state["ikaros_progress_text"] = _build_ikaros_progress_text(progress_snapshot)
         state["last_update_time"] = time.time()
 
-        if ikaros_progress_stream_enabled and event_name in ikaros_progress_event_names:
-            await _push_ikaros_progress_update(force=True)
+        is_codex_stream_event = event_name.startswith("codex_")
+        codex_stream_allowed = is_codex_stream_event and codex_progress_stream_enabled
+        if (
+            event_name in ikaros_progress_event_names
+            and (ikaros_progress_stream_enabled or codex_stream_allowed)
+        ):
+            await _push_ikaros_progress_update(
+                force=True,
+                allow_when_disabled=codex_stream_allowed,
+                use_draft=not is_codex_stream_event,
+            )
 
     async def loading_animation() -> None:
         while state["running"]:
@@ -1267,6 +1362,9 @@ async def handle_ai_chat(
                 continue
 
             try:
+                if codex_kernel_ui:
+                    await ctx.send_chat_action(action="typing")
+                    continue
                 await _ensure_thinking_message(default_thinking_text)
                 await ctx.send_chat_action(action="typing")
             except Exception as exc:
@@ -1362,8 +1460,14 @@ async def handle_ai_chat(
                     try:
                         await ctx.edit_message(msg_id, final_text_response)
                     except MessageSendError as edit_err:
-                        if not _is_message_too_long_error(edit_err):
-                            raise
+                        if _is_message_too_long_error(edit_err):
+                            stream_locked = True
+                        else:
+                            logger.warning(
+                                "Streaming edit failed; disabling message edits: %s",
+                                edit_err,
+                            )
+                            can_update = False
                     last_stream_update = now
 
         state["running"] = False
@@ -1435,12 +1539,23 @@ async def handle_ai_chat(
                         ):
                             msg_id = _message_id_of(thinking_msg)
                             if msg_id is not None:
-                                await ctx.edit_message(
-                                    msg_id,
-                                    rendered_response,
-                                    run_after_reply_hooks=True,
-                                )
-                                sent_msg = thinking_msg
+                                try:
+                                    await ctx.edit_message(
+                                        msg_id,
+                                        rendered_response,
+                                        run_after_reply_hooks=True,
+                                    )
+                                    sent_msg = thinking_msg
+                                except MessageSendError as edit_err:
+                                    if _is_message_too_long_error(edit_err):
+                                        raise
+                                    logger.warning(
+                                        "Final response edit failed; "
+                                        "falling back to reply: %s",
+                                        edit_err,
+                                    )
+                                    can_update = False
+                                    sent_msg = await ctx.reply(payload)
                             else:
                                 sent_msg = await ctx.reply(payload)
                         else:
@@ -1490,10 +1605,13 @@ async def handle_ai_chat(
         if str(e) != "Message is not modified":
             error_text = f"❌ Agent 运行出错：{e}\n\n请尝试 /new 重置对话。"
             msg_id = _message_id_of(thinking_msg)
-            if msg_id is not None and not thinking_deleted:
-                await ctx.edit_message(msg_id, error_text)
-            else:
-                await ctx.reply(error_text)
+            try:
+                if msg_id is not None and not thinking_deleted:
+                    await ctx.edit_message(msg_id, error_text)
+                else:
+                    await ctx.reply(error_text)
+            except MessageSendError as send_err:
+                logger.warning("Failed to deliver agent error message: %s", send_err)
     finally:
         pop_runtime_callback(ctx, "ikaros_progress_callback")
         task_manager.unregister_task(user_id)

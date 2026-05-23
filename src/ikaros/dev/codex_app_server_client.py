@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 
 MAX_OUTPUT_CHARS = 12000
@@ -108,6 +109,10 @@ class CodexAppServerClient:
             str(approval_decision or "accept").strip() or "accept"
         )
         self.proc: asyncio.subprocess.Process | None = None
+        self._request_lock = asyncio.Lock()
+        self.event_callback: (
+            Callable[[str, Dict[str, Any]], Awaitable[None] | None] | None
+        ) = None
         self._reader_task: asyncio.Task[Any] | None = None
         self._stderr_task: asyncio.Task[Any] | None = None
         self._request_id = 0
@@ -127,6 +132,30 @@ class CodexAppServerClient:
         self.diffs: List[Dict[str, Any]] = []
         self.command_output: Dict[str, List[str]] = {}
         self.items: Dict[str, Dict[str, Any]] = {}
+        self.user_input_requests: List[Dict[str, Any]] = []
+
+    def is_running(self) -> bool:
+        return self.proc is not None and self.proc.returncode is None
+
+    def reset_turn_state(self) -> None:
+        self.turn_start_response = {}
+        self.completed_turns.clear()
+        self.notifications.clear()
+        self.server_requests.clear()
+        self.error_notifications.clear()
+        self.agent_message_deltas.clear()
+        self.completed_agent_messages.clear()
+        self.plan.clear()
+        self.diffs.clear()
+        self.command_output.clear()
+        self.items.clear()
+        self.user_input_requests.clear()
+
+    def set_event_callback(
+        self,
+        callback: Callable[[str, Dict[str, Any]], Awaitable[None] | None] | None,
+    ) -> None:
+        self.event_callback = callback
 
     async def start(self) -> None:
         if not self.command:
@@ -264,19 +293,26 @@ class CodexAppServerClient:
         )
 
     async def request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        self._request_id += 1
-        request_id = self._request_id
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
-        self._pending[request_id] = future
-        await self._send_json(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": str(method),
-                "params": dict(params or {}),
-            }
-        )
+        async with self._request_lock:
+            self._request_id += 1
+            request_id = self._request_id
+            self._pending[request_id] = future
+            try:
+                await self._send_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": str(method),
+                        "params": dict(params or {}),
+                    }
+                )
+            except Exception:
+                self._pending.pop(request_id, None)
+                if not future.done():
+                    future.cancel()
+                raise
         try:
             result = await asyncio.wait_for(future, timeout=self.timeout_sec)
         finally:
@@ -343,7 +379,7 @@ class CodexAppServerClient:
             params = payload.get("params")
             safe_params = dict(params) if isinstance(params, dict) else {}
             if request_id is None:
-                self._handle_notification(method, safe_params)
+                await self._handle_notification(method, safe_params)
                 return
             await self._handle_request(request_id, method, safe_params)
             return
@@ -370,7 +406,18 @@ class CodexAppServerClient:
             return
         future.set_result(dict(payload.get("result") or {}))
 
-    def _handle_notification(self, method: str, params: Dict[str, Any]) -> None:
+    async def _emit_event(self, event: str, payload: Dict[str, Any]) -> None:
+        callback = self.event_callback
+        if callback is None:
+            return
+        try:
+            maybe_coro = callback(event, dict(payload or {}))
+            if inspect.isawaitable(maybe_coro):
+                await maybe_coro
+        except Exception:
+            return
+
+    async def _handle_notification(self, method: str, params: Dict[str, Any]) -> None:
         notification = {
             "at": _now_iso(),
             "method": method,
@@ -384,6 +431,17 @@ class CodexAppServerClient:
             delta = str(params.get("delta") or "")
             if item_id and delta:
                 self.agent_message_deltas.setdefault(item_id, []).append(delta)
+                await self._emit_event(
+                    "agent_message_delta",
+                    {
+                        "method": method,
+                        "thread_id": str(params.get("threadId") or "").strip(),
+                        "turn_id": str(params.get("turnId") or "").strip(),
+                        "item_id": item_id,
+                        "delta": delta,
+                        "text": "".join(self.agent_message_deltas.get(item_id) or []),
+                    },
+                )
             return
 
         if method == "item/commandExecution/outputDelta":
@@ -391,6 +449,17 @@ class CodexAppServerClient:
             delta = str(params.get("delta") or "")
             if item_id and delta:
                 self.command_output.setdefault(item_id, []).append(delta)
+                await self._emit_event(
+                    "command_output_delta",
+                    {
+                        "method": method,
+                        "thread_id": str(params.get("threadId") or "").strip(),
+                        "turn_id": str(params.get("turnId") or "").strip(),
+                        "item_id": item_id,
+                        "delta": delta,
+                        "text": "".join(self.command_output.get(item_id) or []),
+                    },
+                )
             return
 
         if method == "item/completed":
@@ -403,6 +472,16 @@ class CodexAppServerClient:
                     text = str(item.get("text") or "")
                     if item_id and text:
                         self.completed_agent_messages[item_id] = text
+                        await self._emit_event(
+                            "agent_message_completed",
+                            {
+                                "method": method,
+                                "thread_id": str(params.get("threadId") or "").strip(),
+                                "turn_id": str(params.get("turnId") or "").strip(),
+                                "item_id": item_id,
+                                "text": text,
+                            },
+                        )
             return
 
         if method == "turn/completed":
@@ -417,11 +496,13 @@ class CodexAppServerClient:
 
         if method == "turn/plan/updated":
             self.plan = dict(params or {})
+            await self._emit_event("plan_updated", dict(params or {}))
             return
 
         if method == "turn/diff/updated":
             self.diffs.append(dict(params or {}))
             self.diffs = self.diffs[-20:]
+            await self._emit_event("diff_updated", dict(params or {}))
             return
 
         if method == "error":
@@ -482,6 +563,14 @@ class CodexAppServerClient:
                 return
 
             if method == "item/tool/requestUserInput":
+                self.user_input_requests.append(
+                    {
+                        "at": _now_iso(),
+                        "method": method,
+                        "params": dict(params or {}),
+                    }
+                )
+                self.user_input_requests = self.user_input_requests[-20:]
                 await self._send_response(request_id, result={"answers": {}})
                 return
 
@@ -596,6 +685,7 @@ class CodexAppServerClient:
                 for key, value in dict(self.command_output or {}).items()
             },
             "server_requests": list(self.server_requests or []),
+            "user_input_requests": list(self.user_input_requests or []),
             "notifications": list(self.notifications or []),
             "log_path": self.log_path,
         }

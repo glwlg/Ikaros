@@ -137,6 +137,11 @@ class ChannelRuntimeStore:
                 task.get("last_user_visible_summary"), 2400
             ),
             "resume_window_until": self._safe_text(task.get("resume_window_until"), 64),
+            "kernel_provider": self._safe_text(task.get("kernel_provider"), 40).lower(),
+            "kernel_status": self._safe_text(task.get("kernel_status"), 80).lower(),
+            "codex_session_id": self._safe_text(task.get("codex_session_id"), 160),
+            "codex_thread_id": self._safe_text(task.get("codex_thread_id"), 160),
+            "codex_turn_id": self._safe_text(task.get("codex_turn_id"), 160),
         }
         if not normalized["id"]:
             return None
@@ -335,6 +340,11 @@ class ChannelRuntimeStore:
                 "delivery_state",
                 "last_user_visible_summary",
                 "resume_window_until",
+                "kernel_provider",
+                "kernel_status",
+                "codex_session_id",
+                "codex_thread_id",
+                "codex_turn_id",
             ):
                 if key in fields:
                     current[key] = fields[key]

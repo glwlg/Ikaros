@@ -12,6 +12,7 @@ shared-runtime = [
     "pyyaml>=6.0.0",
     "aiosqlite>=0.20.0",
     "sqlalchemy[asyncio]>=2.0.0,<2.1.0",
+    "psycopg[binary]>=3.2.0,<4.0.0",
 ]
 bot-runtime = [
     { include-group = "shared-runtime" },

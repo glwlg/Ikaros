@@ -238,6 +238,11 @@ class OrchestratorRuntimeContext:
             "last_blocking_reason": "",
             "resume_instruction_preview": "",
             "adjustments_count": 0,
+            "kernel_provider": "",
+            "kernel_status": "",
+            "codex_session_id": "",
+            "codex_thread_id": "",
+            "codex_turn_id": "",
         }
         if not self.heartbeat_runtime_user and not self.subagent_runtime_user:
             channel_runtime_store.set_active_task(
