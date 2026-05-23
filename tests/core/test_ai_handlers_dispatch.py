@@ -287,6 +287,33 @@ def test_build_ikaros_progress_text_omits_final_response_action_line():
     assert "动作：" not in text
 
 
+def test_build_ikaros_progress_text_includes_codex_stream_preview():
+    text = ai_handlers._build_ikaros_progress_text(
+        {
+            "event": "codex_agent_message",
+            "task_id": "task-codex",
+            "turn": 1,
+            "final_preview": "正在检查代码。",
+        }
+    )
+
+    assert text == "正在检查代码。"
+
+
+def test_build_ikaros_progress_text_does_not_render_codex_command_output():
+    text = ai_handlers._build_ikaros_progress_text(
+        {
+            "event": "codex_command_output",
+            "task_id": "task-codex",
+            "turn": 1,
+            "summary": "pytest passed",
+        }
+    )
+
+    assert "pytest passed" not in text
+    assert "命令有输出" not in text
+
+
 def test_build_ikaros_progress_text_includes_loop_guard_details():
     text = ai_handlers._build_ikaros_progress_text(
         {
@@ -716,6 +743,29 @@ class _DummyChatContext:
         return True
 
 
+class _EditFailingChatContext(_DummyChatContext):
+    async def edit_message(self, message_id, text, **kwargs):
+        from core.platform.exceptions import MessageSendError
+
+        self.edits.append((message_id, text, dict(kwargs)))
+        raise MessageSendError("httpx.ConnectError:")
+
+
+class _DraftCapableChatContext(_DummyChatContext):
+    def __init__(self):
+        super().__init__()
+        self.drafts: list[dict] = []
+
+        async def _send_message_draft(**kwargs):
+            self.drafts.append(dict(kwargs))
+            return True
+
+        self._adapter = SimpleNamespace(
+            can_update_message=True,
+            send_message_draft=_send_message_draft,
+        )
+
+
 @pytest.mark.asyncio
 async def test_handle_ai_chat_silently_ignores_unauthorized_user(monkeypatch):
     import core.config as config_module
@@ -951,6 +1001,152 @@ async def test_handle_ai_chat_reacts_and_skips_immediate_placeholder(monkeypatch
     assert ctx.replies
     assert ctx.replies[0][0] != "..."
     assert [payload for payload, _kwargs in ctx.replies] == [{"text": "好的，已处理。"}]
+
+
+@pytest.mark.asyncio
+async def test_handle_ai_chat_falls_back_to_reply_when_edit_fails(monkeypatch):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+    from handlers import message_utils
+
+    saved_messages: list[tuple[str, str, str]] = []
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _record_message(_ctx, user_id, role, text):
+        saved_messages.append((str(user_id), str(role), str(text)))
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _fake_process_reply_message(_ctx):
+        return message_utils.ReplyMessageResolution()
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    clock = {"now": 3000.0}
+
+    async def _fake_handle_message(_ctx, _message_history):
+        clock["now"] += 1.5
+        yield "Codex 已正常回复"
+
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(heartbeat_module.heartbeat_store, "set_delivery_target", _noop)
+    monkeypatch.setattr(ai_handlers, "add_message", _record_message)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(
+        message_utils, "process_reply_message", _fake_process_reply_message
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "is_cancelled", lambda _uid: False
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "unregister_task", lambda _uid: None
+    )
+    monkeypatch.setattr(ai_handlers.time, "time", lambda: clock["now"])
+
+    ctx = _EditFailingChatContext()
+
+    await ai_handlers.handle_ai_chat(ctx)
+
+    reply_payloads = [payload for payload, _kwargs in ctx.replies]
+    assert {"text": "Codex 已正常回复"} in reply_payloads
+    assert not any("Agent 运行出错" in str(payload) for payload in reply_payloads)
+    assert ("u-1", "model", "Codex 已正常回复") in saved_messages
+
+
+@pytest.mark.asyncio
+async def test_handle_ai_chat_codex_progress_edits_message_instead_of_draft(
+    monkeypatch,
+):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+    from core.runtime_callbacks import get_runtime_callback
+    from handlers import message_utils
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _fake_process_reply_message(_ctx):
+        return message_utils.ReplyMessageResolution()
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    clock = {"now": 4000.0}
+
+    async def _fake_handle_message(ctx, _message_history):
+        callback = get_runtime_callback(ctx, "ikaros_progress_callback")
+        assert callback is not None
+        clock["now"] += 1.2
+        await callback(
+            {
+                "event": "codex_agent_message",
+                "task_id": "task-codex",
+                "turn": 1,
+                "text_preview": "正在抓取新闻详情。",
+            }
+        )
+        yield "抓取完成。"
+
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(heartbeat_module.heartbeat_store, "set_delivery_target", _noop)
+    monkeypatch.setattr(ai_handlers, "add_message", _noop)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(
+        message_utils, "process_reply_message", _fake_process_reply_message
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "is_cancelled", lambda _uid: False
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager, "unregister_task", lambda _uid: None
+    )
+    monkeypatch.setattr(ai_handlers.time, "time", lambda: clock["now"])
+
+    ctx = _DraftCapableChatContext()
+
+    await ai_handlers.handle_ai_chat(ctx)
+
+    assert ctx.drafts == []
+    assert any("正在抓取新闻详情" in str(text) for _msg_id, text, _kwargs in ctx.edits)
 
 
 @pytest.mark.asyncio

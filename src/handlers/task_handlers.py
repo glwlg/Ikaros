@@ -173,10 +173,12 @@ async def _build_task_list_payload(
         lines.extend([prefix.strip(), ""])
     lines.extend([f"{title}（第 {current_page + 1}/{total_pages} 页）"])
     for absolute_index, item in enumerate(items, start=start):
-        lines.append(
-            f"- `{item.task_id}` | {item.status} | {item.source} | {_compact(item.goal, 36)}"
-        )
         metadata = dict(item.metadata or {}) if isinstance(item.metadata, dict) else {}
+        kernel_provider = str(metadata.get("kernel_provider") or "").strip()
+        kernel_text = f" | kernel:{kernel_provider}" if kernel_provider else ""
+        lines.append(
+            f"- `{item.task_id}` | {item.status} | {item.source}{kernel_text} | {_compact(item.goal, 36)}"
+        )
         followup = dict(metadata.get("followup") or {}) if isinstance(metadata.get("followup"), dict) else {}
         refs = dict(followup.get("refs") or {}) if isinstance(followup.get("refs"), dict) else {}
         done_when = str(followup.get("done_when") or "").strip()
@@ -242,6 +244,15 @@ async def _build_task_detail_payload(
         f"- 更新时间：`{item.updated_at}`",
         f"- 目标：{str(item.goal or '').strip()}",
     ]
+    kernel_provider = str(metadata.get("kernel_provider") or "").strip()
+    if kernel_provider:
+        lines.append(f"- Kernel：`{kernel_provider}`")
+    kernel_status = str(metadata.get("kernel_status") or "").strip()
+    if kernel_status:
+        lines.append(f"- Kernel 状态：`{kernel_status}`")
+    codex_thread_id = str(metadata.get("codex_thread_id") or "").strip()
+    if codex_thread_id:
+        lines.append(f"- Codex Thread：`{_compact(codex_thread_id, 64)}`")
     if followup_obj:
         lines.append(f"- Follow-up：{str(followup_obj.get('done_when') or '').strip()}")
     if refs.get("pr_url"):

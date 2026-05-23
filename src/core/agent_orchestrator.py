@@ -10,7 +10,9 @@ from core.channel_runtime_store import channel_runtime_store
 from core.config import (
     X_DEPLOYMENT_STAGING_PATH,
     AUTO_RECOVERY_MAX_ATTEMPTS,
+    ikaros_kernel_provider,
 )
+from core.codex_kernel import codex_kernel_provider
 from core.extension_router import ExtensionCandidate, ExtensionRouter
 from core.heartbeat_store import heartbeat_store
 from core.orchestrator_context import OrchestratorRuntimeContext
@@ -25,7 +27,7 @@ from core.task_manager import task_manager
 from core.tool_access_store import tool_access_store
 from core.tool_broker import ToolBroker
 from services.ai_service import AiService
-from services.intent_router import intent_router
+from services.intent_router import RoutingDecision, intent_router
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +162,9 @@ class AgentOrchestrator:
             if explicit_allowed_skill_names
             else {candidate.name for candidate in extension_candidates}
         )
-        request_mode = str(routing_decision.request_mode or "").strip().lower() or "chat"
+        request_mode = (
+            str(routing_decision.request_mode or "").strip().lower() or "chat"
+        )
         task_tracking_requested = (
             bool(routing_decision.task_tracking)
             if routing_decision.task_tracking is not None
@@ -196,8 +200,7 @@ class AgentOrchestrator:
             return None
 
         task_tracking_enabled = (
-            runtime_ctx.session_state_enabled
-            and task_tracking_requested
+            runtime_ctx.session_state_enabled and task_tracking_requested
         )
         append_session_event = (
             runtime_ctx.append_session_event
@@ -476,6 +479,33 @@ class AgentOrchestrator:
             await emit_subagent_progress(event, payload)
             return directive
 
+        if ikaros_kernel_provider() == "codex" and codex_kernel_provider.should_handle(
+            runtime_ctx
+        ):
+            logger.info("Using Codex kernel provider for task_id=%s", task_id)
+            await on_agent_event(
+                "turn_start",
+                {
+                    "turn": 1,
+                    "kernel_provider": "codex",
+                    "task_id": str(task_id),
+                },
+            )
+            final_text = await codex_kernel_provider.run_for_orchestrator(
+                ctx=ctx,
+                runtime_ctx=runtime_ctx,
+                message_history=message_history,
+                task_goal=task_goal,
+                request_mode=request_mode,
+                event_callback=on_agent_event,
+                candidate_skill_names=[
+                    candidate.name for candidate in extension_candidates
+                ],
+            )
+            if final_text:
+                yield final_text
+            return
+
         logger.info("final tools: %s", tools)
         async for chunk in self.ai_service.generate_response_stream(
             message_history,
@@ -599,7 +629,9 @@ class AgentOrchestrator:
             yield suppressed_max_turn_warning
 
         if not event_handler.flags.blocked and not event_handler.flags.completed:
-            failure_summary = "Conversation loop ended without an explicit completion signal."
+            failure_summary = (
+                "Conversation loop ended without an explicit completion signal."
+            )
             todo_session.mark_failed(failure_summary)
             if runtime_ctx.session_state_active:
                 current = channel_runtime_store.get_active_task(
@@ -607,7 +639,9 @@ class AgentOrchestrator:
                     platform_user_id=str(user_id),
                 )
                 if not current:
-                    current = await heartbeat_store.get_session_active_task(str(user_id))
+                    current = await heartbeat_store.get_session_active_task(
+                        str(user_id)
+                    )
                 current_status = str((current or {}).get("status", "")).strip().lower()
                 if current_status == "waiting_external":
                     await update_session_task(
@@ -649,7 +683,9 @@ class AgentOrchestrator:
                         metadata={
                             "followup": dict(auto_followup.get("followup") or {})
                         },
-                        result={"ikaros_mode": "conversation_missing_completion_signal"},
+                        result={
+                            "ikaros_mode": "conversation_missing_completion_signal"
+                        },
                         output={"text": failure_summary},
                     )
                     current_task_status = "waiting_external"
@@ -793,9 +829,7 @@ class AgentOrchestrator:
             if not skill_name:
                 continue
             groups = tool_access_store.groups_for_tool(skill_name, kind="tool")
-            if normalized_group in {
-                str(item or "").strip().lower() for item in groups
-            }:
+            if normalized_group in {str(item or "").strip().lower() for item in groups}:
                 return True
         return False
 
@@ -846,6 +880,21 @@ class AgentOrchestrator:
                 if candidate.name in explicit_allowed_skill_names
             ]
 
+        if ikaros_kernel_provider() == "codex":
+            return (
+                raw_extension_candidates,
+                extension_candidates,
+                RoutingDecision(
+                    request_mode="chat",
+                    candidate_skills=[
+                        candidate.name for candidate in extension_candidates
+                    ],
+                    confidence=1.0,
+                    reason="codex_kernel_bypasses_native_intent_router",
+                    task_tracking=False,
+                ),
+            )
+
         routing_decision = await intent_router.route(
             dialog_messages=self._extract_recent_dialog_messages(
                 message_history,
@@ -856,7 +905,9 @@ class AgentOrchestrator:
         )
         selected = set(routing_decision.candidate_skills)
         extension_candidates = [
-            candidate for candidate in extension_candidates if candidate.name in selected
+            candidate
+            for candidate in extension_candidates
+            if candidate.name in selected
         ]
         if explicit_allowed_skill_names:
             extension_candidates = [
