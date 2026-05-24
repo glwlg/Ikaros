@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
+import hashlib
 import inspect
 import json
 import os
@@ -12,6 +15,52 @@ from typing import Any, Awaitable, Callable, Dict, List
 
 MAX_OUTPUT_CHARS = 12000
 MAX_LOG_CHARS = 1_000_000
+MEDIA_EXTENSIONS = {
+    ".png": "photo",
+    ".jpg": "photo",
+    ".jpeg": "photo",
+    ".gif": "photo",
+    ".webp": "photo",
+    ".bmp": "photo",
+    ".mp4": "video",
+    ".mov": "video",
+    ".webm": "video",
+    ".mkv": "video",
+    ".avi": "video",
+    ".m4v": "video",
+    ".mp3": "audio",
+    ".wav": "audio",
+    ".m4a": "audio",
+    ".aac": "audio",
+    ".ogg": "audio",
+    ".flac": "audio",
+}
+DOCUMENT_EXTENSIONS = {
+    ".pdf",
+    ".txt",
+    ".md",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".jsonl",
+    ".xlsx",
+    ".xls",
+    ".docx",
+    ".pptx",
+    ".zip",
+}
+PATH_KEYS = {
+    "path",
+    "file_path",
+    "filepath",
+    "filePath",
+    "local_path",
+    "localPath",
+    "absolute_path",
+    "absolutePath",
+    "saved_path",
+    "savedPath",
+}
 
 
 def _now_iso() -> str:
@@ -89,6 +138,7 @@ class CodexAppServerClient:
         cwd: str,
         env: Dict[str, str],
         timeout_sec: int,
+        request_timeout_sec: int = 45,
         log_path: str = "",
         model: str = "",
         effort: str = "",
@@ -100,6 +150,7 @@ class CodexAppServerClient:
         self.cwd = str(cwd or "").strip()
         self.env = dict(env or {})
         self.timeout_sec = max(30, int(timeout_sec or 0))
+        self.request_timeout_sec = max(5, int(request_timeout_sec or 0))
         self.log_path = str(log_path or "").strip()
         self.model = str(model or "").strip()
         self.effort = str(effort or "").strip()
@@ -132,7 +183,9 @@ class CodexAppServerClient:
         self.diffs: List[Dict[str, Any]] = []
         self.command_output: Dict[str, List[str]] = {}
         self.items: Dict[str, Dict[str, Any]] = {}
+        self.files: List[Dict[str, str]] = []
         self.user_input_requests: List[Dict[str, Any]] = []
+        self._open_thread_ids: set[str] = set()
 
     def is_running(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
@@ -149,6 +202,7 @@ class CodexAppServerClient:
         self.diffs.clear()
         self.command_output.clear()
         self.items.clear()
+        self.files.clear()
         self.user_input_requests.clear()
 
     def set_event_callback(
@@ -202,6 +256,10 @@ class CodexAppServerClient:
             with contextlib.suppress(Exception):
                 await self._stderr_task
 
+    def has_open_thread(self, thread_id: str) -> bool:
+        safe_thread_id = str(thread_id or "").strip()
+        return bool(safe_thread_id and safe_thread_id in self._open_thread_ids)
+
     async def initialize(self) -> Dict[str, Any]:
         response = await self.request(
             "initialize",
@@ -220,6 +278,8 @@ class CodexAppServerClient:
     async def open_thread(self, *, existing_thread_id: str = "") -> tuple[str, bool]:
         safe_existing = str(existing_thread_id or "").strip()
         params = self._thread_params()
+        if self.has_open_thread(safe_existing):
+            return safe_existing, True
         if safe_existing:
             try:
                 response = await self.request(
@@ -231,7 +291,9 @@ class CodexAppServerClient:
                 )
                 thread_id = self._extract_thread_id(response)
                 self.thread_response = dict(response or {})
-                return thread_id or safe_existing, True
+                resolved_thread_id = thread_id or safe_existing
+                self._open_thread_ids.add(resolved_thread_id)
+                return resolved_thread_id, True
             except JsonRpcError:
                 pass
 
@@ -240,17 +302,27 @@ class CodexAppServerClient:
         if not thread_id:
             raise RuntimeError("Codex app-server did not return a thread id")
         self.thread_response = dict(response or {})
+        self._open_thread_ids.add(thread_id)
         return thread_id, False
 
-    async def start_turn(self, *, thread_id: str, instruction: str) -> str:
-        params: Dict[str, Any] = {
-            "threadId": str(thread_id or "").strip(),
-            "input": [
+    async def start_turn(
+        self,
+        *,
+        thread_id: str,
+        instruction: str,
+        input_items: List[Dict[str, str]] | None = None,
+    ) -> str:
+        turn_input = list(input_items or [])
+        if not turn_input:
+            turn_input = [
                 {
                     "type": "text",
                     "text": str(instruction or "").strip(),
                 }
-            ],
+            ]
+        params: Dict[str, Any] = {
+            "threadId": str(thread_id or "").strip(),
+            "input": turn_input,
         }
         if self.cwd:
             params["cwd"] = self.cwd
@@ -314,7 +386,7 @@ class CodexAppServerClient:
                     future.cancel()
                 raise
         try:
-            result = await asyncio.wait_for(future, timeout=self.timeout_sec)
+            result = await asyncio.wait_for(future, timeout=self.request_timeout_sec)
         finally:
             self._pending.pop(request_id, None)
         if isinstance(result, Exception):
@@ -466,8 +538,29 @@ class CodexAppServerClient:
             item = params.get("item")
             if isinstance(item, dict):
                 item_id = str(item.get("id") or "").strip()
+                rows = self._collect_files_from_item(
+                    item,
+                    thread_id=str(params.get("threadId") or "").strip(),
+                )
                 if item_id:
-                    self.items[item_id] = dict(item)
+                    stored_item = dict(item)
+                    if str(stored_item.get("type") or "") in {
+                        "image_generation_call",
+                        "image_generation_end",
+                    }:
+                        stored_item.pop("result", None)
+                    self.items[item_id] = stored_item
+                if rows:
+                    await self._emit_event(
+                        "generated_files",
+                        {
+                            "method": method,
+                            "thread_id": str(params.get("threadId") or "").strip(),
+                            "turn_id": str(params.get("turnId") or "").strip(),
+                            "item_id": item_id,
+                            "files": rows,
+                        },
+                    )
                 if str(item.get("type") or "").strip() == "agentMessage":
                     text = str(item.get("text") or "")
                     if item_id and text:
@@ -482,6 +575,19 @@ class CodexAppServerClient:
                                 "text": text,
                             },
                         )
+            return
+
+        rows = self._collect_files_from_notification(method, params)
+        if rows:
+            await self._emit_event(
+                "generated_files",
+                {
+                    "method": method,
+                    "thread_id": str(params.get("threadId") or "").strip(),
+                    "turn_id": str(params.get("turnId") or "").strip(),
+                    "files": rows,
+                },
+            )
             return
 
         if method == "turn/completed":
@@ -647,14 +753,16 @@ class CodexAppServerClient:
     ) -> Dict[str, Any]:
         safe_turn = dict(turn or {})
         status = str(safe_turn.get("status") or "").strip()
-        stdout = self._assistant_stdout()
+        stdout = self._assistant_stdout() or str(
+            safe_turn.get("last_agent_message") or ""
+        ).strip()
         error_message = self._error_message(safe_turn)
         ok = status == "completed"
         summary = _tail(
             stdout
             or error_message
-            or status
-            or "Codex app-server round completed"
+            or ("" if ok else status)
+            or ("" if ok else "Codex app-server round completed")
         )
         return {
             "ok": ok,
@@ -680,6 +788,7 @@ class CodexAppServerClient:
             "plan": dict(self.plan or {}),
             "diffs": list(self.diffs or []),
             "items": list(self.items.values()),
+            "files": list(self.files or []),
             "command_output": {
                 key: "".join(value)
                 for key, value in dict(self.command_output or {}).items()
@@ -689,6 +798,177 @@ class CodexAppServerClient:
             "notifications": list(self.notifications or []),
             "log_path": self.log_path,
         }
+
+    def _collect_files_from_notification(
+        self,
+        method: str,
+        params: Dict[str, Any],
+    ) -> List[Dict[str, str]]:
+        payload = params.get("payload")
+        candidates: List[Dict[str, Any]] = []
+        if isinstance(payload, dict):
+            candidates.append(payload)
+        if isinstance(params.get("item"), dict):
+            candidates.append(dict(params.get("item") or {}))
+        if not candidates and method in {"image_generation_end", "image_generation_call"}:
+            candidates.append(dict(params or {}))
+        rows: List[Dict[str, str]] = []
+        for candidate in candidates:
+            rows.extend(
+                self._collect_files_from_item(
+                    candidate,
+                    thread_id=str(
+                        params.get("threadId")
+                        or candidate.get("thread_id")
+                        or candidate.get("threadId")
+                        or ""
+                    ).strip(),
+                )
+            )
+        return rows
+
+    def _collect_files_from_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        thread_id: str = "",
+    ) -> List[Dict[str, str]]:
+        rows = _extract_local_media_files(item)
+        rows.extend(
+            _extract_generated_image_files(
+                item,
+                thread_id=thread_id,
+            )
+        )
+        if not rows:
+            return []
+        seen = {str(row.get("path") or "") for row in self.files}
+        new_rows: List[Dict[str, str]] = []
+        for row in rows:
+            path_text = str(row.get("path") or "").strip()
+            if not path_text or path_text in seen:
+                continue
+            self.files.append(row)
+            new_rows.append(row)
+            seen.add(path_text)
+        self.files = self.files[-20:]
+        return new_rows
+
+
+def _image_extension(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    return ".png"
+
+
+def _decode_image_result(value: Any) -> bytes:
+    if not isinstance(value, str):
+        return b""
+    text = value.strip()
+    if not text:
+        return b""
+    if "," in text and text.lower().startswith("data:"):
+        text = text.split(",", 1)[1]
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return b""
+
+
+def _extract_generated_image_files(
+    item: Dict[str, Any],
+    *,
+    thread_id: str = "",
+) -> List[Dict[str, str]]:
+    item_type = str(item.get("type") or "").strip()
+    if item_type not in {"image_generation_call", "image_generation_end"}:
+        return []
+    data = _decode_image_result(item.get("result"))
+    if not data:
+        return []
+    safe_thread_id = (
+        str(thread_id or item.get("thread_id") or item.get("threadId") or "unknown")
+        .strip()
+        .replace("/", "_")
+    )[:160] or "unknown"
+    call_id = (
+        str(item.get("id") or item.get("call_id") or item.get("callId") or "")
+        .strip()
+        .replace("/", "_")
+    )
+    if not call_id:
+        call_id = "ig_" + hashlib.sha256(data).hexdigest()[:24]
+    suffix = _image_extension(data)
+    filename = call_id if call_id.lower().endswith(suffix) else f"{call_id}{suffix}"
+    directory = Path.home() / ".codex" / "generated_images" / safe_thread_id
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path_obj = (directory / filename).resolve()
+        if not path_obj.exists() or path_obj.read_bytes() != data:
+            path_obj.write_bytes(data)
+    except Exception:
+        return []
+    return [
+        {
+            "kind": "photo",
+            "path": str(path_obj),
+            "filename": path_obj.name,
+            "caption": "",
+        }
+    ]
+
+
+def _extract_local_media_files(value: Any) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    def visit(node: Any, key_hint: str = "") -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                visit(child, str(key or ""))
+            return
+        if isinstance(node, list):
+            for child in node:
+                visit(child, key_hint)
+            return
+        if not isinstance(node, str):
+            return
+        if key_hint not in PATH_KEYS:
+            return
+        path_text = node.strip()
+        if not path_text:
+            return
+        try:
+            path_obj = Path(path_text).expanduser().resolve()
+        except Exception:
+            return
+        suffix = path_obj.suffix.lower()
+        kind = MEDIA_EXTENSIONS.get(suffix)
+        if not kind and suffix in DOCUMENT_EXTENSIONS:
+            kind = "document"
+        if not kind or not path_obj.exists() or not path_obj.is_file():
+            return
+        resolved = str(path_obj)
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        rows.append(
+            {
+                "kind": kind,
+                "path": resolved,
+                "filename": path_obj.name,
+                "caption": "",
+            }
+        )
+
+    visit(value)
+    return rows
 
 
 async def run_codex_app_server_backend(

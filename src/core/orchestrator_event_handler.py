@@ -438,7 +438,7 @@ class OrchestratorEventHandler:
                 "请确认下一步：点击按钮，或直接回复“继续”/“停止”（3分钟内有效）。"
             )
             await self.update_task_inbox_status(
-                status="running",
+                status="waiting_user",
                 event="waiting_user_confirmation",
                 detail=final_text[:180],
                 result={
@@ -544,7 +544,7 @@ class OrchestratorEventHandler:
                 "请确认下一步：点击按钮，或直接回复“继续”/“停止”（3分钟内有效）。"
             )
             await self.update_task_inbox_status(
-                status="running",
+                status="waiting_user",
                 event="waiting_user_confirmation",
                 detail=final_text[:180],
                 result={

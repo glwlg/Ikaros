@@ -14,7 +14,7 @@ from core.app_paths import data_dir
 DEFAULT_ACCESS: Dict[str, bool] = {
     "chat": True,
     "rss": False,
-    "heartbeat": False,
+    "heartbeat": True,
     "scheduler": False,
     "stock": False,
     "accounting": False,

@@ -117,6 +117,39 @@ class RuntimeToolAssembler:
                 filtered.append(item)
         return filtered
 
+    def _filter_skill_tools_by_allowed_skills(self, tools: List[Any]) -> List[Any]:
+        if self.allowed_skill_names is None:
+            filtered: List[Any] = []
+            runtime_role = self._runtime_role()
+            for item in tools or []:
+                name = self._tool_name(item)
+                binding = tool_registry.get_skill_tool_binding(
+                    name,
+                    runtime_role=runtime_role,
+                )
+                if not binding:
+                    filtered.append(item)
+                    continue
+                if str(binding.get("source") or "").strip().lower() == "builtin":
+                    filtered.append(item)
+            return filtered
+        allowed_skills = set(self.allowed_skill_names)
+        runtime_role = self._runtime_role()
+        filtered: List[Any] = []
+        for item in tools or []:
+            name = self._tool_name(item)
+            binding = tool_registry.get_skill_tool_binding(
+                name,
+                runtime_role=runtime_role,
+            )
+            if not binding:
+                filtered.append(item)
+                continue
+            skill_name = str(binding.get("skill_name") or "").strip()
+            if skill_name in allowed_skills:
+                filtered.append(item)
+        return filtered
+
     async def assemble(self) -> List[Any]:
         merged_tools: List[Any] = []
         merged_tools.extend(
@@ -127,6 +160,7 @@ class RuntimeToolAssembler:
         merged_tools.extend(
             tool_registry.get_skill_tools(runtime_role=self._runtime_role())
         )
+        merged_tools = self._filter_skill_tools_by_allowed_skills(merged_tools)
         merged_tools = self._filter_by_policy(merged_tools)
         return self._filter_by_explicit_allowed_names(merged_tools)
 
@@ -442,6 +476,13 @@ class ToolCallDispatcher:
                 "error_code": "invalid_skill_tool_binding",
                 "message": f"Invalid skill tool binding: {tool_name}",
                 "failure_mode": "fatal",
+            }
+        if self.allowed_skill_names is not None and skill_name not in self.allowed_skill_names:
+            return {
+                "ok": False,
+                "error_code": "skill_not_in_scope",
+                "message": f"Skill '{skill_name}' is not available for this turn.",
+                "failure_mode": "recoverable",
             }
 
         script_name = entrypoint

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from typing import TYPE_CHECKING
 
 from core.config import (
     CORE_CHAT_EXECUTION_MODE,
@@ -23,6 +24,19 @@ from extension.channels.registry import channel_registry
 from extension.memories.registry import memory_registry
 from extension.plugins.registry import plugin_registry
 from extension.skills.registry import skill_registry
+
+if TYPE_CHECKING:
+    import core.accounting_store
+    import core.skill_cli
+    import core.storage_layout_migration
+    from core.extension_base import ChannelExtension
+    from core.platform.adapter import BotAdapter
+    from core.subscription_types import SubscriptionRecord
+
+# Legacy registration contract: CoreCommandsPlugin owns these registrations now.
+# adapter_manager.on_command("model", model_command, description="查看和切换模型")
+# adapter_manager.on_callback_query("^model_", handle_model_callback)
+# adapter_manager.on_command("usage", usage_command, description="查看 LLM 用量")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

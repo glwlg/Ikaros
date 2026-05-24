@@ -160,7 +160,11 @@ class AgentOrchestrator:
         allowed_skill_names = (
             set(explicit_allowed_skill_names)
             if explicit_allowed_skill_names
-            else {candidate.name for candidate in extension_candidates}
+            else (
+                {candidate.name for candidate in extension_candidates}
+                if extension_candidates
+                else None
+            )
         )
         request_mode = (
             str(routing_decision.request_mode or "").strip().lower() or "chat"
@@ -247,6 +251,17 @@ class AgentOrchestrator:
             allowed_tool_names=explicit_allowed_tool_names or None,
         )
         tools = await tooling_assembler.assemble()
+        hidden_tool_names = set()
+        if request_mode != "task":
+            hidden_tool_names.add("complete_task")
+        if allowed_skill_names is None:
+            hidden_tool_names.add("load_skill")
+        if hidden_tool_names:
+            tools = [
+                tool
+                for tool in tools
+                if RuntimeToolAssembler._tool_name(tool) not in hidden_tool_names
+            ]
 
         tool_dispatcher = ToolCallDispatcher(
             runtime_user_id=user_id_str,
@@ -559,11 +574,15 @@ class AgentOrchestrator:
                     platform_name=platform_name,
                     explicit_allowed_skill_names=explicit_allowed_skill_names,
                 )
-                allowed_skill_names = {
-                    candidate.name for candidate in extension_candidates
-                }
-                if explicit_allowed_skill_names:
-                    allowed_skill_names = set(explicit_allowed_skill_names)
+                allowed_skill_names = (
+                    set(explicit_allowed_skill_names)
+                    if explicit_allowed_skill_names
+                    else (
+                        {candidate.name for candidate in extension_candidates}
+                        if extension_candidates
+                        else None
+                    )
+                )
                 logger.info(
                     "Extension candidates after evolution: raw=%s filtered=%s request_mode=%s task_tracking=%s routed=%s confidence=%.2f reason=%s",
                     [candidate.name for candidate in reroute_candidates] or "none",
@@ -574,8 +593,16 @@ class AgentOrchestrator:
                     float(routing_decision.confidence),
                     routing_decision.reason,
                 )
-                tooling_assembler.allowed_skill_names = set(allowed_skill_names)
-                tool_dispatcher.allowed_skill_names = set(allowed_skill_names)
+                tooling_assembler.allowed_skill_names = (
+                    set(allowed_skill_names)
+                    if allowed_skill_names is not None
+                    else None
+                )
+                tool_dispatcher.allowed_skill_names = (
+                    set(allowed_skill_names)
+                    if allowed_skill_names is not None
+                    else None
+                )
                 tooling_assembler.allowed_tool_names = (
                     set(explicit_allowed_tool_names)
                     if explicit_allowed_tool_names
@@ -587,6 +614,18 @@ class AgentOrchestrator:
                     else None
                 )
                 tools = await tooling_assembler.assemble()
+                hidden_tool_names = set()
+                if request_mode != "task":
+                    hidden_tool_names.add("complete_task")
+                if allowed_skill_names is None:
+                    hidden_tool_names.add("load_skill")
+                if hidden_tool_names:
+                    tools = [
+                        tool
+                        for tool in tools
+                        if RuntimeToolAssembler._tool_name(tool)
+                        not in hidden_tool_names
+                    ]
                 tool_dispatcher.set_available_tool_names(
                     tooling_assembler.tool_names(tools)
                 )
@@ -879,21 +918,6 @@ class AgentOrchestrator:
                 for candidate in extension_candidates
                 if candidate.name in explicit_allowed_skill_names
             ]
-
-        if ikaros_kernel_provider() == "codex":
-            return (
-                raw_extension_candidates,
-                extension_candidates,
-                RoutingDecision(
-                    request_mode="chat",
-                    candidate_skills=[
-                        candidate.name for candidate in extension_candidates
-                    ],
-                    confidence=1.0,
-                    reason="codex_kernel_bypasses_native_intent_router",
-                    task_tracking=False,
-                ),
-            )
 
         routing_decision = await intent_router.route(
             dialog_messages=self._extract_recent_dialog_messages(

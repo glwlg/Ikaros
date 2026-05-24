@@ -38,10 +38,10 @@ const isSubPage = computed(() => [
 </script>
 
 <template>
-  <div class="flex flex-col h-full bg-gradient-to-b from-indigo-50/50 to-white dark:from-slate-900 dark:to-slate-950">
+  <div class="accounting-shell">
     <div
       v-if="!isSubPage"
-      class="sticky top-0 z-20 bg-gradient-to-r from-indigo-500 to-indigo-400 dark:from-indigo-700 dark:to-indigo-600 px-4 py-3 flex items-center gap-3 shadow-sm"
+      class="accounting-header"
     >
       <RouterLink
         v-if="!isPWA"
@@ -60,24 +60,83 @@ const isSubPage = computed(() => [
 
     <nav
       v-if="!isSubPage"
-      class="sticky bottom-0 z-20 flex border-t border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]"
+      class="accounting-tabbar"
     >
       <RouterLink
         v-for="tab in tabs"
         :key="tab.path"
         :to="tab.path"
-        class="flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors"
-        :class="isActiveTab(tab.path)
-          ? 'text-indigo-500 dark:text-indigo-400'
-          : 'text-gray-400 dark:text-slate-500 hover:text-gray-600 dark:hover:text-slate-400'"
+        class="accounting-tab"
+        :class="{ 'is-active': isActiveTab(tab.path) }"
       >
         <component :is="tab.icon" class="w-5 h-5" />
         <span class="text-[10px] font-medium">{{ tab.label }}</span>
         <div
           v-if="isActiveTab(tab.path)"
-          class="absolute bottom-0 w-8 h-0.5 rounded-full bg-indigo-500 dark:bg-indigo-400"
+          class="accounting-tab-indicator"
         />
       </RouterLink>
     </nav>
   </div>
 </template>
+
+<style scoped>
+.accounting-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-primary-500) 6%, var(--color-bg-primary)) 0%,
+    var(--color-bg-primary) 100%
+  );
+}
+
+.accounting-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, var(--color-primary-600), var(--color-primary-500));
+  box-shadow: var(--shadow-sm);
+}
+
+.accounting-tabbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  border-top: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-elevated);
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+}
+
+.accounting-tab {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 0;
+  color: var(--color-text-muted);
+  transition: color 0.15s ease;
+}
+
+.accounting-tab:hover,
+.accounting-tab.is-active {
+  color: var(--color-primary-600);
+}
+
+.accounting-tab-indicator {
+  position: absolute;
+  bottom: 0;
+  width: 32px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--color-primary-600);
+}
+</style>

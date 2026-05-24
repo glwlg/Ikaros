@@ -299,7 +299,14 @@ class ToolRegistry:
 
     def get_core_tools(self, *, runtime_role: str = "") -> List[Dict[str, Any]]:
         tools = deepcopy(CORE_TOOLS)
-        if str(runtime_role or "").strip().lower() == "ikaros":
+        safe_role = str(runtime_role or "").strip().lower()
+        if safe_role != "ikaros":
+            tools = [
+                tool
+                for tool in tools
+                if str(tool.get("name") or "").strip() != "complete_task"
+            ]
+        if safe_role == "ikaros":
             tools.extend(deepcopy(IKAROS_INTERNAL_TOOLS))
         return tools
 

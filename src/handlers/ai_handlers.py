@@ -22,6 +22,7 @@ from core.document_artifacts import (
     pop_pending_document_artifacts,
 )
 from core.file_artifacts import (
+    extract_markdown_file_link_rows,
     extract_saved_file_rows,
     merge_file_rows,
     normalize_file_rows,
@@ -523,7 +524,7 @@ def _pop_pending_ui_payload(user_data: dict[str, Any]) -> dict[str, Any] | None:
 async def _send_result_files(
     ctx: UnifiedContext,
     file_rows: list[dict[str, str]],
-) -> bool:
+) -> list[dict[str, str]]:
     prepared_rows: list[dict[str, str]] = []
     for item in list(file_rows or []):
         if not isinstance(item, dict):
@@ -546,13 +547,15 @@ async def _send_result_files(
             }
         )
 
-    delivered = False
+    delivered_rows: list[dict[str, str]] = []
+    failed_names: list[str] = []
     for item in merge_file_rows(prepared_rows):
         path_text = str(item.get("path") or "").strip()
         if not path_text:
             continue
         path_obj = Path(path_text).expanduser().resolve()
         if not path_obj.exists() or not path_obj.is_file():
+            failed_names.append(str(item.get("filename") or path_obj.name))
             continue
         caption = str(item.get("caption") or "").strip() or None
         filename = str(item.get("filename") or path_obj.name).strip() or path_obj.name
@@ -588,12 +591,18 @@ async def _send_result_files(
                     filename=output_name,
                     caption=caption,
                 )
-            delivered = True
+            delivered_rows.append(dict(item))
         except Exception:
+            failed_names.append(filename)
             logger.warning(
                 "Failed to send result attachment: %s", path_obj, exc_info=True
             )
-    return delivered
+    if failed_names:
+        preview = "、".join(failed_names[:3])
+        suffix = " 等" if len(failed_names) > 3 else ""
+        with contextlib.suppress(Exception):
+            await ctx.reply(f"⚠️ 有 {len(failed_names)} 个附件未能发送：{preview}{suffix}")
+    return delivered_rows
 
 
 async def _should_include_memory_summary_for_task(
@@ -861,7 +870,11 @@ async def _try_handle_waiting_confirmation(
                 }
             )
         else:
-            await ctx.reply(message)
+            if message:
+                await ctx.reply(message)
+        resume_files = normalize_file_rows(codex_resume.get("files"))
+        if resume_files:
+            await _send_result_files(ctx, resume_files)
         return True
 
     resume = await ikaros_closure_service.resume_waiting_task(
@@ -1125,6 +1138,30 @@ async def handle_ai_chat(
     stream_last_sent_ts = 0.0
     stream_locked = False
     thinking_deleted = False
+    sent_ikaros_file_paths: set[str] = set()
+
+    def _unsent_file_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+        output: list[dict[str, str]] = []
+        for row in list(rows or []):
+            path_text = str(row.get("path") or "").strip()
+            if not path_text or path_text in sent_ikaros_file_paths:
+                continue
+            output.append(row)
+        return output
+
+    def _mark_file_rows_sent(rows: list[dict[str, str]]) -> None:
+        for row in list(rows or []):
+            path_text = str(row.get("path") or "").strip()
+            if path_text:
+                sent_ikaros_file_paths.add(path_text)
+
+    def _extract_result_file_rows(text: str) -> list[dict[str, str]]:
+        if codex_kernel_ui:
+            return merge_file_rows(
+                extract_saved_file_rows(text),
+                extract_markdown_file_link_rows(text),
+            )
+        return extract_saved_file_rows(text)
 
     async def _ensure_thinking_message(initial_text: str | None = None) -> Any:
         nonlocal thinking_msg
@@ -1225,6 +1262,28 @@ async def handle_ai_chat(
             state["last_update_time"] = time.time()
             return
 
+        if event_name == "codex_result_files":
+            new_files = _unsent_file_rows(
+                merge_file_rows(
+                    normalize_file_rows(payload.get("files")),
+                    normalize_file_rows(
+                        (payload.get("terminal_payload") or {}).get("files")
+                        if isinstance(payload.get("terminal_payload"), dict)
+                        else []
+                    ),
+                )
+            )
+            pending_ikaros_files[:] = merge_file_rows(
+                pending_ikaros_files,
+                new_files,
+            )
+            if new_files:
+                delivered = await _send_result_files(ctx, new_files)
+                if delivered:
+                    _mark_file_rows_sent(delivered)
+                    state["response_visible"] = True
+            return
+
         if event_name == "tool_call_started":
             detail_label, detail_value = _summarize_ikaros_tool_args(
                 str(payload.get("name") or ""),
@@ -1250,7 +1309,7 @@ async def handle_ai_chat(
                 pending_ikaros_files[:] = merge_file_rows(
                     pending_ikaros_files,
                     normalize_file_rows(terminal_payload.get("files")),
-                    extract_saved_file_rows(
+                    _extract_result_file_rows(
                         str(terminal_payload.get("text") or "").strip()
                     ),
                 )
@@ -1478,8 +1537,9 @@ async def handle_ai_chat(
             ui_payload = _pop_pending_ui_payload(ctx.user_data)
             pending_result_files = merge_file_rows(
                 pending_ikaros_files,
-                extract_saved_file_rows(final_text_response),
+                _extract_result_file_rows(final_text_response),
             )
+            pending_result_files = _unsent_file_rows(pending_result_files)
             streamed_delivery = (
                 stream_segment_enabled
                 and stream_chunks_sent > 0
@@ -1584,10 +1644,25 @@ async def handle_ai_chat(
                         logger.warning(f"Failed to delete thinking_msg: {del_e}")
 
             if pending_result_files:
-                await _send_result_files(ctx, pending_result_files)
+                delivered = await _send_result_files(ctx, pending_result_files)
+                if delivered:
+                    _mark_file_rows_sent(delivered)
 
             await add_message(ctx, user_id, "model", final_text_response)
             await increment_stat(user_id, "ai_chats")
+        elif pending_ikaros_files:
+            pending_ikaros_files = _unsent_file_rows(pending_ikaros_files)
+            delivered = await _send_result_files(ctx, pending_ikaros_files)
+            if delivered:
+                _mark_file_rows_sent(delivered)
+                state["response_visible"] = True
+                await add_message(ctx, user_id, "model", "[attachments]")
+                await increment_stat(user_id, "ai_chats")
+            if can_update and thinking_msg is not None and not thinking_deleted:
+                try:
+                    await thinking_msg.delete()
+                except Exception as del_e:
+                    logger.warning(f"Failed to delete thinking_msg: {del_e}")
 
     except asyncio.CancelledError:
         logger.info(f"AI chat task cancelled for user {user_id}")

@@ -68,6 +68,12 @@ _RAW_PATH_RE = re.compile(
     + r"))(?=$|[\s),.;:!?])",
     flags=re.IGNORECASE,
 )
+_MARKDOWN_LINK_PATH_RE = re.compile(
+    r"!?\[[^\]\n]{0,240}\]\(<?(?P<path>/[^\n)>]+?(?:"
+    + "|".join(re.escape(ext) for ext in _PATH_EXTENSIONS)
+    + r"))>?\)",
+    flags=re.IGNORECASE,
+)
 _DEFAULT_MAX_BYTES = max(
     1,
     int(os.getenv("AUTO_DELIVERY_MAX_FILE_MB", "49")) * 1024 * 1024,
@@ -213,6 +219,21 @@ def extract_file_rows_from_text(
         limit=max(1, int(limit)) - len(explicit),
     )
     return merge_file_rows(explicit, hinted)[: max(1, int(limit))]
+
+
+def extract_markdown_file_link_rows(
+    text: str,
+    *,
+    max_size_bytes: int | None = _DEFAULT_MAX_BYTES,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    return _extract_file_rows_from_matches(
+        text,
+        patterns=(_MARKDOWN_LINK_PATH_RE,),
+        allow_any_extension=False,
+        max_size_bytes=max_size_bytes,
+        limit=limit,
+    )
 
 
 def strip_saved_file_markers(text: str) -> str:
