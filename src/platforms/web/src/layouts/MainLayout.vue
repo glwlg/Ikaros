@@ -261,6 +261,16 @@ const handleLogout = async () => {
         </div>
 
         <div class="ethereal-topbar-actions">
+          <button
+            type="button"
+            class="ethereal-icon-button"
+            :aria-label="themeStore.isDark ? '切换浅色模式' : '切换深色模式'"
+            :title="themeStore.isDark ? '切换浅色模式' : '切换深色模式'"
+            @click="themeStore.toggleTheme()"
+          >
+            <Sun v-if="themeStore.isDark" class="h-4 w-4" />
+            <Moon v-else class="h-4 w-4" />
+          </button>
           <div class="ethereal-top-avatar">{{ identityInitial }}</div>
         </div>
       </header>
@@ -283,8 +293,8 @@ const handleLogout = async () => {
   display: flex;
   height: 100vh;
   overflow: hidden;
-  background: #f7f9fc;
-  color: #0f172a;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
 }
 
 .ethereal-sidebar {
@@ -294,8 +304,8 @@ const handleLogout = async () => {
   display: flex;
   flex-direction: column;
   padding: 24px 16px 22px;
-  background: rgba(255, 255, 255, 0.92);
-  border-right: 1px solid #e6ebf2;
+  background: color-mix(in srgb, var(--color-bg-elevated) 94%, transparent);
+  border-right: 1px solid var(--color-border-secondary);
   box-shadow: 8px 0 32px rgba(15, 23, 42, 0.03);
   overflow-y: auto;
   transition: width 0.22s ease, padding 0.22s ease;
@@ -340,7 +350,7 @@ const handleLogout = async () => {
   width: 38px;
   height: 38px;
   border-radius: 10px;
-  background: linear-gradient(135deg, #2877ff, #5ca2ff);
+  background: linear-gradient(135deg, var(--color-primary-600), var(--color-primary-500));
   color: white;
   box-shadow: 0 14px 28px rgba(38, 113, 255, 0.22);
 }
@@ -356,7 +366,7 @@ const handleLogout = async () => {
   line-height: 1;
   font-weight: 800;
   letter-spacing: 0;
-  color: #07111f;
+  color: var(--color-text-primary);
 }
 
 .ethereal-brand-subtitle {
@@ -364,7 +374,7 @@ const handleLogout = async () => {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 1.2px;
-  color: #8a97aa;
+  color: var(--color-text-muted);
 }
 
 .ethereal-sidebar.is-collapsed .ethereal-logo > div:last-child,
@@ -382,7 +392,7 @@ const handleLogout = async () => {
   height: 30px;
   border: 0;
   background: transparent;
-  color: #667085;
+  color: var(--color-text-tertiary);
   cursor: pointer;
 }
 
@@ -390,9 +400,9 @@ const handleLogout = async () => {
   position: static;
   width: 28px;
   height: 28px;
-  border: 1px solid #e0e7f0;
+  border: 1px solid var(--color-border-primary);
   border-radius: 8px;
-  background: #ffffff;
+  background: var(--color-bg-elevated);
   box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
 }
 
@@ -419,7 +429,7 @@ const handleLogout = async () => {
 .ethereal-nav-label {
   padding: 0 14px 4px;
   font-size: 13px;
-  color: #98a2b3;
+  color: var(--color-text-muted);
 }
 
 .ethereal-nav-item {
@@ -430,7 +440,7 @@ const handleLogout = async () => {
   padding: 0 16px;
   border-radius: 8px;
   border: 1px solid transparent;
-  color: #344054;
+  color: var(--color-text-secondary);
   font-size: 15px;
   font-weight: 600;
   text-decoration: none;
@@ -445,14 +455,14 @@ const handleLogout = async () => {
 }
 
 .ethereal-nav-item:hover {
-  background: #f4f8ff;
-  color: #156df5;
+  background: color-mix(in srgb, var(--color-primary-500) 8%, var(--color-bg-elevated));
+  color: var(--color-primary-700);
 }
 
 .ethereal-nav-item.is-active {
-  border-color: #2f7cf6;
-  background: linear-gradient(180deg, #f7fbff 0%, #eef6ff 100%);
-  color: #1469f2;
+  border-color: var(--color-primary-500);
+  background: color-mix(in srgb, var(--color-primary-500) 10%, var(--color-bg-elevated));
+  color: var(--color-primary-700);
   box-shadow: 0 8px 18px rgba(40, 119, 255, 0.09);
 }
 
@@ -484,9 +494,9 @@ const handleLogout = async () => {
   align-items: center;
   gap: 12px;
   padding: 14px;
-  border: 1px solid #e6ebf2;
+  border: 1px solid var(--color-border-primary);
   border-radius: 14px;
-  background: #fbfdff;
+  background: var(--color-bg-elevated);
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.04);
 }
 
@@ -500,8 +510,8 @@ const handleLogout = async () => {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #e8f1ff;
-  color: #1f6fff;
+  background: var(--color-info-bg);
+  color: var(--color-info);
   font-weight: 800;
 }
 
@@ -523,13 +533,13 @@ const handleLogout = async () => {
 .ethereal-identity-name {
   font-size: 14px;
   font-weight: 700;
-  color: #101828;
+  color: var(--color-text-primary);
 }
 
 .ethereal-identity-email {
   margin-top: 2px;
   overflow: hidden;
-  color: #667085;
+  color: var(--color-text-tertiary);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -540,7 +550,7 @@ const handleLogout = async () => {
   align-items: center;
   gap: 6px;
   margin-top: 4px;
-  color: #22c55e;
+  color: var(--color-success);
   font-size: 12px;
   font-weight: 700;
 }
@@ -549,7 +559,7 @@ const handleLogout = async () => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--color-success);
 }
 
 .ethereal-logout {
@@ -559,7 +569,7 @@ const handleLogout = async () => {
   width: max-content;
   border: 0;
   background: transparent;
-  color: #344054;
+  color: var(--color-text-secondary);
   font-size: 14px;
   cursor: pointer;
 }
@@ -570,7 +580,7 @@ const handleLogout = async () => {
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  background: #f7f9fc;
+  background: var(--color-bg-primary);
 }
 
 .ethereal-topbar {
@@ -580,8 +590,8 @@ const handleLogout = async () => {
   gap: 22px;
   min-height: 78px;
   padding: 0 32px;
-  border-bottom: 1px solid #e6ebf2;
-  background: rgba(255, 255, 255, 0.86);
+  border-bottom: 1px solid var(--color-border-secondary);
+  background: color-mix(in srgb, var(--color-bg-elevated) 88%, transparent);
   backdrop-filter: blur(18px);
 }
 
@@ -590,28 +600,28 @@ const handleLogout = async () => {
   align-items: center;
   gap: 12px;
   min-width: 0;
-  color: #475467;
+  color: var(--color-text-secondary);
   font-size: 17px;
   white-space: nowrap;
 }
 
 .ethereal-trail-home {
-  color: #667085;
+  color: var(--color-text-tertiary);
 }
 
 .ethereal-trail strong {
-  color: #101828;
+  color: var(--color-text-primary);
   font-size: 18px;
 }
 
 .ethereal-trail-divider {
-  color: #98a2b3;
+  color: var(--color-text-muted);
 }
 
 .ethereal-topbar-actions {
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 10px;
 }
 
 .ethereal-icon-button {
@@ -622,7 +632,7 @@ const handleLogout = async () => {
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: #344054;
+  color: var(--color-text-secondary);
   cursor: pointer;
 }
 
@@ -632,8 +642,8 @@ const handleLogout = async () => {
 }
 
 .ethereal-icon-button:hover {
-  background: #f2f7ff;
-  color: #1469f2;
+  background: color-mix(in srgb, var(--color-primary-500) 9%, var(--color-bg-elevated));
+  color: var(--color-primary-700);
 }
 
 .ethereal-main-scroll {
@@ -653,9 +663,9 @@ const handleLogout = async () => {
   justify-content: flex-start;
   min-height: 52px;
   padding: 0 32px;
-  border-top: 1px solid #e6ebf2;
-  background: #ffffff;
-  color: #7d8da3;
+  border-top: 1px solid var(--color-border-secondary);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-muted);
   font-size: 13px;
 }
 
@@ -684,8 +694,8 @@ const handleLogout = async () => {
     justify-content: space-between;
     height: 58px;
     padding: 0 14px;
-    border-bottom: 1px solid #e6ebf2;
-    background: rgba(255, 255, 255, 0.94);
+    border-bottom: 1px solid var(--color-border-secondary);
+    background: color-mix(in srgb, var(--color-bg-elevated) 94%, transparent);
     backdrop-filter: blur(18px);
   }
 
@@ -703,7 +713,7 @@ const handleLogout = async () => {
     width: 28px;
     height: 28px;
     border-radius: 8px;
-    background: #2877ff;
+    background: var(--color-primary-600);
     color: #fff;
   }
 
@@ -712,10 +722,10 @@ const handleLogout = async () => {
     place-items: center;
     width: 36px;
     height: 36px;
-    border: 1px solid #e0e7f0;
+    border: 1px solid var(--color-border-primary);
     border-radius: 10px;
-    background: #fff;
-    color: #344054;
+    background: var(--color-bg-elevated);
+    color: var(--color-text-secondary);
   }
 
   .sidebar-overlay {
@@ -723,7 +733,7 @@ const handleLogout = async () => {
     z-index: 50;
     inset: 58px 0 0;
     display: block;
-    background: rgba(15, 23, 42, 0.28);
+    background: var(--color-bg-overlay);
     backdrop-filter: blur(4px);
   }
 

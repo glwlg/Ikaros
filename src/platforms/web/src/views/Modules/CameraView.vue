@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
     ArrowDown,
     ArrowDownLeft,
@@ -65,6 +65,8 @@ const testingId = ref<number | null>(null)
 const ptzAction = ref<PtzAction | ''>('')
 const ptzSpeed = ref(0.4)
 const ptzSpeedPercent = computed(() => Math.round(ptzSpeed.value * 100))
+const PTZ_MOVE_DURATION_MS = 180
+let ptzIdleTimer: ReturnType<typeof window.setTimeout> | null = null
 
 const emptyForm = (): CameraForm => ({
     name: '',
@@ -222,18 +224,36 @@ const handleTest = async (camera: CameraItem) => {
     }
 }
 
+const clearPtzIdleTimer = () => {
+    if (ptzIdleTimer) {
+        window.clearTimeout(ptzIdleTimer)
+        ptzIdleTimer = null
+    }
+}
+
 const startPtz = async (action: PtzAction) => {
     if (!selectedCamera.value || !canControlPtz.value) return
+    clearPtzIdleTimer()
     ptzAction.value = action
+    ptzIdleTimer = window.setTimeout(() => {
+        if (ptzAction.value === action) {
+            ptzAction.value = ''
+        }
+        ptzIdleTimer = null
+    }, PTZ_MOVE_DURATION_MS + 160)
     try {
-        await sendPtz(selectedCamera.value.id, action, ptzSpeed.value)
+        await sendPtz(selectedCamera.value.id, action, ptzSpeed.value, PTZ_MOVE_DURATION_MS)
     } catch (error: any) {
+        ptzAction.value = ''
+        clearPtzIdleTimer()
         alert(error?.response?.data?.detail || '云台控制失败')
     }
 }
 
-const stopPtz = async () => {
-    if (!selectedCamera.value || !ptzAction.value) return
+const stopPtz = async (forceOrEvent: boolean | Event = false) => {
+    const force = forceOrEvent === true
+    clearPtzIdleTimer()
+    if (!selectedCamera.value || (!ptzAction.value && !force)) return
     const cameraId = selectedCamera.value.id
     ptzAction.value = ''
     try {
@@ -249,6 +269,10 @@ watch(selectedId, () => {
 
 onMounted(() => {
     loadData()
+})
+
+onBeforeUnmount(() => {
+    clearPtzIdleTimer()
 })
 </script>
 
@@ -410,22 +434,22 @@ onMounted(() => {
           </label>
 
           <div class="mt-3 grid grid-cols-3 gap-2">
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowUpLeft class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowUp class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowUpRight class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowLeft class="h-5 w-5" /></button>
-            <button class="ptz-btn bg-slate-950 text-white" :disabled="!canControlPtz" @click="stopPtz"><CircleStop class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowRight class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowDownLeft class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowDown class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz"><ArrowDownRight class="h-5 w-5" /></button>
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUpLeft class="h-5 w-5" /></button>
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUp class="h-5 w-5" /></button>
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUpRight class="h-5 w-5" /></button>
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowLeft class="h-5 w-5" /></button>
+            <button class="ptz-btn bg-slate-950 text-white" :disabled="!canControlPtz" @click="stopPtz(true)"><CircleStop class="h-5 w-5" /></button>
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowRight class="h-5 w-5" /></button>
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDownLeft class="h-5 w-5" /></button>
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDown class="h-5 w-5" /></button>
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDownRight class="h-5 w-5" /></button>
           </div>
 
           <div class="mt-3 grid grid-cols-2 gap-2">
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('zoom_in')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz">
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('zoom_in')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz">
               <ZoomIn class="h-5 w-5" />
             </button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('zoom_out')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz">
+            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('zoom_out')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz">
               <ZoomOut class="h-5 w-5" />
             </button>
           </div>
@@ -608,8 +632,14 @@ onMounted(() => {
 
 @media (max-width: 768px) {
   .camera-page {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
     gap: 12px;
-    padding: 0 !important;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 0 0 max(20px, env(safe-area-inset-bottom)) !important;
     background: #f7f9fc;
   }
 
@@ -630,9 +660,9 @@ onMounted(() => {
   }
 
   .camera-player {
-    height: 62vh;
-    height: min(62svh, 520px);
-    min-height: 320px;
+    height: 50vh;
+    height: min(50svh, 420px);
+    min-height: 220px;
     aspect-ratio: auto;
   }
 
@@ -640,6 +670,18 @@ onMounted(() => {
   .camera-side {
     margin-left: 12px;
     margin-right: 12px;
+  }
+
+  .camera-side {
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 430px) {
+  .camera-player {
+    height: 44vh;
+    height: min(44svh, 360px);
+    min-height: 190px;
   }
 }
 </style>

@@ -17,45 +17,53 @@
 :root,
 :root.light {
     /* 背景色 */
-    --color-bg-primary: #ffffff;
-    --color-bg-secondary: #f8fafc;
-    --color-bg-tertiary: #f1f5f9;
+    --color-bg-primary: #fcfcfd;
+    --color-bg-secondary: #f9f9fb;
+    --color-bg-tertiary: #f0f0f3;
     --color-bg-elevated: #ffffff;
     --color-bg-overlay: rgba(0, 0, 0, 0.5);
     
     /* 文字色 */
-    --color-text-primary: #1e293b;
-    --color-text-secondary: #475569;
-    --color-text-tertiary: #64748b;
-    --color-text-muted: #94a3b8;
+    --color-text-primary: #1c2024;
+    --color-text-secondary: #60646c;
+    --color-text-tertiary: #80838d;
+    --color-text-muted: #8b8d98;
     --color-text-inverse: #ffffff;
     
     /* 边框色 */
-    --color-border-primary: #e2e8f0;
-    --color-border-secondary: #f1f5f9;
-    --color-border-focus: #7c3aed;
+    --color-border-primary: #d9d9e0;
+    --color-border-secondary: #e8e8ec;
+    --color-border-focus: #0090ff;
     
     /* 主色调 */
-    --color-primary-50: #f5f3ff;
-    --color-primary-100: #ede9fe;
-    --color-primary-200: #ddd6fe;
-    --color-primary-300: #c4b5fd;
-    --color-primary-400: #a78bfa;
-    --color-primary-500: #8b5cf6;
-    --color-primary-600: #7c3aed;
-    --color-primary-700: #6d28d9;
-    --color-primary-800: #5b21b6;
-    --color-primary-900: #4c1d95;
+    --color-primary-50: #e6f4fe;
+    --color-primary-100: #d5efff;
+    --color-primary-200: #acd8fc;
+    --color-primary-300: #8ec8f6;
+    --color-primary-400: #5eb1ef;
+    --color-primary-500: #0090ff;
+    --color-primary-600: #0588f0;
+    --color-primary-700: #0d74ce;
+    --color-primary-800: #113264;
+    --color-primary-900: #0d1f3a;
     
     /* 功能色 */
-    --color-success: #10b981;
-    --color-success-bg: #d1fae5;
-    --color-warning: #f59e0b;
-    --color-warning-bg: #fef3c7;
-    --color-error: #ef4444;
-    --color-error-bg: #fee2e2;
-    --color-info: #3b82f6;
-    --color-info-bg: #dbeafe;
+    --color-success: #218358;
+    --color-success-bg: #e6f6eb;
+    --color-warning: #ab6400;
+    --color-warning-bg: #fff7c2;
+    --color-error: #ce2c31;
+    --color-error-bg: #feebec;
+    --color-info: #0d74ce;
+    --color-info-bg: #e6f4fe;
+
+    /* 图表色序列 */
+    --color-chart-1: #0090ff;
+    --color-chart-2: #30a46c;
+    --color-chart-3: #ffc53d;
+    --color-chart-4: #6e56cf;
+    --color-chart-5: #d6409f;
+    --color-chart-6: #12a594;
     
     /* 阴影 */
     --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
@@ -64,53 +72,61 @@
     --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
     
     /* 滚动条 */
-    --scrollbar-track: #f1f5f9;
-    --scrollbar-thumb: #cbd5e1;
-    --scrollbar-thumb-hover: #94a3b8;
+    --scrollbar-track: #f0f0f3;
+    --scrollbar-thumb: #d9d9e0;
+    --scrollbar-thumb-hover: #8b8d98;
 }
 
 /* 暗色主题 */
 :root.dark {
     /* 背景色 */
-    --color-bg-primary: #0f172a;
-    --color-bg-secondary: #1e293b;
-    --color-bg-tertiary: #334155;
-    --color-bg-elevated: #1e293b;
+    --color-bg-primary: #111113;
+    --color-bg-secondary: #18191b;
+    --color-bg-tertiary: #212225;
+    --color-bg-elevated: #18191b;
     --color-bg-overlay: rgba(0, 0, 0, 0.75);
     
     /* 文字色 */
-    --color-text-primary: #f1f5f9;
-    --color-text-secondary: #cbd5e1;
-    --color-text-tertiary: #94a3b8;
-    --color-text-muted: #64748b;
-    --color-text-inverse: #0f172a;
+    --color-text-primary: #edeef0;
+    --color-text-secondary: #b0b4ba;
+    --color-text-tertiary: #777b84;
+    --color-text-muted: #696e77;
+    --color-text-inverse: #111113;
     
     /* 边框色 */
-    --color-border-primary: #475569;
-    --color-border-secondary: #334155;
-    --color-border-focus: #a78bfa;
+    --color-border-primary: #363a3f;
+    --color-border-secondary: #2e3135;
+    --color-border-focus: #3b9eff;
     
-    /* 主色调（保持与亮色主题一致或稍作调整） */
-    --color-primary-50: #1e1b4b;
-    --color-primary-100: #312e81;
-    --color-primary-200: #3730a3;
-    --color-primary-300: #4338ca;
-    --color-primary-400: #6366f1;
-    --color-primary-500: #818cf8;
-    --color-primary-600: #a5b4fc;
-    --color-primary-700: #c7d2fe;
-    --color-primary-800: #e0e7ff;
-    --color-primary-900: #eef2ff;
+    /* 主色调 */
+    --color-primary-50: #0d2847;
+    --color-primary-100: #003362;
+    --color-primary-200: #004074;
+    --color-primary-300: #104d87;
+    --color-primary-400: #205d9e;
+    --color-primary-500: #3b9eff;
+    --color-primary-600: #0090ff;
+    --color-primary-700: #70b8ff;
+    --color-primary-800: #c2e6ff;
+    --color-primary-900: #e6f4fe;
     
     /* 功能色（适当调整以适应暗色背景） */
-    --color-success: #34d399;
-    --color-success-bg: rgba(16, 185, 129, 0.2);
-    --color-warning: #fbbf24;
-    --color-warning-bg: rgba(245, 158, 11, 0.2);
-    --color-error: #f87171;
-    --color-error-bg: rgba(239, 68, 68, 0.2);
-    --color-info: #60a5fa;
-    --color-info-bg: rgba(59, 130, 246, 0.2);
+    --color-success: #3dd68c;
+    --color-success-bg: #132d21;
+    --color-warning: #ffca16;
+    --color-warning-bg: #302008;
+    --color-error: #ff9592;
+    --color-error-bg: #3b1219;
+    --color-info: #70b8ff;
+    --color-info-bg: #0d2847;
+
+    /* 图表色序列 */
+    --color-chart-1: #3b9eff;
+    --color-chart-2: #3dd68c;
+    --color-chart-3: #ffca16;
+    --color-chart-4: #8b7eff;
+    --color-chart-5: #ff92ad;
+    --color-chart-6: #4ccce6;
     
     /* 阴影（在暗色模式下减弱） */
     --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
@@ -119,9 +135,9 @@
     --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.5), 0 8px 10px -6px rgb(0 0 0 / 0.5);
     
     /* 滚动条 */
-    --scrollbar-track: #1e293b;
-    --scrollbar-thumb: #475569;
-    --scrollbar-thumb-hover: #64748b;
+    --scrollbar-track: #18191b;
+    --scrollbar-thumb: #363a3f;
+    --scrollbar-thumb-hover: #696e77;
 }
 
 /* ========================================
@@ -216,8 +232,8 @@
 /* 对于不支持CSS变量的浏览器，使用亮色主题作为默认 */
 @supports not (--css-variables: 1) {
     body {
-        background-color: #f8f9fc;
-        color: #1e293b;
+        background-color: #fcfcfd;
+        color: #1c2024;
     }
 }
 

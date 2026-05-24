@@ -7,6 +7,7 @@
 import logging
 import base64
 import asyncio
+import contextlib
 import json
 import mimetypes
 import os
@@ -720,50 +721,11 @@ async def process_as_voice_message(
 
 async def process_as_text_message(ctx: UnifiedContext, text: str, thinking_msg) -> None:
     """
-    将转写后的文本按普通文本消息逻辑处理（代理给 Agent Orchestrator）
+    将转写后的文本按普通文本消息逻辑处理。
     """
-    import time
-    from core.agent_orchestrator import agent_orchestrator
-    from stats import increment_stat
+    from handlers.ai_handlers import handle_ai_chat
 
-    user_id = ctx.message.user.id
-
-    # 记录用户消息到上下文
-    await add_message(ctx, user_id, "user", text)
-
-    # 构建上下文
-    context_messages = await get_user_context(ctx, user_id)
-    context_messages.append({"role": "user", "parts": [{"text": text}]})
-
-    msg_id = getattr(thinking_msg, "message_id", getattr(thinking_msg, "id", None))
-
-    # 代理给 Agent Orchestrator
-    try:
-        final_text_response = ""
-        last_update_time = 0
-
-        async for chunk_text in agent_orchestrator.handle_message(
-            ctx, context_messages
-        ):
-            final_text_response += chunk_text
-
-            now = time.time()
-            if now - last_update_time > 0.8:
-                await ctx.edit_message(msg_id, final_text_response)
-                last_update_time = now
-
-        # 发送最终回复
-        if final_text_response:
-            await ctx.edit_message(
-                msg_id,
-                final_text_response,
-                run_after_reply_hooks=True,
-            )
-            await add_message(ctx, user_id, "model", final_text_response)
-            await increment_stat(user_id, "voice_chats")
-        else:
-            await ctx.edit_message(msg_id, "抱歉，我无法生成回复。")
-
-    except Exception as e:
-        logger.error(f"Voice Agent error: {e}")
-        await ctx.edit_message(msg_id, f"❌ Agent 运行出错：{e}")
+    with contextlib.suppress(Exception):
+        msg_id = getattr(thinking_msg, "message_id", getattr(thinking_msg, "id", None))
+        await ctx.delete_message(msg_id)
+    await handle_ai_chat(ctx, user_message_override=text)

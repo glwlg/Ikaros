@@ -51,12 +51,19 @@ async def illustrate_stage(
         topic = str(article_data.get("title") or "untitled")
 
     # -- generate images -------------------------------------------------------
+    image_requested = bool(article_data.get("cover_prompt"))
+    if not image_requested:
+        image_requested = any(
+            bool((section or {}).get("image_prompt"))
+            for section in list(article_data.get("sections") or [])
+            if isinstance(section, dict)
+        )
     cover_bytes, section_images, generated_files = await _generate_images(
         ctx, article_data, author=author,
     )
 
     # -- validate: at least cover must succeed ---------------------------------
-    if not cover_bytes:
+    if image_requested and article_data.get("cover_prompt") and not cover_bytes:
         return StageResult.fail("封面图生成失败，可重试")
 
     # -- save images to disk ---------------------------------------------------

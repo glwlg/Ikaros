@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from api.services.mediamtx_service import (
     mediamtx_api_url,
     verify_stream_token,
 )
+from api.services import onvif_ptz
 from api.services.onvif_ptz import PTZVelocity, velocity_for_action
 
 
@@ -176,3 +178,58 @@ def test_ptz_velocity_mapping_clamps_speed():
     assert velocity_for_action("zoom_out", 0.01) == PTZVelocity(zoom=-0.05)
     with pytest.raises(ValueError):
         velocity_for_action("spin", 0.4)
+
+
+def test_ptz_move_stops_after_bounded_duration(monkeypatch):
+    calls = []
+
+    class FakeMediaService:
+        def GetProfiles(self):
+            return [SimpleNamespace(token="profile-1")]
+
+    class FakePtzService:
+        def create_type(self, name):
+            return SimpleNamespace(_name=name)
+
+        def ContinuousMove(self, request):
+            calls.append(("move", request.ProfileToken, request.Velocity))
+
+        def Stop(self, request):
+            calls.append(("stop", request.ProfileToken, request.PanTilt, request.Zoom))
+
+    class FakeCamera:
+        def __init__(self, host, port, username, password):
+            calls.append(("camera", host, port, username, password))
+
+        def create_media_service(self):
+            return FakeMediaService()
+
+        def create_ptz_service(self):
+            return FakePtzService()
+
+    monkeypatch.setitem(sys.modules, "onvif", SimpleNamespace(ONVIFCamera=FakeCamera))
+    monkeypatch.setattr(
+        onvif_ptz.time,
+        "sleep",
+        lambda seconds: calls.append(("sleep", seconds)),
+    )
+
+    onvif_ptz._run_onvif_command(
+        host="192.168.1.179",
+        port=80,
+        username="admin",
+        password="secret",
+        action="right",
+        speed=0.4,
+        duration_ms=120,
+    )
+
+    assert calls[0] == ("camera", "192.168.1.179", 80, "admin", "secret")
+    assert calls[1] == (
+        "move",
+        "profile-1",
+        {"PanTilt": {"x": 0.4, "y": 0.0}, "Zoom": {"x": 0.0}},
+    )
+    assert calls[2][0] == "sleep"
+    assert calls[2][1] == pytest.approx(0.12)
+    assert calls[3] == ("stop", "profile-1", True, True)

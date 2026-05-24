@@ -73,7 +73,7 @@ body {
 
 /* 焦点样式 */
 :focus-visible {
-  outline: 2px solid var(--color-primary-500, #8b5cf6);
+  outline: 2px solid var(--color-primary-500, #0090ff);
   outline-offset: 2px;
 }
 

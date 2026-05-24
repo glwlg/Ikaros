@@ -9,6 +9,10 @@ export type AppliedTheme = 'light' | 'dark'
 
 // 本地存储键名
 const STORAGE_KEY = 'theme_preference'
+const THEME_COLORS: Record<AppliedTheme, string> = {
+    light: '#fcfcfd',
+    dark: '#111113'
+}
 
 export const useThemeStore = defineStore('theme', () => {
     // ============ State ============
@@ -128,6 +132,12 @@ export const useThemeStore = defineStore('theme', () => {
         
         // 设置 color-scheme 以影响原生组件（如滚动条、表单控件等）
         html.style.colorScheme = appliedTheme.value
+
+        document
+            .querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')
+            .forEach((meta) => {
+                meta.setAttribute('content', THEME_COLORS[appliedTheme.value])
+            })
     }
     
     /**

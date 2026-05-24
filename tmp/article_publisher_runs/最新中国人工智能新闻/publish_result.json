@@ -1,0 +1,9 @@
+{
+  "topic": "用daily_query获取今天日期，然后写一篇关于最新中国人工智能新闻的公众号文章。标题必须为 5月24日AI快讯:xxxx。要求新闻均来自 2026-05-22 至 2026-05-24 的中国公司新闻；至少配图三张；内容结合AI与经济，只做分析，不写指点江山式判断；最终正文不要包含非正文内容，不要出现对话式回复。",
+  "channels": [
+    "wechat"
+  ],
+  "statuses": [
+    "✅ 已发布到公众号草稿箱（硅基天平），MediaID: `pYA4adgu3szUt_Y8gIwanVYgZrT_bdWHyxQQnY6j3hOzjpfntrcmEVpU-PSNbb52`"
+  ]
+}

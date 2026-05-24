@@ -152,6 +152,8 @@ class TaskTrackerService:
         for task in rows:
             if str(task.source or "").strip().lower() == "heartbeat":
                 continue
+            if str(task.status or "").strip().lower() == "waiting_user":
+                continue
             if due_only and not self._is_due(task, now=now):
                 continue
             filtered.append(task)

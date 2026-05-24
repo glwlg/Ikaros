@@ -31,7 +31,10 @@ def is_confirmation_expired(
         return False
     deadline = _parse_deadline(active_task.get("confirmation_deadline"))
     if deadline is None:
-        return False
+        return (
+            _safe_text(active_task.get("status"), 40) == "waiting_user"
+            and bool(active_task.get("needs_confirmation"))
+        )
     current = now or datetime.now().astimezone()
     if current.tzinfo is None:
         current = current.astimezone()

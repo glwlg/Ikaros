@@ -487,7 +487,7 @@ async def test_resume_waiting_task_treats_text_as_adjustment(monkeypatch, _isola
             "stage_title": "收集信息",
             "attempt_index": 1,
             "needs_confirmation": True,
-            "confirmation_deadline": "",
+            "confirmation_deadline": "2999-01-01T00:00:00+00:00",
             "last_blocking_reason": "工具调用预算耗尽",
         },
     )
@@ -625,7 +625,7 @@ async def test_resume_waiting_task_supplements_skill_scope(monkeypatch, _isolate
             "stage_title": "收集信息",
             "attempt_index": 1,
             "needs_confirmation": True,
-            "confirmation_deadline": "",
+            "confirmation_deadline": "2999-01-01T00:00:00+00:00",
             "last_blocking_reason": "需要补抓网页原文",
         },
     )
