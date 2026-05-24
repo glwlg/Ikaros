@@ -1301,6 +1301,15 @@ async def test_codex_kernel_streams_app_server_agent_deltas(monkeypatch):
                         "text": "pytest passed",
                     },
                 )
+                await self.event_callback(
+                    "item_activity",
+                    {
+                        "turn_id": turn_id,
+                        "item_id": "search-1",
+                        "item_type": "web_search_call",
+                        "text": "搜索：今天 科技新闻",
+                    },
+                )
             return {"id": turn_id, "status": "completed"}
 
         def build_result(
@@ -1349,7 +1358,12 @@ async def test_codex_kernel_streams_app_server_agent_deltas(monkeypatch):
     )
 
     assert result["stdout"] == "完成"
-    assert [event for event, _payload in events] == ["codex_agent_message"]
+    assert [event for event, _payload in events] == [
+        "codex_agent_message",
+        "codex_activity",
+    ]
     assert events[0][1]["text_preview"] == "处理中"
+    assert events[1][1]["text_preview"] == "搜索：今天 科技新闻"
+    assert events[1][1]["item_type"] == "web_search_call"
 
     await codex_kernel_module.close_persistent_codex_kernel_client()

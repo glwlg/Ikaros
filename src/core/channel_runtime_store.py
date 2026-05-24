@@ -7,6 +7,7 @@ from threading import Lock
 from typing import Any, Dict
 
 from core.app_paths import data_dir
+from core.atomic_io import atomic_write_text, sync_file_lock
 
 
 def _now_iso() -> str:
@@ -21,6 +22,10 @@ class ChannelRuntimeStore:
     @property
     def path(self) -> Path:
         return (data_dir() / "system" / "channel_runtime.json").resolve()
+
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_suffix(self.path.suffix + ".lock")
 
     @staticmethod
     def _safe_text(value: Any, limit: int = 0) -> str:
@@ -38,10 +43,11 @@ class ChannelRuntimeStore:
 
     def _ensure_file(self) -> None:
         with self._lock:
-            if self.path.exists():
-                return
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_unlocked(self._default_payload())
+            with sync_file_lock(self.lock_path):
+                if self.path.exists():
+                    return
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self._write_unlocked(self._default_payload())
 
     def _read_unlocked(self) -> Dict[str, Any]:
         default = self._default_payload()
@@ -67,10 +73,9 @@ class ChannelRuntimeStore:
         return merged
 
     def _write_unlocked(self, payload: Dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        atomic_write_text(
+            self.path,
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
         )
 
     def compose_key(self, *, platform: str, platform_user_id: str) -> str:
@@ -255,16 +260,17 @@ class ChannelRuntimeStore:
         runtime_key: str = "",
     ) -> str:
         with self._lock:
-            payload = self._read_unlocked()
-            key, state = self._state_for_update_unlocked(
-                payload,
-                platform=platform,
-                platform_user_id=platform_user_id,
-                runtime_key=runtime_key,
-            )
-            state["session_id"] = self._safe_text(session_id, 120)
-            self._write_unlocked(payload)
-            return key
+            with sync_file_lock(self.lock_path):
+                payload = self._read_unlocked()
+                key, state = self._state_for_update_unlocked(
+                    payload,
+                    platform=platform,
+                    platform_user_id=platform_user_id,
+                    runtime_key=runtime_key,
+                )
+                state["session_id"] = self._safe_text(session_id, 120)
+                self._write_unlocked(payload)
+                return key
 
     def get_active_task(
         self,
@@ -290,15 +296,16 @@ class ChannelRuntimeStore:
     ) -> Dict[str, Any] | None:
         normalized = self._normalize_active_task(task)
         with self._lock:
-            payload = self._read_unlocked()
-            _key, state = self._state_for_update_unlocked(
-                payload,
-                platform=platform,
-                platform_user_id=platform_user_id,
-                runtime_key=runtime_key,
-            )
-            state["active_task"] = normalized
-            self._write_unlocked(payload)
+            with sync_file_lock(self.lock_path):
+                payload = self._read_unlocked()
+                _key, state = self._state_for_update_unlocked(
+                    payload,
+                    platform=platform,
+                    platform_user_id=platform_user_id,
+                    runtime_key=runtime_key,
+                )
+                state["active_task"] = normalized
+                self._write_unlocked(payload)
         return normalized
 
     def update_active_task(
@@ -310,52 +317,61 @@ class ChannelRuntimeStore:
         **fields: Any,
     ) -> Dict[str, Any] | None:
         with self._lock:
-            payload = self._read_unlocked()
-            _key, state = self._state_for_update_unlocked(
-                payload,
-                platform=platform,
-                platform_user_id=platform_user_id,
-                runtime_key=runtime_key,
-            )
-            current = self._normalize_active_task(state.get("active_task"))
-            if current is None:
-                return None
-            for key in (
-                "session_task_id",
-                "task_inbox_id",
-                "goal",
-                "status",
-                "source",
-                "result_summary",
-                "needs_confirmation",
-                "confirmation_deadline",
-                "stage_index",
-                "stage_total",
-                "stage_id",
-                "stage_title",
-                "attempt_index",
-                "last_blocking_reason",
-                "resume_instruction_preview",
-                "adjustments_count",
-                "delivery_state",
-                "last_user_visible_summary",
-                "resume_window_until",
-                "kernel_provider",
-                "kernel_status",
-                "codex_session_id",
-                "codex_thread_id",
-                "codex_turn_id",
-            ):
-                if key in fields:
-                    current[key] = fields[key]
-            current["updated_at"] = _now_iso()
-            terminal_statuses = {"done", "failed", "cancelled", "timed_out"}
-            should_clear = bool(fields.get("clear_active")) or (
-                self._safe_text(current.get("status")).lower() in terminal_statuses
-            )
-            state["active_task"] = None if should_clear else self._normalize_active_task(current)
-            self._write_unlocked(payload)
-            return self._normalize_active_task(state.get("active_task"))
+            with sync_file_lock(self.lock_path):
+                payload = self._read_unlocked()
+                _key, state = self._state_for_update_unlocked(
+                    payload,
+                    platform=platform,
+                    platform_user_id=platform_user_id,
+                    runtime_key=runtime_key,
+                )
+                current = self._normalize_active_task(state.get("active_task"))
+                if current is None:
+                    return None
+                for key in (
+                    "session_task_id",
+                    "task_inbox_id",
+                    "goal",
+                    "status",
+                    "source",
+                    "result_summary",
+                    "needs_confirmation",
+                    "confirmation_deadline",
+                    "stage_index",
+                    "stage_total",
+                    "stage_id",
+                    "stage_title",
+                    "attempt_index",
+                    "last_blocking_reason",
+                    "resume_instruction_preview",
+                    "adjustments_count",
+                    "delivery_state",
+                    "last_user_visible_summary",
+                    "resume_window_until",
+                    "kernel_provider",
+                    "kernel_status",
+                    "codex_session_id",
+                    "codex_thread_id",
+                    "codex_turn_id",
+                ):
+                    if key in fields:
+                        current[key] = fields[key]
+                current["updated_at"] = _now_iso()
+                terminal_statuses = {
+                    "done",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "timed_out",
+                }
+                should_clear = bool(fields.get("clear_active")) or (
+                    self._safe_text(current.get("status")).lower() in terminal_statuses
+                )
+                state["active_task"] = (
+                    None if should_clear else self._normalize_active_task(current)
+                )
+                self._write_unlocked(payload)
+                return self._normalize_active_task(state.get("active_task"))
 
     def clear_active_task(
         self,
@@ -365,15 +381,16 @@ class ChannelRuntimeStore:
         runtime_key: str = "",
     ) -> None:
         with self._lock:
-            payload = self._read_unlocked()
-            _key, state = self._state_for_update_unlocked(
-                payload,
-                platform=platform,
-                platform_user_id=platform_user_id,
-                runtime_key=runtime_key,
-            )
-            state["active_task"] = None
-            self._write_unlocked(payload)
+            with sync_file_lock(self.lock_path):
+                payload = self._read_unlocked()
+                _key, state = self._state_for_update_unlocked(
+                    payload,
+                    platform=platform,
+                    platform_user_id=platform_user_id,
+                    runtime_key=runtime_key,
+                )
+                state["active_task"] = None
+                self._write_unlocked(payload)
 
 
 channel_runtime_store = ChannelRuntimeStore()

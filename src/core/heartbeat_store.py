@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from core.atomic_io import atomic_write_text
 from core.config import DATA_DIR
 from core.state_paths import SINGLE_USER_SCOPE
 
@@ -142,6 +143,9 @@ class HeartbeatStore:
         self.root.mkdir(parents=True, exist_ok=True)
         return (self.root / "STATUS.json").resolve()
 
+    def status_lock_path(self, user_id: str) -> Path:
+        return self.status_path(user_id).with_suffix(".json.lock")
+
     def backup_legacy_path(self, user_id: str) -> Path:
         _ = user_id
         return (self._docs_root() / "HEARTBEAT.v1.bak.md").resolve()
@@ -152,6 +156,14 @@ class HeartbeatStore:
             lock = asyncio.Lock()
             self._locks[self.scope] = lock
         return lock
+
+    @contextlib.asynccontextmanager
+    async def _scope_state_lock(self):
+        async with self._scope_lock():
+            from shared.queue.jsonl_queue import FileLock
+
+            async with FileLock(self.status_lock_path(self.scope)):
+                yield
 
     def _default_spec(self) -> dict[str, Any]:
         return {
@@ -527,10 +539,9 @@ class HeartbeatStore:
     def _write_status_unlocked(self, status: dict[str, Any]) -> dict[str, Any]:
         path = self.status_path(self.scope)
         normalized = self._normalize_status(status)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        atomic_write_text(
+            path,
             json.dumps(normalized, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
         return normalized
 
@@ -600,12 +611,12 @@ class HeartbeatStore:
 
     async def ensure_user_files(self, user_id: str) -> None:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             self._ensure_canonical_unlocked()
 
     async def get_state(self, user_id: str) -> dict[str, Any]:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             spec, checklist, status = self._ensure_canonical_unlocked()
             return {
                 "spec": spec,
@@ -614,12 +625,12 @@ class HeartbeatStore:
             }
 
     async def list_users(self) -> list[str]:
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             return [self.scope] if self._has_existing_state_unlocked() else []
 
     async def compact_user(self, user_id: str) -> None:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             spec, checklist, status = self._ensure_canonical_unlocked()
             spec["updated_at"] = _now_iso()
             self.heartbeat_path(self.scope).write_text(
@@ -655,7 +666,7 @@ class HeartbeatStore:
         paused: bool | None = None,
     ) -> dict[str, Any]:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             spec, checklist, status = self._ensure_canonical_unlocked()
             if every is not None:
                 spec["every"] = _normalize_every(every)
@@ -709,7 +720,7 @@ class HeartbeatStore:
 
     async def list_checklist_items(self, user_id: str) -> list[dict[str, Any]]:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, checklist, status = self._ensure_canonical_unlocked()
             items: list[dict[str, Any]] = []
             for index, item in enumerate(checklist, start=1):
@@ -737,7 +748,7 @@ class HeartbeatStore:
         normalized = _truncate(item, 400)
         if not normalized:
             return await self.list_checklist(self.scope)
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             spec, checklist, status = self._ensure_canonical_unlocked()
             if normalized not in checklist:
                 checklist.append(normalized)
@@ -761,7 +772,7 @@ class HeartbeatStore:
 
     async def remove_checklist_item(self, user_id: str, index: int) -> list[str]:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             spec, checklist, status = self._ensure_canonical_unlocked()
             if 1 <= index <= len(checklist):
                 removed_item = checklist.pop(index - 1)
@@ -792,7 +803,7 @@ class HeartbeatStore:
         if not safe_platform or not safe_chat_id:
             return None
 
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, checklist, status = self._ensure_canonical_unlocked()
             if index < 1 or index > len(checklist):
                 return None
@@ -827,7 +838,7 @@ class HeartbeatStore:
     ) -> dict[str, Any]:
         _ = user_id
         stamp = run_at or _now_iso()
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             spec, _checklist, status = self._ensure_canonical_unlocked()
             every_sec = _parse_every_seconds(spec.get("every", self.default_every))
             run_dt = _parse_iso(stamp) or _now_local()
@@ -881,7 +892,7 @@ class HeartbeatStore:
         return level
 
     async def normalize_runtime_tree(self) -> int:
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             if not self._has_existing_state_unlocked():
                 return 0
             self._ensure_canonical_unlocked()
@@ -904,7 +915,7 @@ class HeartbeatStore:
         session_id: str = "",
     ) -> None:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             delivery = dict(status.get("delivery") or {})
             delivery["last_platform"] = _truncate(platform, 64)
@@ -931,7 +942,7 @@ class HeartbeatStore:
     ) -> dict[str, Any] | None:
         _ = user_id
         normalized = self._normalize_active_task(task)
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             session = dict(status.get("session") or {})
             session["active_task"] = normalized
@@ -944,7 +955,7 @@ class HeartbeatStore:
         self, user_id: str, **fields
     ) -> dict[str, Any] | None:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             session = dict(status.get("session") or {})
             current = self._normalize_active_task(session.get("active_task"))
@@ -979,11 +990,19 @@ class HeartbeatStore:
                 if key in fields:
                     current[key] = fields[key]
             current["updated_at"] = _now_iso()
-            terminal_statuses = {"done", "failed", "cancelled", "timed_out"}
+            terminal_statuses = {
+                "done",
+                "completed",
+                "failed",
+                "cancelled",
+                "timed_out",
+            }
             should_clear = bool(fields.get("clear_active")) or (
                 str(current.get("status", "")).strip().lower() in terminal_statuses
             )
-            session["active_task"] = None if should_clear else self._normalize_active_task(current)
+            session["active_task"] = (
+                None if should_clear else self._normalize_active_task(current)
+            )
             status["session"] = session
             status["last_update"] = _now_iso()
             self._write_status_unlocked(status)
@@ -991,7 +1010,7 @@ class HeartbeatStore:
 
     async def clear_session_active_task(self, user_id: str) -> None:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             session = dict(status.get("session") or {})
             session["active_task"] = None
@@ -1004,7 +1023,7 @@ class HeartbeatStore:
         note = _truncate(message.replace("\r", " ").replace("\n", " ").strip(), 800)
         if not note:
             return
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             session = dict(status.get("session") or {})
             events = session.get("events")
@@ -1026,7 +1045,7 @@ class HeartbeatStore:
     async def set_active_executor_id(self, user_id: str, executor_id: str) -> str:
         _ = user_id
         safe = _truncate(executor_id, 80)
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             session = dict(status.get("session") or {})
             session["active_executor_id"] = safe
@@ -1040,7 +1059,7 @@ class HeartbeatStore:
         if note:
             await self.append_session_event(self.scope, f"pulse: {note}")
             return
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             status["last_update"] = _now_iso()
             self._write_status_unlocked(status)
@@ -1050,7 +1069,7 @@ class HeartbeatStore:
     ) -> bool:
         _ = user_id
         lock_ttl = max(1, int(ttl_sec or self.lock_timeout_sec))
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             current_owner = str(status.get("locked_by", "")).strip()
             expires = _parse_iso(str(status.get("lock_expires_at", "")).strip())
@@ -1071,7 +1090,7 @@ class HeartbeatStore:
     ) -> bool:
         _ = user_id
         lock_ttl = max(1, int(ttl_sec or self.lock_timeout_sec))
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             if str(status.get("locked_by", "")).strip() != str(owner):
                 return False
@@ -1084,7 +1103,7 @@ class HeartbeatStore:
 
     async def release_lock(self, user_id: str, owner: str | None = None) -> bool:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             current_owner = str(status.get("locked_by", "")).strip()
             if owner and current_owner and current_owner != str(owner):
@@ -1097,7 +1116,7 @@ class HeartbeatStore:
 
     async def set_last_error(self, user_id: str, error: str) -> None:
         _ = user_id
-        async with self._scope_lock():
+        async with self._scope_state_lock():
             _spec, _checklist, status = self._ensure_canonical_unlocked()
             status["last_error"] = _truncate(error, 1000)
             status["last_update"] = _now_iso()

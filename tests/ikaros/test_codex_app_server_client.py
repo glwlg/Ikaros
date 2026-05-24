@@ -96,6 +96,59 @@ async def test_app_server_client_emits_agent_message_delta_events(tmp_path):
     assert events[0][1]["text"] == "hello"
 
 
+@pytest.mark.asyncio
+async def test_app_server_client_emits_web_search_activity_events(tmp_path):
+    client = CodexAppServerClient(
+        command=["codex", "app-server"],
+        cwd=str(tmp_path),
+        env={},
+        timeout_sec=30,
+    )
+    events = []
+
+    async def on_event(event, payload):
+        events.append((event, payload))
+
+    client.set_event_callback(on_event)
+
+    await client._handle_payload(
+        {
+            "jsonrpc": "2.0",
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {
+                    "id": "search-1",
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {
+                        "type": "search",
+                        "queries": [
+                            "technology news today",
+                            "AI chip market",
+                        ],
+                    },
+                },
+            },
+        }
+    )
+
+    assert events == [
+        (
+            "item_activity",
+            {
+                "method": "item/completed",
+                "thread_id": "thread-1",
+                "turn_id": "turn-1",
+                "item_id": "search-1",
+                "item_type": "web_search_call",
+                "text": "搜索：technology news today；AI chip market",
+            },
+        )
+    ]
+
+
 def test_app_server_client_prefers_available_approval_decision(tmp_path):
     client = CodexAppServerClient(
         command=["codex", "app-server"],

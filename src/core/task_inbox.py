@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from core.atomic_io import atomic_write_text
 from core.config import DATA_DIR
+from shared.queue.jsonl_queue import FileLock
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +260,9 @@ class TaskInbox:
         safe = str(task_id or "").strip()
         return (self.tasks_root / f"{safe}.json").resolve()
 
+    def _task_lock_path(self, task_id: str) -> Path:
+        return self._task_path(task_id).with_suffix(".json.lock")
+
     def _legacy_events_archive_path(self) -> Path:
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         return (self.archive_root / f"legacy-events-{stamp}.jsonl").resolve()
@@ -277,6 +282,42 @@ class TaskInbox:
         if resume_until is None:
             return False
         return resume_until > datetime.now().astimezone()
+
+    def _task_from_payload(self, raw: Dict[str, Any]) -> TaskEnvelope | None:
+        try:
+            task = TaskEnvelope(**raw)
+        except Exception:
+            return None
+        task.priority = _normalize_priority(task.priority)
+        task.status = _normalize_status(task.status)
+        task.output = _normalize_output_payload(
+            task.output,
+            final_output=task.final_output,
+            result=task.result,
+        )
+        self._trim_task_events(task)
+        return task
+
+    def _load_task_file_unlocked(self, task_id: str) -> TaskEnvelope | None:
+        key = str(task_id or "").strip()
+        if not key or not self.persist:
+            return self._tasks.get(key)
+        path = self._task_path(key)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            self._tasks.pop(key, None)
+            return None
+        except Exception:
+            return self._tasks.get(key)
+        if not isinstance(raw, dict):
+            self._tasks.pop(key, None)
+            return None
+        task = self._task_from_payload(raw)
+        if task is None:
+            return self._tasks.get(key)
+        self._tasks[key] = task
+        return task
 
     def _trim_task_events(self, task: TaskEnvelope) -> bool:
         events = [item for item in list(task.events or []) if isinstance(item, dict)]
@@ -380,15 +421,9 @@ class TaskInbox:
                     raw = json.loads(path.read_text(encoding="utf-8"))
                     if not isinstance(raw, dict):
                         continue
-                    task = TaskEnvelope(**raw)
-                    task.priority = _normalize_priority(task.priority)
-                    task.status = _normalize_status(task.status)
-                    task.output = _normalize_output_payload(
-                        task.output,
-                        final_output=task.final_output,
-                        result=task.result,
-                    )
-                    self._trim_task_events(task)
+                    task = self._task_from_payload(raw)
+                    if task is None:
+                        continue
                     loaded[task.task_id] = task
                 except Exception:
                     continue
@@ -402,9 +437,9 @@ class TaskInbox:
             return
         self._trim_task_events(task)
         path = self._task_path(task.task_id)
-        path.write_text(
+        atomic_write_text(
+            path,
             json.dumps(task.as_dict(), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
         )
 
     async def _append_log_unlocked(
@@ -464,7 +499,11 @@ class TaskInbox:
         if not key:
             return None
         async with self._lock:
-            task = self._tasks.get(key)
+            if self.persist:
+                async with FileLock(self._task_lock_path(key)):
+                    task = self._load_task_file_unlocked(key)
+            else:
+                task = self._tasks.get(key)
             return task if task is not None else None
 
     async def delete(self, task_id: str) -> bool:
@@ -473,6 +512,13 @@ class TaskInbox:
         if not key:
             return False
         async with self._lock:
+            if self.persist:
+                async with FileLock(self._task_lock_path(key)):
+                    task = self._load_task_file_unlocked(key)
+                    if task is None:
+                        return False
+                    await self._delete_task_unlocked(key)
+                    return True
             task = self._tasks.get(key)
             if task is None:
                 return False
@@ -595,35 +641,59 @@ class TaskInbox:
         if not key:
             return False
         async with self._lock:
-            task = self._tasks.get(key)
-            if task is None:
-                return False
-            task.status = _normalize_status(status)
-            for name, value in fields.items():
-                if hasattr(task, name):
-                    if name in {"metadata", "result", "output"} and isinstance(
-                        value, dict
-                    ):
-                        current_value = getattr(task, name, {})
-                        current_obj = (
-                            dict(current_value)
-                            if isinstance(current_value, dict)
-                            else {}
-                        )
-                        setattr(task, name, _merge_dict(current_obj, dict(value)))
-                    else:
-                        setattr(task, name, value)
-            task.output = _normalize_output_payload(
-                task.output,
-                final_output=task.final_output,
-                result=task.result,
-            )
-            task.updated_at = _now_iso()
-            task.add_event(event, detail=detail)
-            await self._persist_task_unlocked(task)
-            await self._append_log_unlocked(task.task_id, event, detail)
-            await self._run_maintenance_unlocked()
-            return True
+            async with FileLock(self._task_lock_path(key)):
+                task = self._load_task_file_unlocked(key)
+                if task is None:
+                    return False
+                task.status = _normalize_status(status)
+                for name, value in fields.items():
+                    if hasattr(task, name):
+                        if name in {"metadata", "result", "output"} and isinstance(
+                            value, dict
+                        ):
+                            current_value = getattr(task, name, {})
+                            current_obj = (
+                                dict(current_value)
+                                if isinstance(current_value, dict)
+                                else {}
+                            )
+                            setattr(task, name, _merge_dict(current_obj, dict(value)))
+                        else:
+                            setattr(task, name, value)
+                task.output = _normalize_output_payload(
+                    task.output,
+                    final_output=task.final_output,
+                    result=task.result,
+                )
+                task.updated_at = _now_iso()
+                task.add_event(event, detail=detail)
+                await self._persist_task_unlocked(task)
+                await self._append_log_unlocked(task.task_id, event, detail)
+                await self._run_maintenance_unlocked()
+                return True
+
+    async def append_event(
+        self,
+        task_id: str,
+        event: str,
+        *,
+        detail: str = "",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        await self._ensure_loaded()
+        key = str(task_id or "").strip()
+        if not key:
+            return False
+        async with self._lock:
+            async with FileLock(self._task_lock_path(key)):
+                task = self._load_task_file_unlocked(key)
+                if task is None:
+                    return False
+                task.add_event(event, detail=detail, extra=extra)
+                await self._persist_task_unlocked(task)
+                await self._append_log_unlocked(task.task_id, event, detail)
+                await self._run_maintenance_unlocked()
+                return True
 
     async def assign_executor(
         self,

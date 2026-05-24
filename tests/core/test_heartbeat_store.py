@@ -188,6 +188,19 @@ async def test_heartbeat_store_delivery_and_session_state(tmp_path):
     active_after_done = await store.get_session_active_task("u4")
     assert active_after_done is None
 
+    await store.set_session_active_task(
+        "u4",
+        {
+            "id": "task-2",
+            "goal": "complete something",
+            "status": "running",
+            "source": "message",
+        },
+    )
+    await store.update_session_active_task("u4", status="completed")
+    active_after_completed = await store.get_session_active_task("u4")
+    assert active_after_completed is None
+
 
 @pytest.mark.asyncio
 async def test_heartbeat_store_persists_per_item_delivery_targets(tmp_path):
