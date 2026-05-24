@@ -300,6 +300,19 @@ def test_build_ikaros_progress_text_includes_codex_stream_preview():
     assert text == "正在检查代码。"
 
 
+def test_build_ikaros_progress_text_includes_codex_activity_preview():
+    text = ai_handlers._build_ikaros_progress_text(
+        {
+            "event": "codex_activity",
+            "task_id": "task-codex",
+            "turn": 1,
+            "final_preview": "搜索：今天 科技新闻",
+        }
+    )
+
+    assert text == "搜索：今天 科技新闻"
+
+
 def test_build_ikaros_progress_text_does_not_render_codex_command_output():
     text = ai_handlers._build_ikaros_progress_text(
         {
@@ -323,7 +336,12 @@ async def test_send_result_files_returns_only_delivered_rows(tmp_path):
     warnings: list[str] = []
 
     class _Ctx:
-        message = SimpleNamespace(platform="telegram")
+        def __init__(self):
+            self.user_data = {}
+            self.message = SimpleNamespace(
+                platform="telegram",
+                chat=SimpleNamespace(id="chat-1"),
+            )
 
         async def reply_photo(self, path, caption=None):
             sent.append(("photo", str(path)))
@@ -346,8 +364,9 @@ async def test_send_result_files_returns_only_delivered_rows(tmp_path):
             warnings.append(str(text))
             return SimpleNamespace(id="warn-1")
 
+    ctx = _Ctx()
     delivered = await ai_handlers._send_result_files(
-        _Ctx(),
+        ctx,
         [
             {"kind": "photo", "path": str(image_path), "filename": "ok.png"},
             {"kind": "video", "path": str(missing_path), "filename": "missing.mp4"},
@@ -364,6 +383,52 @@ async def test_send_result_files_returns_only_delivered_rows(tmp_path):
     ]
     assert sent == [("photo", str(image_path.resolve()))]
     assert "附件未能发送" in warnings[0]
+    assert [
+        (row["kind"], row["filename"], row["status"], row["target"])
+        for row in ctx.user_data["artifact_ledger"]
+    ] == [
+        ("photo", "ok.png", "delivered", "telegram:chat-1"),
+        ("video", "missing.mp4", "failed", "telegram:chat-1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_result_files_respects_adapter_capabilities(tmp_path):
+    from core.platform.models import PlatformCapabilities
+
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fake video")
+    warnings: list[str] = []
+
+    class _Ctx:
+        def __init__(self):
+            self.user_data = {}
+            self._adapter = SimpleNamespace(
+                capabilities=PlatformCapabilities(reply_video=False)
+            )
+            self.message = SimpleNamespace(
+                platform="telegram",
+                chat=SimpleNamespace(id="chat-1"),
+            )
+
+        async def reply_video(self, *_args, **_kwargs):
+            raise AssertionError("unsupported video delivery should not be attempted")
+
+        async def reply(self, text, **kwargs):
+            _ = kwargs
+            warnings.append(str(text))
+            return SimpleNamespace(id="warn-1")
+
+    ctx = _Ctx()
+    delivered = await ai_handlers._send_result_files(
+        ctx,
+        [{"kind": "video", "path": str(video_path), "filename": "clip.mp4"}],
+    )
+
+    assert delivered == []
+    assert "附件未能发送" in warnings[0]
+    assert ctx.user_data["artifact_ledger"][0]["status"] == "failed"
+    assert ctx.user_data["artifact_ledger"][0]["filename"] == "clip.mp4"
 
 
 def test_build_ikaros_progress_text_includes_loop_guard_details():
@@ -729,11 +794,100 @@ async def test_try_handle_waiting_confirmation_expires_stale_confirmation(monkey
     assert "已超过 3 分钟" in replies[-1]
 
 
-def test_build_runtime_phrase_pools_uses_static_indicator_frames():
+@pytest.mark.asyncio
+async def test_try_handle_waiting_confirmation_clears_expired_fallback_task_on_new_request(
+    monkeypatch,
+):
+    expired = (datetime.now().astimezone() - timedelta(minutes=5)).isoformat(
+        timespec="seconds"
+    )
+
+    class _FakeChannelRuntimeStore:
+        def __init__(self):
+            self.updated: list[dict] = []
+
+        def get_active_task(self, **kwargs):
+            _ = kwargs
+            return None
+
+        def update_active_task(self, **kwargs):
+            self.updated.append(dict(kwargs))
+            return None
+
+    class _FakeHeartbeatStore:
+        def __init__(self):
+            self.updated: list[tuple[str, dict]] = []
+            self.released: list[str] = []
+            self.events: list[tuple[str, str]] = []
+
+        async def get_session_active_task(self, user_id: str):
+            _ = user_id
+            return {
+                "id": "mgr-expired-fallback",
+                "status": "waiting_user",
+                "needs_confirmation": True,
+                "confirmation_deadline": expired,
+            }
+
+        async def update_session_active_task(self, user_id: str, **kwargs):
+            self.updated.append((str(user_id), dict(kwargs)))
+
+        async def release_lock(self, user_id: str):
+            self.released.append(str(user_id))
+
+        async def append_session_event(self, user_id: str, event: str):
+            self.events.append((str(user_id), str(event)))
+
+    class _FakeClosureService:
+        async def resume_waiting_task(self, **kwargs):
+            _ = kwargs
+            raise AssertionError("new request should not resume expired fallback task")
+
+    fake_channel_store = _FakeChannelRuntimeStore()
+    fake_heartbeat_store = _FakeHeartbeatStore()
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        fake_channel_store,
+    )
+    monkeypatch.setattr("core.heartbeat_store.heartbeat_store", fake_heartbeat_store)
+    monkeypatch.setattr(
+        "ikaros.relay.closure_service.ikaros_closure_service",
+        _FakeClosureService(),
+    )
+
+    replies: list[str] = []
+
+    class _Ctx:
+        message = SimpleNamespace(
+            user=SimpleNamespace(id="u-1"),
+            platform="weixin",
+        )
+
+        async def reply(self, text, **kwargs):
+            _ = kwargs
+            replies.append(str(text))
+            return SimpleNamespace(id="reply")
+
+    handled = await ai_handlers._try_handle_waiting_confirmation(
+        _Ctx(),
+        "下载视频 https://x.com/a/b",
+    )
+
+    assert handled is False
+    assert replies == []
+    assert fake_channel_store.updated[-1]["clear_active"] is True
+    assert fake_heartbeat_store.updated[-1][1]["clear_active"] is True
+    assert fake_heartbeat_store.released == ["u-1"]
+    assert fake_heartbeat_store.events == [
+        ("u-1", "confirmation_expired:mgr-expired-fallback")
+    ]
+
+
+def test_build_runtime_phrase_pools_uses_natural_fallbacks():
     received, loading = ai_handlers._build_runtime_phrase_pools("u-1")
 
-    assert received == ["⏳ 正在处理"]
-    assert loading == ["⏳ 正在处理"]
+    assert received == ["我看一下。"]
+    assert loading == ["我还在看。"]
 
 
 class _DummyOutgoingMessage:
@@ -900,6 +1054,7 @@ async def test_handle_ai_chat_does_not_attach_plain_path_from_final_text(
     monkeypatch.setattr(
         ai_handlers, "process_and_send_code_files", _identity_process_code_files
     )
+    monkeypatch.setattr(ai_handlers, "ikaros_kernel_provider", lambda: "native")
     monkeypatch.setattr(
         message_utils, "process_reply_message", _fake_process_reply_message
     )
@@ -974,6 +1129,7 @@ async def test_handle_ai_chat_slow_ikaros_path_does_not_send_dot_placeholder(
     monkeypatch.setattr(
         ai_handlers, "process_and_send_code_files", _identity_process_code_files
     )
+    monkeypatch.setattr(ai_handlers, "ikaros_kernel_provider", lambda: "native")
     monkeypatch.setattr(
         message_utils, "process_reply_message", _fake_process_reply_message
     )
@@ -1038,6 +1194,7 @@ async def test_handle_ai_chat_reacts_and_skips_immediate_placeholder(monkeypatch
     monkeypatch.setattr(
         ai_handlers, "process_and_send_code_files", _identity_process_code_files
     )
+    monkeypatch.setattr(ai_handlers, "ikaros_kernel_provider", lambda: "native")
     monkeypatch.setattr(
         message_utils, "process_reply_message", _fake_process_reply_message
     )
@@ -1211,9 +1368,26 @@ async def test_handle_ai_chat_sends_codex_result_images(monkeypatch, tmp_path):
     import core.config as config_module
     import core.heartbeat_store as heartbeat_module
     import core.task_manager as task_manager_module
+    from core.task_inbox import task_inbox
     from core.agent_orchestrator import agent_orchestrator
     from core.runtime_callbacks import get_runtime_callback
     from handlers import message_utils
+
+    task_inbox.persist = True
+    task_inbox.root = (tmp_path / "task_inbox").resolve()
+    task_inbox.tasks_root = (task_inbox.root / "tasks").resolve()
+    task_inbox.archive_root = (task_inbox.root / "archive").resolve()
+    task_inbox.events_path = (task_inbox.root / "events.jsonl").resolve()
+    task_inbox.root.mkdir(parents=True, exist_ok=True)
+    task_inbox.tasks_root.mkdir(parents=True, exist_ok=True)
+    task_inbox.archive_root.mkdir(parents=True, exist_ok=True)
+    task_inbox._loaded = False
+    task_inbox._tasks = {}
+    task = await task_inbox.submit(
+        source="user_chat",
+        goal="画一张猫狗大战",
+        user_id="u-1",
+    )
 
     image_path = tmp_path / "codex-image.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
@@ -1276,10 +1450,17 @@ async def test_handle_ai_chat_sends_codex_result_images(monkeypatch, tmp_path):
     )
 
     ctx = _DummyChatContext()
+    ctx.user_data["task_inbox_id"] = task.task_id
 
     await ai_handlers.handle_ai_chat(ctx)
 
     assert ctx.photos == [(str(image_path.resolve()), None, {})]
+    assert ctx.user_data["artifact_ledger"][0]["status"] == "delivered"
+    assert ctx.user_data["artifact_ledger"][0]["filename"] == image_path.name
+    stored = await task_inbox.get(task.task_id)
+    assert stored is not None
+    assert stored.events[-1]["event"] == "artifact_delivery"
+    assert stored.events[-1]["extra"]["delivered"][0]["filename"] == image_path.name
 
 
 @pytest.mark.asyncio
@@ -1342,6 +1523,80 @@ async def test_handle_ai_chat_sends_codex_markdown_video_link(monkeypatch, tmp_p
     await ai_handlers.handle_ai_chat(ctx)
 
     assert ctx.videos == [(str(video_path.resolve()), None, {})]
+    assert ctx.user_data["artifact_ledger"][0]["status"] == "delivered"
+    assert ctx.user_data["artifact_ledger"][0]["kind"] == "video"
+
+
+@pytest.mark.asyncio
+async def test_handle_ai_chat_sends_codex_labeled_relative_video_path(
+    monkeypatch, tmp_path
+):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+    from handlers import message_utils
+
+    video_path = tmp_path / "video_abc.mp4"
+    video_path.write_bytes(b"fake mp4")
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _fake_process_reply_message(_ctx):
+        return message_utils.ReplyMessageResolution()
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    async def _fake_handle_message(_ctx, _message_history):
+        yield "已下载完成，Master。\n\n文件路径：video_abc.mp4\n格式：MP4"
+
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(heartbeat_module.heartbeat_store, "set_delivery_target", _noop)
+    monkeypatch.setattr(ai_handlers, "add_message", _noop)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(ai_handlers, "ikaros_kernel_provider", lambda: "codex")
+    monkeypatch.setattr(ai_handlers, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        message_utils, "process_reply_message", _fake_process_reply_message
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager,
+        "is_cancelled",
+        lambda _uid: False,
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager,
+        "unregister_task",
+        lambda _uid: None,
+    )
+
+    ctx = _DummyChatContext()
+    ctx.message.platform = "weixin"
+
+    await ai_handlers.handle_ai_chat(ctx)
+
+    assert ctx.videos == [(str(video_path.resolve()), None, {})]
+    assert ctx.user_data["artifact_ledger"][0]["status"] == "delivered"
+    assert ctx.user_data["artifact_ledger"][0]["target"] == "weixin:c-1"
 
 
 @pytest.mark.asyncio

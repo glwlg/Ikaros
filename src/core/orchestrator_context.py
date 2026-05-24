@@ -114,6 +114,7 @@ class OrchestratorRuntimeContext:
 
     async def ensure_task_inbox(self, *, task_goal: str) -> str:
         if self.task_inbox_id:
+            self.user_data["task_inbox_id"] = self.task_inbox_id
             return self.task_inbox_id
         if not self.session_state_enabled:
             return ""
@@ -152,6 +153,8 @@ class OrchestratorRuntimeContext:
             return ""
 
         self.task_inbox_id = str(getattr(envelope, "task_id", "") or "").strip()
+        if self.task_inbox_id:
+            self.user_data["task_inbox_id"] = self.task_inbox_id
         return self.task_inbox_id
 
     async def update_session_task(

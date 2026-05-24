@@ -16,6 +16,10 @@ from core.heartbeat_store import heartbeat_store
 from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
 from core.platform.registry import adapter_manager
 from core.runtime_callbacks import pop_runtime_callback, set_runtime_callback
+from core.task_confirmation import (
+    clear_expired_waiting_confirmation,
+    is_confirmation_expired,
+)
 from core.task_manager import task_manager
 
 logger = logging.getLogger(__name__)
@@ -156,8 +160,16 @@ class HeartbeatWorker:
                 continue
             active_task = await heartbeat_store.get_session_active_task(user_id)
             active_status = str((active_task or {}).get("status") or "").strip().lower()
-            if active_status in {"running", "waiting_user"}:
+            if active_status == "running":
                 continue
+            if active_status == "waiting_user":
+                if is_confirmation_expired(active_task):
+                    await clear_expired_waiting_confirmation(
+                        user_id=user_id,
+                        active_task=active_task,
+                    )
+                else:
+                    continue
             if user_id in self._running:
                 continue
             should_run = await heartbeat_store.should_run_heartbeat(user_id)

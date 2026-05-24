@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Union
-from .models import UnifiedContext
+from .models import PlatformCapabilities, UnifiedContext
 
 
 class BotAdapter(ABC):
@@ -13,6 +13,10 @@ class BotAdapter(ABC):
     def can_update_message(self) -> bool:
         """Whether the platform supports editing existing messages"""
         return True
+
+    @property
+    def capabilities(self) -> PlatformCapabilities:
+        return PlatformCapabilities(edit_message=self.can_update_message)
 
     @abstractmethod
     async def start(self) -> None:

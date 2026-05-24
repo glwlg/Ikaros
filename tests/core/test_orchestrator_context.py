@@ -41,6 +41,7 @@ async def test_ensure_task_inbox_submits_user_chat_task(monkeypatch):
 
     assert task_inbox_id == "inbox-123"
     assert runtime_ctx.task_inbox_id == "inbox-123"
+    assert runtime_ctx.user_data["task_inbox_id"] == "inbox-123"
     assert captured["source"] == "user_chat"
     assert captured["goal"] == "帮我检查这个项目"
     assert captured["user_id"] == "u-1"

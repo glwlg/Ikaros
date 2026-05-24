@@ -185,6 +185,68 @@ async def test_task_inbox_merges_result_and_output_dicts(tmp_path):
     assert stored.output["ui"]["notice"] == "kept"
 
 
+@pytest.mark.asyncio
+async def test_task_inbox_append_event_preserves_status_and_extra(tmp_path):
+    inbox = _build_isolated_inbox(tmp_path)
+
+    task = await inbox.submit(
+        source="user_chat",
+        goal="生成图片",
+        user_id="u-artifact",
+    )
+    ok = await inbox.append_event(
+        task.task_id,
+        "artifact_delivery",
+        detail="delivered=1; failed=0",
+        extra={"delivered": [{"filename": "image.png", "kind": "photo"}]},
+    )
+
+    assert ok is True
+    stored = await inbox.get(task.task_id)
+    assert stored is not None
+    assert stored.status == "pending"
+    assert stored.events[-1]["event"] == "artifact_delivery"
+    assert stored.events[-1]["extra"]["delivered"][0]["filename"] == "image.png"
+
+
+@pytest.mark.asyncio
+async def test_task_inbox_append_event_reloads_latest_file_before_writing(tmp_path):
+    writer = _build_isolated_inbox(tmp_path)
+    stale_writer = _build_isolated_inbox(tmp_path)
+
+    task = await writer.submit(
+        source="user_chat",
+        goal="跨进程更新",
+        user_id="u-race",
+    )
+    stale = await stale_writer.get(task.task_id)
+    assert stale is not None
+    assert stale.status == "pending"
+
+    ok = await writer.update_status(
+        task.task_id,
+        "running",
+        event="started",
+        result={"summary": "started"},
+    )
+    assert ok is True
+
+    ok = await stale_writer.append_event(
+        task.task_id,
+        "artifact_delivery",
+        detail="delivered=1",
+        extra={"delivered": [{"filename": "ok.png"}]},
+    )
+    assert ok is True
+
+    fresh_reader = _build_isolated_inbox(tmp_path)
+    stored = await fresh_reader.get(task.task_id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.result["summary"] == "started"
+    assert stored.events[-1]["event"] == "artifact_delivery"
+
+
 def test_task_inbox_defaults_to_persistent(monkeypatch, tmp_path):
     monkeypatch.setattr(task_inbox_module, "DATA_DIR", str(tmp_path))
     monkeypatch.delenv("TASK_INBOX_PERSIST", raising=False)

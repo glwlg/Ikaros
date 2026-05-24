@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import handlers.task_handlers as task_handlers_module
+from core.platform.models import PlatformCapabilities
 from core.skill_menu import make_callback
 from core.task_inbox import task_inbox
 from handlers import task_command as exported_task_command
@@ -22,6 +23,8 @@ class _FakeMessage:
         self.id = "msg-task"
         self.text = text
         self.user = _FakeUser(user_id)
+        self.platform = "telegram"
+        self.chat = SimpleNamespace(id=f"chat-{user_id}")
 
 
 class _FakeContext:
@@ -448,6 +451,134 @@ async def test_task_menu_delete_callbacks_fit_telegram_limit(monkeypatch, tmp_pa
 
     assert await task_inbox.get(task.task_id) is None
     assert "已删除任务" in ctx.edits[-1]
+
+
+@pytest.mark.asyncio
+async def test_task_detail_shows_artifact_delivery_summary(monkeypatch, tmp_path):
+    _reset_task_inbox(tmp_path)
+
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr("handlers.task_handlers.check_permission_unified", _allow)
+
+    task = await task_inbox.submit(
+        source="user_chat",
+        goal="生成一张图",
+        user_id="u-task",
+    )
+    await task_inbox.append_event(
+        task.task_id,
+        "artifact_delivery",
+        detail="delivered=1; failed=1",
+        extra={
+            "delivered": [{"filename": "ok.png", "kind": "photo"}],
+            "failed": [{"filename": "lost.mp4", "kind": "video"}],
+        },
+    )
+
+    ctx = _FakeContext("/task recent", user_id="u-task")
+    await task_command(ctx)
+
+    ctx.callback_data = make_callback(TASK_MENU_NS, "show", "recent", 0)
+    await handle_task_callback(ctx)
+
+    assert "附件投递" in ctx.edits[-1]
+    assert "delivered=1; failed=1" in ctx.edits[-1]
+
+
+@pytest.mark.asyncio
+async def test_task_diag_shows_runtime_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    _reset_task_inbox(tmp_path)
+    task_handlers_module.heartbeat_store.root = (tmp_path / "runtime_tasks").resolve()
+    task_handlers_module.heartbeat_store.root.mkdir(parents=True, exist_ok=True)
+    task_handlers_module.heartbeat_store._locks.clear()
+
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr("handlers.task_handlers.check_permission_unified", _allow)
+    monkeypatch.setattr(task_handlers_module, "ikaros_kernel_provider", lambda: "codex")
+    monkeypatch.setattr(
+        task_handlers_module,
+        "adapter_manager",
+        SimpleNamespace(
+            _adapters={
+                "telegram": SimpleNamespace(
+                    capabilities=PlatformCapabilities(
+                        edit_message=True,
+                        reply_photo=True,
+                        reply_video=True,
+                        reply_audio=True,
+                        reply_document=True,
+                    )
+                ),
+                "weixin": SimpleNamespace(
+                    capabilities=PlatformCapabilities(
+                        edit_message=False,
+                        reply_photo=True,
+                        reply_video=False,
+                        reply_audio=True,
+                        reply_document=True,
+                    )
+                ),
+            }
+        ),
+    )
+
+    task = await task_inbox.submit(
+        source="user_chat",
+        goal="生成图片",
+        user_id="u-task",
+    )
+    await task_inbox.update_status(task.task_id, "running", event="running")
+    task_handlers_module.channel_runtime_store.set_session_id(
+        session_id="sess-diag",
+        platform="telegram",
+        platform_user_id="u-task",
+    )
+    task_handlers_module.channel_runtime_store.set_active_task(
+        {
+            "id": "active-diag",
+            "status": "running",
+            "goal": "生成图片",
+            "kernel_provider": "codex",
+        },
+        platform="telegram",
+        platform_user_id="u-task",
+    )
+    await task_handlers_module.heartbeat_store.set_delivery_target(
+        "u-task",
+        "telegram",
+        "chat-u-task",
+        session_id="sess-diag",
+    )
+    task_handlers_module.codex_kernel_sessions.upsert(
+        user_id="u-task",
+        platform="telegram",
+        session_id="sess-diag",
+        codex_thread_id="thread-diag",
+        codex_turn_id="turn-diag",
+    )
+
+    ctx = _FakeContext("/task diag", user_id="u-task")
+    ctx.user_data["artifact_ledger"] = [
+        {"status": "delivered", "filename": "ok.png"},
+        {"status": "failed", "filename": "bad.mp4"},
+    ]
+    await task_command(ctx)
+
+    reply = ctx.replies[-1]
+    assert "Ikaros 运行诊断" in reply
+    assert "Kernel：`codex`" in reply
+    assert "Channels：telegram(edit; photo+video+audio+document)" in reply
+    assert "weixin(no-edit; photo+audio+document)" in reply
+    assert "channel active：`active-diag`" in reply
+    assert "TaskInbox：open=1" in reply
+    assert "Artifact ledger：delivered=1; failed=1; pending=0" in reply
+    assert "近期质量：failed=0; artifact_failed=0" in reply
+    assert "Codex thread：`thread-diag`" in reply
 
 
 def test_task_command_is_exported_from_handlers_package():

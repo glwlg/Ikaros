@@ -63,9 +63,9 @@ const editingId = ref<number | null>(null)
 const saving = ref(false)
 const testingId = ref<number | null>(null)
 const ptzAction = ref<PtzAction | ''>('')
-const ptzSpeed = ref(0.4)
+const ptzSpeed = ref(0.12)
 const ptzSpeedPercent = computed(() => Math.round(ptzSpeed.value * 100))
-const PTZ_MOVE_DURATION_MS = 180
+const PTZ_MOVE_DURATION_MS = 80
 let ptzIdleTimer: ReturnType<typeof window.setTimeout> | null = null
 
 const emptyForm = (): CameraForm => ({
@@ -358,7 +358,7 @@ onBeforeUnmount(() => {
       </section>
 
       <aside class="camera-side space-y-4 md:space-y-6">
-        <section class="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+        <section class="camera-device-panel rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
           <div class="flex items-center justify-between gap-3">
             <div>
               <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Devices</div>
@@ -411,7 +411,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm" :class="{ 'opacity-60': !canControlPtz }">
+        <section class="camera-ptz-panel rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm" :class="{ 'opacity-60': !canControlPtz }">
           <div class="flex items-center justify-between gap-3">
             <div>
               <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Control</div>
@@ -660,9 +660,9 @@ onBeforeUnmount(() => {
   }
 
   .camera-player {
-    height: 50vh;
-    height: min(50svh, 420px);
-    min-height: 220px;
+    height: 40vh;
+    height: min(40svh, 320px);
+    min-height: 180px;
     aspect-ratio: auto;
   }
 
@@ -673,15 +673,25 @@ onBeforeUnmount(() => {
   }
 
   .camera-side {
+    display: flex;
+    flex-direction: column;
     padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+
+  .camera-ptz-panel {
+    order: 1;
+  }
+
+  .camera-device-panel {
+    order: 2;
   }
 }
 
 @media (max-width: 430px) {
   .camera-player {
-    height: 44vh;
-    height: min(44svh, 360px);
-    min-height: 190px;
+    height: 36vh;
+    height: min(36svh, 300px);
+    min-height: 170px;
   }
 }
 </style>

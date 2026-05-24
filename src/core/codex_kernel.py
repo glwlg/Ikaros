@@ -1071,6 +1071,8 @@ class CodexKernelProvider:
         client: CodexAppServerClient | None = None
         last_agent_emit_at = 0.0
         last_agent_emit_len = 0
+        last_activity_emit_at = 0.0
+        last_activity_text = ""
         turn_started_ts = 0.0
         emitted_file_paths: set[str] = set()
         session_completion: asyncio.Future[dict[str, Any]] | None = None
@@ -1161,6 +1163,7 @@ class CodexKernelProvider:
 
         async def _codex_event_callback(event: str, payload: Dict[str, Any]) -> None:
             nonlocal last_agent_emit_at, last_agent_emit_len
+            nonlocal last_activity_emit_at, last_activity_text
             if event_callback is None:
                 return
             payload_turn_id = _safe_text(payload.get("turn_id") or payload.get("turnId"), 160)
@@ -1193,6 +1196,28 @@ class CodexKernelProvider:
                         "codex_thread_id": thread_id,
                         "codex_turn_id": turn_id,
                         "text_preview": text[-500:],
+                    },
+                )
+                return
+            if event == "item_activity":
+                text = _safe_text(payload.get("text"), 800)
+                if not text:
+                    return
+                if now - last_activity_emit_at < 0.8 and text == last_activity_text:
+                    return
+                last_activity_emit_at = now
+                last_activity_text = text
+                await event_callback(
+                    "codex_activity",
+                    {
+                        "source": "codex_kernel",
+                        "kernel_provider": "codex",
+                        "turn": 1,
+                        "task_id": task_id,
+                        "codex_thread_id": thread_id,
+                        "codex_turn_id": turn_id,
+                        "item_type": _safe_text(payload.get("item_type"), 80),
+                        "text_preview": text,
                     },
                 )
                 return

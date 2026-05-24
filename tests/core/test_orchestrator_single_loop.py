@@ -13,6 +13,11 @@ from services.intent_router import RoutingDecision
 import services.ai_service as ai_service_module
 
 
+@pytest.fixture(autouse=True)
+def _native_kernel(monkeypatch):
+    monkeypatch.setenv("IKAROS_KERNEL", "native")
+
+
 class DummyContext:
     def __init__(self):
         self.message = SimpleNamespace(

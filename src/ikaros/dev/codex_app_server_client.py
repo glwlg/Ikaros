@@ -575,6 +575,20 @@ class CodexAppServerClient:
                                 "text": text,
                             },
                         )
+                else:
+                    activity_text = self._activity_text_from_item(item)
+                    if activity_text:
+                        await self._emit_event(
+                            "item_activity",
+                            {
+                                "method": method,
+                                "thread_id": str(params.get("threadId") or "").strip(),
+                                "turn_id": str(params.get("turnId") or "").strip(),
+                                "item_id": item_id,
+                                "item_type": str(item.get("type") or "").strip(),
+                                "text": activity_text,
+                            },
+                        )
             return
 
         rows = self._collect_files_from_notification(method, params)
@@ -721,6 +735,37 @@ class CodexAppServerClient:
         if available:
             return available[0]
         return preferred
+
+    def _activity_text_from_item(self, item: Dict[str, Any]) -> str:
+        item_type = (
+            str(item.get("type") or "").strip().replace("-", "_").lower()
+        )
+        compact_type = item_type.replace("_", "")
+        if compact_type == "websearchcall":
+            action = item.get("action")
+            safe_action = dict(action) if isinstance(action, dict) else {}
+            action_type = (
+                str(safe_action.get("type") or "").strip().replace("-", "_").lower()
+            )
+            if action_type == "search":
+                query = safe_action.get("query") or safe_action.get("queries") or ""
+                if isinstance(query, list):
+                    query = "；".join(str(item or "").strip() for item in query if item)
+                query_text = str(query or "").strip()
+                return f"搜索：{query_text}" if query_text else "搜索完成。"
+            if action_type in {"open_page", "openpage"}:
+                url = str(safe_action.get("url") or "").strip()
+                return f"打开页面：{url}" if url else "页面读取完成。"
+            return "网络检索完成。"
+
+        if compact_type in {"commandexecution", "commandexecutioncall"}:
+            command = item.get("command") or item.get("cmd") or ""
+            if isinstance(command, list):
+                command = " ".join(str(part or "").strip() for part in command if part)
+            command_text = str(command or "").strip()
+            return f"命令完成：{command_text}" if command_text else "命令执行完成。"
+
+        return ""
 
     def _assistant_stdout(self) -> str:
         if self.completed_agent_messages:

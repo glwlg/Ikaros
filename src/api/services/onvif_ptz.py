@@ -4,7 +4,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 
-DEFAULT_MOVE_DURATION_MS = 180
+DEFAULT_MOVE_DURATION_MS = 100
 MIN_MOVE_DURATION_MS = 60
 MAX_MOVE_DURATION_MS = 800
 
@@ -18,9 +18,9 @@ class PTZVelocity:
 
 def _clamp_speed(speed: float | int | None) -> float:
     try:
-        value = float(speed if speed is not None else 0.4)
+        value = float(speed if speed is not None else 0.2)
     except Exception:
-        value = 0.4
+        value = 0.2
     return min(1.0, max(0.05, value))
 
 
@@ -115,7 +115,7 @@ async def send_ptz_command(
     username: str,
     password: str,
     action: str,
-    speed: float = 0.4,
+    speed: float = 0.2,
     duration_ms: float | int | None = None,
 ) -> None:
     if not str(host or "").strip():

@@ -2,7 +2,22 @@ from datetime import datetime
 
 import pytest
 
-from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
+from core.platform.models import (
+    Chat,
+    MessageType,
+    PlatformCapabilities,
+    UnifiedContext,
+    UnifiedMessage,
+    User,
+)
+
+
+def test_platform_capabilities_reply_kind_lookup():
+    capabilities = PlatformCapabilities(reply_video=False)
+
+    assert capabilities.supports_reply_kind("photo") is True
+    assert capabilities.supports_reply_kind("video") is False
+    assert capabilities.supports_reply_kind("unknown") is True
 
 
 @pytest.mark.asyncio

@@ -5,8 +5,13 @@ from typing import Any
 from uuid import uuid4
 
 from core.channel_runtime_store import channel_runtime_store
+from core.artifact_ledger import get_artifact_ledger
+from core.config import ikaros_kernel_provider
+from core.codex_kernel_sessions import codex_kernel_sessions
 from core.heartbeat_store import heartbeat_store
 from core.platform.models import UnifiedContext
+from core.platform.registry import adapter_manager
+from core.runtime_quality_report import build_task_quality_report
 from core.skill_menu import (
     cache_items,
     get_cached_item,
@@ -61,7 +66,66 @@ def _should_show_task(item: Any) -> bool:
 
 
 def _task_usage_text() -> str:
-    return "用法: `/task`、`/task recent` 或 `/task open`"
+    return "用法: `/task`、`/task recent`、`/task open` 或 `/task diag`"
+
+
+def _artifact_delivery_summary(events: Any) -> str:
+    delivered = 0
+    failed = 0
+    for item in list(events or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("event") or "").strip() != "artifact_delivery":
+            continue
+        extra = item.get("extra")
+        if not isinstance(extra, dict):
+            continue
+        delivered += len(extra.get("delivered") or [])
+        failed += len(extra.get("failed") or [])
+    if not delivered and not failed:
+        return ""
+    return f"delivered={delivered}; failed={failed}"
+
+
+def _artifact_ledger_summary(user_data: dict[str, Any] | None) -> str:
+    delivered = 0
+    failed = 0
+    pending = 0
+    for item in get_artifact_ledger(user_data):
+        status = str(item.get("status") or "").strip().lower()
+        if status == "delivered":
+            delivered += 1
+        elif status == "failed":
+            failed += 1
+        else:
+            pending += 1
+    if not delivered and not failed and not pending:
+        return "none"
+    return f"delivered={delivered}; failed={failed}; pending={pending}"
+
+
+def _channel_adapters_summary() -> str:
+    adapters = getattr(adapter_manager, "_adapters", None)
+    if not isinstance(adapters, dict) or not adapters:
+        return "none"
+
+    parts: list[str] = []
+    for name, adapter in sorted(adapters.items(), key=lambda item: str(item[0])):
+        capabilities = getattr(adapter, "capabilities", None)
+        flags: list[str] = []
+        if capabilities is not None:
+            flags.append("edit" if bool(getattr(capabilities, "edit_message", False)) else "no-edit")
+            media = [
+                kind
+                for kind in ("photo", "video", "audio", "document")
+                if bool(capabilities.supports_reply_kind(kind))
+            ]
+            flags.append("+".join(media) if media else "no-media")
+        else:
+            flags.append("edit" if bool(getattr(adapter, "can_update_message", False)) else "no-edit")
+        parts.append(f"{str(name)}({'; '.join(flags)})")
+
+    return "; ".join(parts[:12])
 
 
 def _cache_task_action_ref(
@@ -218,6 +282,75 @@ async def _build_task_list_payload(
     return "\n".join(lines), {"actions": actions}
 
 
+async def _build_task_diag_payload(ctx: UnifiedContext) -> str:
+    user_id = get_effective_user_id(ctx)
+    message = getattr(ctx, "message", None)
+    platform = str(getattr(message, "platform", "") or "").strip().lower()
+    chat_id = str(getattr(getattr(message, "chat", None), "id", "") or "").strip()
+    session_id = channel_runtime_store.get_session_id(
+        platform=platform,
+        platform_user_id=user_id,
+    )
+    channel_active = channel_runtime_store.get_active_task(
+        platform=platform,
+        platform_user_id=user_id,
+    )
+    heartbeat_active = await heartbeat_store.get_session_active_task(user_id)
+    heartbeat_state = await heartbeat_store.get_state(user_id)
+    status = dict(heartbeat_state.get("status") or {})
+    delivery = dict(status.get("delivery") or {})
+    last_error = str(status.get("last_error") or "").strip()
+    open_rows = await task_inbox.list_open(user_id=user_id, limit=0)
+    recent_rows = await task_inbox.list_recent(user_id=user_id, limit=30)
+    quality = build_task_quality_report(recent_rows)
+
+    codex_row: dict[str, Any] = {}
+    if session_id:
+        codex_row = codex_kernel_sessions.get(
+            user_id=user_id,
+            platform=platform,
+            session_id=session_id,
+        )
+
+    def _active_line(name: str, task: dict[str, Any] | None) -> str:
+        if not isinstance(task, dict) or not str(task.get("id") or "").strip():
+            return f"- {name} active：none"
+        return (
+            f"- {name} active：`{str(task.get('id') or '').strip()}` "
+            f"| {str(task.get('status') or '').strip() or 'unknown'} "
+            f"| kernel:{str(task.get('kernel_provider') or '').strip() or '-'}"
+        )
+
+    lines = [
+        "🧪 Ikaros 运行诊断",
+        "",
+        f"- Kernel：`{ikaros_kernel_provider()}`",
+        f"- Platform：`{platform or '-'}`",
+        f"- User：`{user_id}`",
+        f"- Chat：`{chat_id or '-'}`",
+        f"- Session：`{session_id or '-'}`",
+        f"- Channels：{_channel_adapters_summary()}",
+        _active_line("channel", channel_active),
+        _active_line("heartbeat", heartbeat_active),
+        f"- TaskInbox：open={len(open_rows)}; recent={len(recent_rows)}",
+        f"- Artifact ledger：{_artifact_ledger_summary(getattr(ctx, 'user_data', None))}",
+        f"- 近期质量：failed={quality['status_counts'].get('failed', 0)}; "
+        f"artifact_failed={quality['artifact_failed']}",
+        f"- Delivery target：{str(delivery.get('last_platform') or '-')}"
+        f":{str(delivery.get('last_chat_id') or '-')}",
+    ]
+    if codex_row.get("codex_thread_id"):
+        lines.append(f"- Codex thread：`{_compact(codex_row.get('codex_thread_id'), 64)}`")
+    if codex_row.get("codex_turn_id"):
+        lines.append(f"- Codex turn：`{_compact(codex_row.get('codex_turn_id'), 64)}`")
+    if last_error:
+        lines.append(f"- Last error：{_compact(last_error, 120)}")
+    recommendations = list(quality.get("recommendations") or [])
+    if recommendations:
+        lines.append(f"- 建议：{_compact(recommendations[0], 120)}")
+    return "\n".join(lines)
+
+
 async def _build_task_detail_payload(
     ctx: UnifiedContext,
     *,
@@ -261,6 +394,9 @@ async def _build_task_detail_payload(
         lines.append(f"- Result：{_compact(getattr(item, 'result'), 80)}")
     if getattr(item, "output", None):
         lines.append(f"- Output：{_compact(getattr(item, 'output'), 80)}")
+    artifact_summary = _artifact_delivery_summary(getattr(item, "events", []))
+    if artifact_summary:
+        lines.append(f"- 附件投递：`{artifact_summary}`")
 
     delete_token = _cache_task_action_ref(
         ctx,
@@ -433,8 +569,12 @@ async def task_command(ctx: UnifiedContext) -> None:
 
     text = getattr(ctx.message, "text", "") or ""
     sub, _args = _parse_subcommand(text)
-    if sub not in {"recent", "list", "ls", "open"}:
+    if sub not in {"recent", "list", "ls", "open", "diag"}:
         await ctx.reply(_task_usage_text())
+        return
+
+    if sub == "diag":
+        await ctx.reply(await _build_task_diag_payload(ctx))
         return
 
     normalized_view = "open" if sub == "open" else "recent"
