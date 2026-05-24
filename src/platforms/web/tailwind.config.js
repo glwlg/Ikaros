@@ -7,23 +7,21 @@ export default {
     theme: {
         extend: {
             colors: {
-                // Match Element Plus primary colors
                 primary: {
-                    50: '#ecf5ff',
-                    100: '#d9ecff',
-                    200: '#c6e2ff',
-                    300: '#a0cfff',
-                    400: '#79bbff',
-                    500: '#409eff',
-                    600: '#337ecc',
-                    700: '#265f99',
-                    800: '#1a3f66',
-                    900: '#0d2033',
+                    50: '#e6f4fe',
+                    100: '#d5efff',
+                    200: '#acd8fc',
+                    300: '#8ec8f6',
+                    400: '#5eb1ef',
+                    500: '#0090ff',
+                    600: '#0588f0',
+                    700: '#0d74ce',
+                    800: '#113264',
+                    900: '#0d1f3a',
                 },
-                // Gradient colors from MainLayout
                 purple: {
-                    start: '#667eea',
-                    end: '#764ba2',
+                    start: '#6e56cf',
+                    end: '#8b7eff',
                 }
             },
         },

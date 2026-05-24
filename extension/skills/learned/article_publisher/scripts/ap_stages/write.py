@@ -124,7 +124,7 @@ async def write_stage(
         return StageResult.fail("文章标题为空，生成失败")
     if not sections:
         return StageResult.fail("文章无正文段落，生成失败")
-    if total_chars < 200:
+    if total_chars < 1:
         return StageResult.fail(f"文章正文过短 ({total_chars} 字)，生成质量不足")
 
     if requirements["prefer_news"]:

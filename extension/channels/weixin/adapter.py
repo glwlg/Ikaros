@@ -1065,15 +1065,6 @@ class WeixinAdapter(BotAdapter):
         caption: str = "",
         account_id: str = "",
     ) -> SimpleNamespace:
-        rendered_caption = markdown_to_weixin_text(caption)
-        for chunk in self._chunk_text(rendered_caption, self.text_chunk_limit):
-            await self._send_text_to_user(
-                user_id,
-                chunk,
-                context_token,
-                account_id=account_id,
-            )
-
         client_id = self._build_client_id()
         payload = {
             "msg": {
@@ -1098,7 +1089,74 @@ class WeixinAdapter(BotAdapter):
             raise MessageSendError(
                 f"Weixin media send failed ret={ret} errmsg={self._safe_text(response.get('errmsg'))}"
             )
+        rendered_caption = markdown_to_weixin_text(caption)
+        for chunk in self._chunk_text(rendered_caption, self.text_chunk_limit):
+            await self._send_text_to_user(
+                user_id,
+                chunk,
+                context_token,
+                account_id=account_id,
+            )
         return SimpleNamespace(id=client_id)
+
+    async def _send_prepared_media_to_user(
+        self,
+        *,
+        user_id: str,
+        context_token: str,
+        account_id: str,
+        media: Union[str, bytes],
+        caption: str | None,
+        filename: str | None,
+        fallback_mime_type: str,
+        force_media_kind: str = "",
+    ) -> Any:
+        prepared_path: Path | None = None
+        should_cleanup = False
+        display_name = ""
+        try:
+            prepared_path, should_cleanup, display_name = (
+                await self._prepare_media_path(
+                    media,
+                    filename=filename,
+                    fallback_mime_type=fallback_mime_type,
+                )
+            )
+            mime_type = guess_mime_type(prepared_path.name)
+            if mime_type == "application/octet-stream":
+                mime_type = fallback_mime_type
+            forced_kind = self._safe_text(force_media_kind).lower()
+            media_kind = (
+                forced_kind
+                if forced_kind in {"image", "video", "file"}
+                else classify_media_kind(mime_type)
+            )
+            uploaded = await self._upload_media_file(
+                file_path=prepared_path,
+                user_id=user_id,
+                media_kind=media_kind,
+                account_id=account_id,
+            )
+            if media_kind == "image":
+                message_item = build_image_message_item(uploaded)
+            elif media_kind == "video":
+                message_item = build_video_message_item(uploaded)
+            else:
+                message_item = build_file_message_item(
+                    uploaded, display_name or prepared_path.name
+                )
+
+            return await self._send_media_item_to_user(
+                user_id=user_id,
+                context_token=context_token,
+                media_item=message_item,
+                caption=caption or "",
+                account_id=account_id,
+            )
+        finally:
+            if should_cleanup and prepared_path is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    prepared_path.unlink()
 
     async def _send_prepared_media(
         self,
@@ -1108,6 +1166,7 @@ class WeixinAdapter(BotAdapter):
         caption: str | None,
         filename: str | None,
         fallback_mime_type: str,
+        force_media_kind: str = "",
     ) -> Any:
         user_id = self._safe_text(context.message.user.id)
         session_account_id = self._resolve_session_account_id(
@@ -1124,47 +1183,16 @@ class WeixinAdapter(BotAdapter):
                 "Weixin media reply requires a context_token from a recent inbound message."
             )
 
-        prepared_path: Path | None = None
-        should_cleanup = False
-        display_name = ""
-        try:
-            prepared_path, should_cleanup, display_name = (
-                await self._prepare_media_path(
-                    media,
-                    filename=filename,
-                    fallback_mime_type=fallback_mime_type,
-                )
-            )
-            mime_type = guess_mime_type(prepared_path.name)
-            if mime_type == "application/octet-stream":
-                mime_type = fallback_mime_type
-            media_kind = classify_media_kind(mime_type)
-            uploaded = await self._upload_media_file(
-                file_path=prepared_path,
-                user_id=user_id,
-                media_kind=media_kind,
-                account_id=session_account_id,
-            )
-            if media_kind == "image":
-                message_item = build_image_message_item(uploaded)
-            elif media_kind == "video":
-                message_item = build_video_message_item(uploaded)
-            else:
-                message_item = build_file_message_item(
-                    uploaded, display_name or prepared_path.name
-                )
-
-            return await self._send_media_item_to_user(
-                user_id=user_id,
-                context_token=context_token,
-                media_item=message_item,
-                caption=caption or "",
-                account_id=session_account_id,
-            )
-        finally:
-            if should_cleanup and prepared_path is not None:
-                with contextlib.suppress(FileNotFoundError):
-                    prepared_path.unlink()
+        return await self._send_prepared_media_to_user(
+            user_id=user_id,
+            context_token=context_token,
+            account_id=session_account_id,
+            media=media,
+            caption=caption,
+            filename=filename,
+            fallback_mime_type=fallback_mime_type,
+            force_media_kind=force_media_kind,
+        )
 
     @staticmethod
     def _render_qr_ascii(data: str) -> str:
@@ -2017,6 +2045,100 @@ class WeixinAdapter(BotAdapter):
             )
         return result
 
+    async def send_document(
+        self,
+        chat_id: Union[int, str],
+        document: Union[str, bytes],
+        filename: Optional[str] = None,
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        user_id = self._safe_text(chat_id)
+        session_account_id = self._resolve_session_account_id(
+            user_id=user_id,
+            preferred_account_id=self._safe_text(kwargs.get("session_account_id")),
+        )
+        context_token = self._resolve_context_token(
+            user_id=user_id,
+            account_id=session_account_id,
+        )
+        if not context_token:
+            raise MessageSendError(
+                f"Weixin proactive file send is unavailable for {user_id}: no cached context_token."
+            )
+        return await self._send_prepared_media_to_user(
+            user_id=user_id,
+            context_token=context_token,
+            account_id=session_account_id,
+            media=document,
+            caption=caption,
+            filename=filename,
+            fallback_mime_type="application/octet-stream",
+            force_media_kind="file",
+        )
+
+    async def send_photo(
+        self,
+        chat_id: Union[int, str],
+        photo: Union[str, bytes],
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        user_id = self._safe_text(chat_id)
+        session_account_id = self._resolve_session_account_id(
+            user_id=user_id,
+            preferred_account_id=self._safe_text(kwargs.get("session_account_id")),
+        )
+        context_token = self._resolve_context_token(
+            user_id=user_id,
+            account_id=session_account_id,
+        )
+        if not context_token:
+            raise MessageSendError(
+                f"Weixin proactive photo send is unavailable for {user_id}: no cached context_token."
+            )
+        return await self._send_prepared_media_to_user(
+            user_id=user_id,
+            context_token=context_token,
+            account_id=session_account_id,
+            media=photo,
+            caption=caption,
+            filename=kwargs.get("filename"),
+            fallback_mime_type="image/jpeg",
+        )
+
+    async def send_video(
+        self,
+        chat_id: Union[int, str],
+        video: Union[str, bytes],
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        filename = kwargs.pop("filename", None)
+        return await self.send_document(
+            chat_id,
+            video,
+            filename=filename,
+            caption=caption,
+            **kwargs,
+        )
+
+    async def send_audio(
+        self,
+        chat_id: Union[int, str],
+        audio: Union[str, bytes],
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> Any:
+        filename = kwargs.pop("filename", None)
+        return await self.send_document(
+            chat_id,
+            audio,
+            filename=filename,
+            caption=caption,
+            **kwargs,
+        )
+
     async def edit_text(
         self,
         context: UnifiedContext,
@@ -2058,6 +2180,9 @@ class WeixinAdapter(BotAdapter):
             caption=caption,
             filename=kwargs.get("filename"),
             fallback_mime_type="video/mp4",
+            # The iLink video item can acknowledge successfully while not
+            # rendering in Weixin clients. Send MP4s as regular files instead.
+            force_media_kind="file",
         )
 
     async def reply_audio(
@@ -2071,9 +2196,15 @@ class WeixinAdapter(BotAdapter):
             text = (
                 f"{caption or '音频链接'}\n{audio}" if caption else f"音频链接：{audio}"
             )
-        else:
-            text = caption or "⚠️ 当前微信通道暂不支持二进制音频上传。"
-        return await self.reply_text(context, text)
+            return await self.reply_text(context, text)
+        return await self._send_prepared_media(
+            context,
+            media=audio,
+            caption=caption,
+            filename=kwargs.get("filename"),
+            fallback_mime_type="application/octet-stream",
+            force_media_kind="file",
+        )
 
     async def reply_document(
         self,
@@ -2089,6 +2220,7 @@ class WeixinAdapter(BotAdapter):
             caption=caption,
             filename=filename,
             fallback_mime_type="application/octet-stream",
+            force_media_kind="file",
         )
 
     async def delete_message(

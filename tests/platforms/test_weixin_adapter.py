@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 import json
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from extension.channels.weixin.adapter import (
     WEIXIN_TYPING_STATUS_TYPING,
     WeixinAdapter,
 )
+from extension.channels.weixin.media import UploadedWeixinMedia
 
 
 def _build_context(
@@ -431,6 +433,157 @@ async def test_send_message_uses_scoped_context_token_and_session_account():
     assert payload["msg"]["to_user_id"] == "wx-user-1"
     assert payload["msg"]["context_token"] == "ctx-2"
     assert payload["msg"]["item_list"] == [{"type": 1, "text_item": {"text": "hello"}}]
+
+
+@pytest.mark.asyncio
+async def test_reply_video_sends_mp4_as_file_attachment(monkeypatch, tmp_path):
+    adapter = WeixinAdapter()
+    adapter._apply_runtime_sessions({"bot-1": _session("bot-1")})
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fake-video")
+    sent_items: list[dict[str, object]] = []
+
+    async def _fake_upload_media_file(
+        *, file_path, user_id, media_kind, account_id=""
+    ):
+        assert file_path == video_path.resolve()
+        assert user_id == "wx-user-1"
+        assert media_kind == "file"
+        assert account_id == "bot-1"
+        return UploadedWeixinMedia(
+            filekey="fk-1",
+            download_encrypted_query_param="enc-1",
+            aes_key_hex="00112233445566778899aabbccddeeff",
+            plaintext_size=10,
+            ciphertext_size=16,
+        )
+
+    async def _fake_send_media_item_to_user(
+        *, user_id, context_token, media_item, caption="", account_id=""
+    ):
+        assert user_id == "wx-user-1"
+        assert context_token == "ctx-1"
+        assert caption == "请查收"
+        assert account_id == "bot-1"
+        sent_items.append(media_item)
+        return SimpleNamespace(id="media-1")
+
+    monkeypatch.setattr(adapter, "_upload_media_file", _fake_upload_media_file)
+    monkeypatch.setattr(adapter, "_send_media_item_to_user", _fake_send_media_item_to_user)
+
+    await adapter.reply_video(_build_context(), str(video_path), caption="请查收")
+
+    assert sent_items
+    assert sent_items[0]["type"] == 4
+    assert sent_items[0]["file_item"]["file_name"] == "clip.mp4"
+
+
+@pytest.mark.asyncio
+async def test_send_media_item_sends_caption_after_successful_media(monkeypatch):
+    adapter = WeixinAdapter()
+    order: list[str] = []
+
+    async def _fake_api_post(endpoint, payload, *, timeout, token=None, session_account_id=""):
+        _ = (endpoint, payload, timeout, token, session_account_id)
+        order.append("media")
+        return {"ret": 0}
+
+    async def _fake_send_text_to_user(user_id, text, context_token, *, account_id=""):
+        _ = (user_id, text, context_token, account_id)
+        order.append("caption")
+        return SimpleNamespace(id="caption-1")
+
+    monkeypatch.setattr(adapter, "_api_post", _fake_api_post)
+    monkeypatch.setattr(adapter, "_send_text_to_user", _fake_send_text_to_user)
+
+    await adapter._send_media_item_to_user(
+        user_id="wx-user-1",
+        context_token="ctx-1",
+        media_item={"type": 4, "file_item": {"file_name": "clip.mp4"}},
+        caption="请查收",
+        account_id="bot-1",
+    )
+
+    assert order == ["media", "caption"]
+
+
+@pytest.mark.asyncio
+async def test_send_document_uses_cached_context_token(monkeypatch, tmp_path):
+    adapter = WeixinAdapter()
+    adapter._apply_runtime_sessions({"bot-1": _session("bot-1")})
+    adapter._context_tokens["bot-1::wx-user-1"] = "ctx-1"
+    doc_path = tmp_path / "report.pdf"
+    doc_path.write_bytes(b"pdf")
+    sent: list[dict[str, object]] = []
+
+    async def _fake_upload_media_file(*, file_path, user_id, media_kind, account_id=""):
+        assert file_path == doc_path.resolve()
+        assert user_id == "wx-user-1"
+        assert media_kind == "file"
+        assert account_id == "bot-1"
+        return UploadedWeixinMedia(
+            filekey="fk-doc",
+            download_encrypted_query_param="enc-doc",
+            aes_key_hex="00112233445566778899aabbccddeeff",
+            plaintext_size=3,
+            ciphertext_size=16,
+        )
+
+    async def _fake_send_media_item_to_user(
+        *, user_id, context_token, media_item, caption="", account_id=""
+    ):
+        assert user_id == "wx-user-1"
+        assert context_token == "ctx-1"
+        assert account_id == "bot-1"
+        assert caption == "报告"
+        sent.append(media_item)
+        return SimpleNamespace(id="media-doc")
+
+    monkeypatch.setattr(adapter, "_upload_media_file", _fake_upload_media_file)
+    monkeypatch.setattr(adapter, "_send_media_item_to_user", _fake_send_media_item_to_user)
+
+    await adapter.send_document(
+        "wx-user-1",
+        str(doc_path),
+        filename="report.pdf",
+        caption="报告",
+        session_account_id="bot-1",
+    )
+
+    assert sent[0]["type"] == 4
+    assert sent[0]["file_item"]["file_name"] == "report.pdf"
+
+
+@pytest.mark.asyncio
+async def test_reply_audio_uploads_binary_audio_as_file(monkeypatch, tmp_path):
+    adapter = WeixinAdapter()
+    adapter._apply_runtime_sessions({"bot-1": _session("bot-1")})
+    audio_path = tmp_path / "voice.mp3"
+    audio_path.write_bytes(b"audio")
+    uploaded_kinds: list[str] = []
+
+    async def _fake_upload_media_file(*, file_path, user_id, media_kind, account_id=""):
+        _ = (file_path, user_id, account_id)
+        uploaded_kinds.append(media_kind)
+        return UploadedWeixinMedia(
+            filekey="fk-audio",
+            download_encrypted_query_param="enc-audio",
+            aes_key_hex="00112233445566778899aabbccddeeff",
+            plaintext_size=5,
+            ciphertext_size=16,
+        )
+
+    async def _fake_send_media_item_to_user(**kwargs):
+        assert kwargs["media_item"]["type"] == 4
+        assert kwargs["media_item"]["file_item"]["file_name"] == "voice.mp3"
+        return SimpleNamespace(id="audio-file")
+
+    monkeypatch.setattr(adapter, "_upload_media_file", _fake_upload_media_file)
+    monkeypatch.setattr(adapter, "_send_media_item_to_user", _fake_send_media_item_to_user)
+
+    await adapter.reply_audio(_build_context(), str(audio_path), caption="语音")
+
+    assert uploaded_kinds == ["file"]
 
 
 def test_log_updates_summary_emits_payload_sample_when_enabled(caplog):

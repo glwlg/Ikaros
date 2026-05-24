@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -986,3 +987,40 @@ async def test_heartbeat_task_batch_injects_inline_image_inputs(monkeypatch):
     assert parts[0]["text"]
     assert parts[1]["inline_data"]["mime_type"] == "image/jpeg"
     assert parts[1]["inline_data"]["data"]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_process_once_skips_waiting_user_active_task(monkeypatch, tmp_path):
+    runtime_root = (tmp_path / "runtime_tasks").resolve()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(heartbeat_store, "root", runtime_root)
+    heartbeat_store._locks.clear()
+
+    user_id = "hb-waiting"
+    await heartbeat_store.set_heartbeat_spec(
+        user_id,
+        every="1m",
+        active_start="00:00",
+        active_end="23:59",
+        paused=False,
+    )
+    await heartbeat_store.set_session_active_task(
+        user_id,
+        {"id": "hb-waiting-task", "status": "waiting_user", "needs_confirmation": True},
+    )
+    calls: list[str] = []
+
+    async def _fake_run(user_id_arg: str, *, force: bool = False):
+        _ = force
+        calls.append(user_id_arg)
+        return "HEARTBEAT_OK"
+
+    worker = HeartbeatWorker()
+    worker.enabled = True
+    monkeypatch.setattr(worker, "_run_heartbeat_for_user", _fake_run)
+
+    await worker.process_once()
+    await asyncio.sleep(0)
+
+    assert calls == []
+    assert worker._running == {}

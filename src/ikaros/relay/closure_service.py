@@ -658,7 +658,8 @@ class IkarosClosureService:
                 "collected_files": collected_files,
                 "delivery_state": "pending",
                 "last_user_visible_summary": _safe_text(text, limit=2400),
-                "resume_window_until": "",
+                "resume_window_until": _future_iso(180),
+                "confirmation_deadline": _future_iso(180),
             }
         )
         merged_metadata = _remember_closure(
@@ -694,9 +695,9 @@ class IkarosClosureService:
                 ),
                 delivery_state="pending",
                 last_user_visible_summary=_safe_text(text, limit=2400),
-                resume_window_until="",
+                resume_window_until=_future_iso(180),
                 needs_confirmation=True,
-                confirmation_deadline="",
+                confirmation_deadline=_future_iso(180),
                 last_blocking_reason=blocking_reason,
                 resume_instruction_preview=resume_preview,
                 adjustments_count=count_adjustments(stage_plan),

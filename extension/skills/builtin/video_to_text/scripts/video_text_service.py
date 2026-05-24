@@ -82,7 +82,7 @@ def _whisper_http_timeout_seconds() -> float:
 
 
 def _whisper_http_response_format() -> str:
-    return str(os.getenv("VIDEO_TO_TEXT_WHISPER_RESPONSE_FORMAT") or "json").strip() or "json"
+    return str(os.getenv("VIDEO_TO_TEXT_WHISPER_RESPONSE_FORMAT") or "text").strip() or "text"
 
 
 def _whisper_http_language() -> str:
@@ -103,7 +103,7 @@ def _whisper_http_temperature() -> float:
 
 
 def _whisper_http_temperature_inc() -> float:
-    return _env_float("VIDEO_TO_TEXT_WHISPER_TEMPERATURE_INC", 0.2, 0.0)
+    return _env_float("VIDEO_TO_TEXT_WHISPER_TEMPERATURE_INC", 0.0, 0.0)
 
 
 def _whisper_http_no_timestamps() -> bool:
@@ -1270,6 +1270,55 @@ async def _transcribe_audio_bytes_internal(
     *,
     transcription_state: AudioTranscriptionState | None,
 ) -> tuple[str, str, AudioTranscriptionStrategy | None]:
+    def _maybe_lock_strategy(
+        status: str,
+        strategy: AudioTranscriptionStrategy | None,
+    ) -> None:
+        if (
+            transcription_state is not None
+            and strategy is not None
+            and _status_locks_audio_strategy(status)
+        ):
+            transcription_state.locked_strategy = strategy
+
+    async def _try_target_models(
+        strategy_filter: AudioTranscriptionStrategy | None = None,
+    ) -> tuple[str, str, AudioTranscriptionStrategy | None]:
+        targets = _available_audio_transcription_targets()
+        if strategy_filter is not None:
+            targets = [
+                (model_key, client)
+                for model_key, client in targets
+                if model_key == strategy_filter.model
+            ]
+        if not targets:
+            return "failed", "no voice-capable model available", None
+
+        last_status = "failed"
+        last_detail = ""
+        last_strategy: AudioTranscriptionStrategy | None = None
+        styles = (
+            [strategy_filter.audio_part_style]
+            if strategy_filter is not None and strategy_filter.audio_part_style
+            else None
+        )
+        for voice_model, client in targets:
+            status, detail, strategy = await _transcribe_audio_bytes_with_target(
+                voice_model,
+                client,
+                audio_bytes,
+                mime_type,
+                audio_part_styles=styles,
+                strategy_filter=strategy_filter,
+            )
+            if status not in {"failed", "unsupported_modality"}:
+                _maybe_lock_strategy(status, strategy)
+                return status, detail, strategy
+            last_status = status
+            last_detail = detail
+            last_strategy = strategy
+        return last_status, last_detail, last_strategy
+
     locked_strategy = transcription_state.locked_strategy if transcription_state else None
     if locked_strategy is not None:
         if locked_strategy.model == _WHISPER_HTTP_MODEL:
@@ -1278,34 +1327,38 @@ async def _transcribe_audio_bytes_internal(
                 mime_type,
             )
             if status not in {"failed", "unsupported_modality"}:
-                if (
-                    transcription_state is not None
-                    and strategy is not None
-                    and _status_locks_audio_strategy(status)
-                ):
-                    transcription_state.locked_strategy = strategy
+                _maybe_lock_strategy(status, strategy)
                 return status, detail, strategy or locked_strategy
             if transcription_state is not None:
                 transcription_state.locked_strategy = None
-        elif transcription_state is not None:
-            transcription_state.locked_strategy = None
+        else:
+            status, detail, strategy = await _try_target_models(
+                strategy_filter=locked_strategy
+            )
+            if status not in {"failed", "unsupported_modality"}:
+                return status, detail, strategy or locked_strategy
+            if transcription_state is not None:
+                transcription_state.locked_strategy = None
 
-    if not _whisper_http_enabled():
-        return "failed", "whisper http endpoint not configured", None
+    whisper_detail = ""
+    if _whisper_http_enabled():
+        status, detail, strategy = await _transcribe_audio_bytes_with_whisper_http(
+            audio_bytes,
+            mime_type,
+        )
+        if status not in {"failed", "unsupported_modality"}:
+            _maybe_lock_strategy(status, strategy)
+            return status, detail, strategy
+        whisper_detail = detail or "whisper http transcription failed"
 
-    status, detail, strategy = await _transcribe_audio_bytes_with_whisper_http(
-        audio_bytes,
-        mime_type,
-    )
+    status, detail, strategy = await _try_target_models()
     if status not in {"failed", "unsupported_modality"}:
-        if (
-            transcription_state is not None
-            and strategy is not None
-            and _status_locks_audio_strategy(status)
-        ):
-            transcription_state.locked_strategy = strategy
         return status, detail, strategy
-    return "failed", detail or "whisper http transcription failed", None
+    if detail:
+        return status, detail, strategy
+    if whisper_detail:
+        return "failed", whisper_detail, None
+    return "failed", "whisper http endpoint not configured", None
 
 
 async def _transcribe_audio_bytes_with_target(
@@ -1561,8 +1614,6 @@ async def _probe_audio_transcription_mode(
         )
     if not whisper_endpoint:
         diagnostics.append("whisper http endpoint not configured")
-        diagnostics.append(_fatal_audio_diagnostic("whisper http endpoint not configured"))
-        return False, diagnostics
 
     probe_seconds = _env_float("VIDEO_TO_TEXT_AUDIO_PROBE_SECONDS", 20.0, 5.0)
     if duration_seconds is not None and duration_seconds > 0:
@@ -1654,16 +1705,15 @@ async def transcribe_audio_segments(
         reported_locked_strategy = ""
         diagnostics: list[str] = []
         whisper_endpoint = _whisper_http_endpoint()
-        if not whisper_endpoint:
+        if whisper_endpoint:
+            diagnostics.append(f"whisper http endpoint configured: {whisper_endpoint}")
+            _emit_progress(
+                progress,
+                f"whisper http endpoint configured: {whisper_endpoint}",
+                workspace=active_workspace,
+            )
+        else:
             diagnostics.append("whisper http endpoint not configured")
-            diagnostics.append(_fatal_audio_diagnostic("whisper http endpoint not configured"))
-            return [], diagnostics, True
-        diagnostics.append(f"whisper http endpoint configured: {whisper_endpoint}")
-        _emit_progress(
-            progress,
-            f"whisper http endpoint configured: {whisper_endpoint}",
-            workspace=active_workspace,
-        )
         reported_locked_strategy = _report_locked_audio_strategy(
             transcription_state,
             diagnostics=diagnostics,
@@ -1684,6 +1734,37 @@ async def transcribe_audio_segments(
             30.0,
             5.0,
         )
+        candidate_models = [
+            str(model_key or "").strip()
+            for model_key, _client in _available_audio_transcription_targets()
+            if str(model_key or "").strip()
+        ]
+        if candidate_models:
+            diagnostics.append(
+                "audio transcription model candidates: "
+                + ", ".join(candidate_models)
+            )
+
+        transcription_probe_ok, transcription_probe_diagnostics = (
+            await _probe_audio_transcription_mode(
+                audio_path,
+                duration_seconds=duration_seconds,
+                mime_type=audio_mime_type or "audio/mpeg",
+                transcription_state=transcription_state,
+                progress=progress,
+                workspace=active_workspace,
+            )
+        )
+        diagnostics.extend(transcription_probe_diagnostics)
+        reported_locked_strategy = _report_locked_audio_strategy(
+            transcription_state,
+            diagnostics=diagnostics,
+            reported_label=reported_locked_strategy,
+            progress=progress,
+            workspace=active_workspace,
+        )
+        if not transcription_probe_ok:
+            return [], diagnostics, True
 
         if duration_seconds is None or duration_seconds <= 0:
             audio_incomplete = True

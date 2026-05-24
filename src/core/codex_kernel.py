@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
+import hashlib
+import json
 import logging
 import os
 import time
@@ -16,11 +20,15 @@ from core.config import (
     IKAROS_CODEX_APPROVAL_POLICY,
     IKAROS_CODEX_EFFORT,
     IKAROS_CODEX_MODEL,
+    IKAROS_CODEX_REQUEST_TIMEOUT_SEC,
     IKAROS_CODEX_SANDBOX,
+    IKAROS_CODEX_SKILL_ALLOWLIST,
+    IKAROS_CODEX_SKILL_DENYLIST,
     IKAROS_CODEX_TIMEOUT_SEC,
     ikaros_codex_command,
     ikaros_codex_writable_roots,
 )
+from core.file_artifacts import merge_file_rows, normalize_file_rows
 from core.heartbeat_store import heartbeat_store
 from core.codex_kernel_sessions import codex_kernel_sessions
 from core.prompt_composer import prompt_composer
@@ -31,12 +39,31 @@ from ikaros.dev.codex_app_server_client import (
     JsonRpcError,
     _append_app_server_log,
     _command_to_text,
+    _extract_generated_image_files,
+    _extract_local_media_files,
     _tail,
 )
 
 logger = logging.getLogger(__name__)
 
 EventCallback = Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any] | None]]
+
+DEFAULT_CODEX_SKILL_DENYLIST = {
+    "coding_session",
+    "deep_research",
+    "deployment_manager",
+    "docker_ops",
+    "generate_image",
+    "gh-cli",
+    "git_ops",
+    "opencli",
+    "playwright-cli",
+    "repo_workspace",
+    "skill_manager",
+    "video_to_text",
+    "web_extractor",
+    "web_search",
+}
 
 
 @dataclass
@@ -104,24 +131,48 @@ def _safe_text(value: Any, limit: int = 0) -> str:
     return rendered[:limit] if limit > 0 else rendered
 
 
-def _safe_list(values: Any, *, limit: int = 0) -> list[str]:
-    if not isinstance(values, (list, tuple, set)):
-        return []
-    output: list[str] = []
-    for item in values:
-        token = str(item or "").strip()
-        if token and token not in output:
-            output.append(token)
-        if limit > 0 and len(output) >= limit:
-            break
-    return output
-
-
 def _one_line(value: Any, *, limit: int = 160) -> str:
     text = " ".join(str(value or "").strip().split())
     if limit > 0 and len(text) > limit:
         return text[:limit].rstrip() + "..."
     return text
+
+
+def _client_stdout(client: Any) -> str:
+    if client is None:
+        return ""
+    getter = getattr(client, "_assistant_stdout", None)
+    if callable(getter):
+        with contextlib.suppress(Exception):
+            return _safe_text(getter())
+    return ""
+
+
+def _split_skill_names(raw: str) -> set[str]:
+    names: set[str] = set()
+    for item in str(raw or "").replace(";", ",").split(","):
+        name = str(item or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _codex_skill_visible(name: str) -> bool:
+    safe_name = str(name or "").strip()
+    if not safe_name:
+        return False
+    allowlist = _split_skill_names(
+        os.getenv("IKAROS_CODEX_SKILL_ALLOWLIST", IKAROS_CODEX_SKILL_ALLOWLIST)
+    )
+    denylist = set(DEFAULT_CODEX_SKILL_DENYLIST)
+    denylist.update(
+        _split_skill_names(
+            os.getenv("IKAROS_CODEX_SKILL_DENYLIST", IKAROS_CODEX_SKILL_DENYLIST)
+        )
+    )
+    if allowlist:
+        return safe_name in allowlist
+    return safe_name not in denylist
 
 
 def _codex_skill_catalog(
@@ -140,6 +191,9 @@ def _codex_skill_catalog(
             for item in list(candidate_skill_names or [])
             if str(item or "").strip()
         }
+        explicit_allowlist = _split_skill_names(
+            os.getenv("IKAROS_CODEX_SKILL_ALLOWLIST", IKAROS_CODEX_SKILL_ALLOWLIST)
+        )
         skills = sorted(
             list(skill_loader.get_enabled_skill_index().values()),
             key=lambda item: str(item.get("name") or "").strip(),
@@ -149,6 +203,11 @@ def _codex_skill_catalog(
             name = str(info.get("name") or "").strip()
             if not name:
                 continue
+            if not _codex_skill_visible(name):
+                continue
+            if not explicit_allowlist:
+                if not candidate_names or name not in candidate_names:
+                    continue
             allowed_roles = {
                 str(item or "").strip().lower()
                 for item in list(info.get("allowed_roles") or [])
@@ -176,64 +235,32 @@ def _codex_skill_catalog(
                 ):
                     continue
 
-            marker = " (本轮路由提示可能相关)" if name in candidate_names else ""
-            lines.append(f"- `{name}`{marker}")
             desc = _one_line(info.get("description"), limit=180)
-            if desc:
-                lines.append(f"  desc: {desc}")
-            triggers = _safe_list(info.get("triggers"), limit=10)
-            if triggers:
-                lines.append(f"  triggers: {', '.join(triggers)}")
-            skill_md_path = str(info.get("skill_md_path") or "").strip()
-            if skill_md_path:
-                lines.append(f"  SKILL.md: `{skill_md_path}`")
-            skill_dir = str(info.get("skill_dir") or "").strip()
-            entrypoint = str(info.get("entrypoint") or "").strip()
-            if not entrypoint and skill_dir:
-                default_entrypoint = Path(skill_dir) / "scripts" / "execute.py"
-                if default_entrypoint.exists():
-                    entrypoint = "scripts/execute.py"
-            if skill_dir and entrypoint:
-                lines.append(f"  entrypoint: `{Path(skill_dir) / entrypoint}`")
-            exports: list[str] = []
-            for exported in list(info.get("tool_exports") or [])[:4]:
-                if not isinstance(exported, dict):
-                    continue
-                export_name = str(exported.get("name") or "").strip()
-                hint = _one_line(
-                    exported.get("prompt_hint") or exported.get("description"),
-                    limit=180,
-                )
-                if export_name and hint:
-                    exports.append(f"{export_name}: {hint}")
-                elif export_name:
-                    exports.append(export_name)
-            if exports:
-                lines.append(f"  exports: {'; '.join(exports)}")
+            lines.append(f"- `{name}`: {desc}" if desc else f"- `{name}`")
 
         if not lines:
             return ""
 
         header = [
-            "【Codex skill catalog】",
-            "下面是当前已启用且可供 Ikaros 使用的本地 skills。Codex 首轮应看到全量目录；后续用户没有说出 skill 名时，也要根据问题含义主动匹配。",
-            "匹配到 skill 后，先读取对应 `SKILL.md`，再按 entrypoint 或 SOP 调用脚本；不要调用原生 Ikaros 的 `load_skill`，也不要假设存在远程适配器。",
-            "当用户询问个人状态、车辆/行程、提醒、订阅、账务、部署、仓库或其他本地系统数据，而会话记忆没有答案时，优先检查这个目录里的只读或管理型 skill。",
+            "【Ikaros-only local skills】",
+            "Only use these when they add Ikaros-specific user data, platform actions, or local system integrations. For generic search, webpage reading, coding, shell, git, browser, deployment, or research work, prefer native Codex capabilities. If using one, find it under `extension/skills/**`, read its `SKILL.md`, then run its documented script/CLI directly.",
         ]
-        if candidate_names:
-            header.append(
-                "本轮路由提示可能相关 skills: "
-                + ", ".join(f"`{name}`" for name in sorted(candidate_names))
-            )
         return "\n".join(header + [""] + lines).strip()
     except Exception:
         logger.debug("Failed to build Codex skill catalog.", exc_info=True)
         return ""
 
 
-def _message_history_text(message_history: list[Any], *, limit: int = 8000) -> str:
+def _message_history_text(
+    message_history: list[Any],
+    *,
+    limit: int = 8000,
+    current_user_request: str = "",
+) -> str:
     rows: list[str] = []
-    for item in list(message_history or [])[-12:]:
+    recent_items = list(message_history or [])[-12:]
+    current_request = str(current_user_request or "").strip()
+    for idx, item in enumerate(recent_items):
         role = "unknown"
         parts: list[Any] = []
         if isinstance(item, dict):
@@ -249,12 +276,19 @@ def _message_history_text(message_history: list[Any], *, limit: int = 8000) -> s
                 if text:
                     texts.append(text)
                 elif part.get("inline_data"):
-                    texts.append("[inline media omitted by codex kernel v1]")
+                    texts.append("[inline media attached separately]")
             else:
                 text = str(getattr(part, "text", "") or "").strip()
                 if text:
                     texts.append(text)
         if texts:
+            if (
+                current_request
+                and idx == len(recent_items) - 1
+                and role == "user"
+                and "\n".join(texts).strip() == current_request
+            ):
+                continue
             rows.append(f"{role}: " + "\n".join(texts))
     rendered = "\n\n".join(rows).strip()
     return rendered[-limit:] if len(rendered) > limit else rendered
@@ -271,6 +305,290 @@ def _thread_user_instruction(
     return _safe_text(user_request)
 
 
+def _inline_data_suffix(mime_type: str) -> str:
+    normalized = str(mime_type or "").split(";", 1)[0].strip().lower()
+    mapping = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "audio/ogg": ".ogg",
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+        "application/pdf": ".pdf",
+        "text/plain": ".txt",
+    }
+    return mapping.get(normalized, ".bin")
+
+
+def _materialize_codex_inline_file(
+    inline_data: dict[str, Any],
+    *,
+    thread_key: str = "",
+) -> tuple[str, str]:
+    mime_type = _safe_text(inline_data.get("mime_type") or inline_data.get("mimeType"), 80)
+    encoded = _safe_text(inline_data.get("data"), 0)
+    if not encoded:
+        return "", mime_type
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return "", mime_type
+    if not payload:
+        return "", mime_type
+    digest = hashlib.sha256(payload).hexdigest()[:24]
+    safe_thread = _safe_text(thread_key, 80).replace("/", "_") or "session"
+    suffix = _inline_data_suffix(mime_type)
+    directory = data_dir() / "codex" / "input_files" / safe_thread
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path_obj = (directory / f"input_{digest}{suffix}").resolve()
+        if not path_obj.exists() or path_obj.read_bytes() != payload:
+            path_obj.write_bytes(payload)
+        return str(path_obj), mime_type
+    except Exception:
+        logger.debug("Failed to materialize Codex inline input file.", exc_info=True)
+        return "", mime_type
+
+
+def _codex_turn_input_items(
+    *,
+    instruction: str,
+    message_history: list[Any],
+    thread_key: str = "",
+) -> list[dict[str, str]]:
+    """Build Codex app-server user input items for current-turn inline media."""
+    current_parts: list[Any] = []
+    for item in reversed(list(message_history or [])):
+        role = (
+            str(item.get("role") or "").strip().lower()
+            if isinstance(item, dict)
+            else str(getattr(item, "role", "") or "").strip().lower()
+        )
+        if role != "user":
+            continue
+        current_parts = (
+            list(item.get("parts") or [])
+            if isinstance(item, dict)
+            else list(getattr(item, "parts", []) or [])
+        )
+        break
+    if not current_parts:
+        return []
+
+    input_items: list[dict[str, str]] = []
+    attachment_notes: list[str] = []
+    for idx, part in enumerate(current_parts):
+        inline_data = (
+            part.get("inline_data")
+            if isinstance(part, dict)
+            else getattr(part, "inline_data", None)
+        )
+        if not isinstance(inline_data, dict):
+            continue
+        path_text, mime_type = _materialize_codex_inline_file(
+            inline_data,
+            thread_key=thread_key,
+        )
+        if not path_text:
+            continue
+        normalized_mime = str(mime_type or "").split(";", 1)[0].strip().lower()
+        attachment_notes.append(
+            f"- attachment {idx + 1}: {path_text}"
+            + (f" ({normalized_mime})" if normalized_mime else "")
+        )
+        if normalized_mime.startswith("image/"):
+            input_items.append({"type": "localImage", "path": path_text})
+
+    if not attachment_notes:
+        return []
+    text = _safe_text(instruction)
+    text += "\n\nAttached local files for this user turn:\n" + "\n".join(attachment_notes)
+    return [{"type": "text", "text": text.strip()}] + input_items
+
+
+def _codex_generated_image_rows(
+    *,
+    thread_id: str,
+    since_ts: float,
+    include_recent_global: bool = False,
+) -> list[dict[str, str]]:
+    safe_thread_id = _safe_text(thread_id, 160)
+    if not safe_thread_id and not include_recent_global:
+        return []
+    candidates: list[Path] = []
+    if safe_thread_id:
+        candidates.append(
+            (data_dir() / "codex" / "generated_images" / safe_thread_id).resolve()
+        )
+        with contextlib.suppress(Exception):
+            candidates.append(
+                (
+                    Path.home()
+                    / ".codex"
+                    / "generated_images"
+                    / safe_thread_id
+                ).resolve()
+            )
+    if include_recent_global:
+        candidates.append((data_dir() / "codex" / "generated_images").resolve())
+        with contextlib.suppress(Exception):
+            candidates.append((Path.home() / ".codex" / "generated_images").resolve())
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for directory in candidates:
+        if not directory.exists() or not directory.is_dir():
+            continue
+        for path_obj in sorted(
+            directory.rglob("*"),
+            key=lambda item: item.stat().st_mtime,
+        ):
+            if not path_obj.is_file():
+                continue
+            if path_obj.suffix.lower() not in {
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".webp",
+                ".gif",
+                ".bmp",
+            }:
+                continue
+            with contextlib.suppress(Exception):
+                if path_obj.stat().st_mtime + 1.0 < since_ts:
+                    continue
+            resolved = str(path_obj.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            rows.append(
+                {
+                    "kind": "photo",
+                    "path": resolved,
+                    "filename": path_obj.name,
+                    "caption": "",
+                }
+            )
+    return normalize_file_rows(rows)
+
+
+def _codex_session_files_for_thread(thread_id: str) -> list[Path]:
+    safe_thread_id = _safe_text(thread_id, 160)
+    if not safe_thread_id:
+        return []
+    root = Path.home() / ".codex" / "sessions"
+    if not root.exists() or not root.is_dir():
+        return []
+    with contextlib.suppress(Exception):
+        return sorted(
+            root.rglob(f"*{safe_thread_id}.jsonl"),
+            key=lambda item: item.stat().st_mtime,
+        )
+    return []
+
+
+def _iso_timestamp_to_epoch(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    with contextlib.suppress(Exception):
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    return 0.0
+
+
+def _codex_session_image_rows_from_record(
+    record: dict[str, Any],
+    *,
+    thread_id: str,
+    since_ts: float,
+) -> list[dict[str, str]]:
+    if _iso_timestamp_to_epoch(record.get("timestamp")) + 1.0 < since_ts:
+        return []
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return []
+    record_type = str(record.get("type") or "").strip()
+    payload_type = str(payload.get("type") or "").strip()
+    if record_type not in {"event_msg", "response_item"}:
+        return []
+    if payload_type not in {"image_generation_end", "image_generation_call"}:
+        return []
+    rows = _extract_local_media_files(payload)
+    rows.extend(_extract_generated_image_files(payload, thread_id=thread_id))
+    return normalize_file_rows(rows)
+
+
+def _codex_session_completion_from_record(
+    record: dict[str, Any],
+    *,
+    since_ts: float,
+) -> dict[str, Any] | None:
+    if _iso_timestamp_to_epoch(record.get("timestamp")) + 1.0 < since_ts:
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    if str(record.get("type") or "").strip() != "event_msg":
+        return None
+    if str(payload.get("type") or "").strip() != "task_complete":
+        return None
+    return dict(payload)
+
+
+def _codex_session_started_turn_from_record(
+    record: dict[str, Any],
+    *,
+    since_ts: float,
+) -> str:
+    if _iso_timestamp_to_epoch(record.get("timestamp")) + 1.0 < since_ts:
+        return ""
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    if str(record.get("type") or "").strip() != "event_msg":
+        return ""
+    if str(payload.get("type") or "").strip() != "task_started":
+        return ""
+    return _safe_text(payload.get("turn_id") or payload.get("turnId"), 160)
+
+
+async def _wait_for_codex_session_started_turn(
+    *,
+    thread_id: str,
+    since_ts: float,
+    timeout_sec: float = 5.0,
+) -> str:
+    deadline = time.monotonic() + max(0.1, float(timeout_sec or 0))
+    while time.monotonic() < deadline:
+        try:
+            for session_file in reversed(_codex_session_files_for_thread(thread_id)):
+                if not session_file.exists():
+                    continue
+                latest_turn_id = ""
+                with session_file.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        with contextlib.suppress(Exception):
+                            record = json.loads(line)
+                            if isinstance(record, dict):
+                                turn_id = _codex_session_started_turn_from_record(
+                                    record,
+                                    since_ts=since_ts,
+                                )
+                                if turn_id:
+                                    latest_turn_id = turn_id
+                if latest_turn_id:
+                    return latest_turn_id
+        except Exception:
+            logger.debug("Failed to inspect Codex session task_started.", exc_info=True)
+        await asyncio.sleep(0.25)
+    return ""
+
+
 def _kernel_prompt(
     *,
     user_request: str,
@@ -285,8 +603,10 @@ def _kernel_prompt(
 ) -> str:
     repo_root = str(project_root().resolve())
     skill_root = str((project_root() / "extension" / "skills").resolve())
-    roots = "\n".join([f"- {root}" for root in ikaros_codex_writable_roots()])
-    history = _message_history_text(message_history)
+    history = _message_history_text(
+        message_history,
+        current_user_request=user_request,
+    )
     sections: list[str] = []
     if include_base_context:
         # Codex has its own shell/filesystem execution contract. Use chat mode here
@@ -308,51 +628,18 @@ def _kernel_prompt(
             sections.append(skill_catalog)
     sections.extend(
         [
-            "【Codex kernel execution context】",
+            "【Ikaros runtime】",
             (
-                (
-                    "The Ikaros base prompt above governs identity, personality, memory, "
-                    "and user relationship context. The Codex kernel notes below govern "
-                    "local execution mechanics for this turn."
-                )
-                if include_base_context
-                else (
-                    "Continue the existing Codex thread for this Ikaros session. "
-                    "Do not reload SOUL/AGENTS unless the user asks or context is missing."
-                )
+                f"cwd: {repo_root}. Ikaros skills live under {skill_root}. "
+                "You are the Codex kernel for this Ikaros session; "
+                "use native Codex tools by default. Use listed Ikaros-only skills only "
+                "when they provide user/account/platform/local-system data or actions "
+                "that Codex cannot infer directly."
             ),
-            "You are executing through the Codex kernel provider for Ikaros.",
-            (
-                "Current working directory is the Ikaros repository root. Treat local "
-                "files and skills exactly as a human operator in this repo would."
-            ),
-            f"Repo root: {repo_root}",
-            f"Skill root: {skill_root}",
-            "Writable/readable roots configured for this kernel:\n" + roots,
-            (
-                "Ikaros skills are local directory capabilities, not remote tools. "
-                "When a skill may help, use the Codex skill catalog path if present; "
-                "otherwise search under `extension/skills/builtin` and "
-                "`extension/skills/learned`. First read `SKILL.md`, then invoke the "
-                "documented CLI/script entrypoint."
-            ),
-            (
-                "Do not expect Ikaros to provide per-skill adapters or Codex tool schemas. "
-                "Use shell, filesystem, repo scripts, and tests directly."
-            ),
-            (
-                "Before modifying code, inspect the surrounding context. Do not reset, "
-                "checkout, or overwrite user changes. Keep edits scoped, verify what you "
-                "changed, and report any failed verification plainly."
-            ),
-            (
-                "Final output must clearly state the result, a failure reason, or the "
-                "specific question needed from the user."
-            ),
-            f"Ikaros task inbox id: {task_inbox_id or 'none'}",
-            f"Request mode: {request_mode or 'chat'}",
         ]
     )
+    if task_inbox_id:
+        sections.append(f"Ikaros task id: {task_inbox_id}")
     if resume_user_message:
         sections.append(
             "User reply for the previous waiting state:\n" + resume_user_message
@@ -457,6 +744,8 @@ class CodexKernelProvider:
             platform=platform,
             existing_thread_id=existing_thread_id,
             new_thread_instruction=new_thread_instruction,
+            message_history=message_history,
+            thread_key=session_id or user_id,
             event_callback=event_callback,
         )
         self._persist_session_thread(
@@ -465,6 +754,21 @@ class CodexKernelProvider:
             session_id=session_id,
             result=result,
         )
+        result_files = normalize_file_rows(result.get("files"))
+        if result_files:
+            await event_callback(
+                "codex_result_files",
+                {
+                    "source": "codex_kernel",
+                    "kernel_provider": "codex",
+                    "turn": 1,
+                    "task_id": _safe_text(getattr(runtime_ctx, "task_id", ""), 80),
+                    "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                    "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+                    "files": result_files,
+                    "terminal_payload": {"files": result_files},
+                },
+            )
         needs_user = self._needs_user(result)
         await self._persist_kernel_metadata(
             user_id=user_id,
@@ -633,7 +937,12 @@ class CodexKernelProvider:
                 thread_id=_safe_text(result.get("thread_id"), 160),
                 turn_id=_safe_text(result.get("turn_id"), 160),
             )
-            return {"handled": True, "ok": True, "message": final_text}
+            return {
+                "handled": True,
+                "ok": True,
+                "message": final_text,
+                "files": normalize_file_rows(result.get("files")),
+            }
 
         if bool(result.get("ok")):
             await task_inbox.complete(
@@ -651,7 +960,12 @@ class CodexKernelProvider:
                 platform=platform,
                 result_summary=output_text,
             )
-            return {"handled": True, "ok": True, "message": output_text}
+            return {
+                "handled": True,
+                "ok": True,
+                "message": output_text,
+                "files": normalize_file_rows(result.get("files")),
+            }
 
         await task_inbox.fail(
             task_inbox_id,
@@ -668,7 +982,12 @@ class CodexKernelProvider:
             platform=platform,
             result_summary=output_text,
         )
-        return {"handled": True, "ok": False, "message": output_text}
+        return {
+            "handled": True,
+            "ok": False,
+            "message": output_text,
+            "files": normalize_file_rows(result.get("files")),
+        }
 
     def _resolve_ikaros_session_id(
         self,
@@ -739,6 +1058,8 @@ class CodexKernelProvider:
         platform: str,
         existing_thread_id: str = "",
         new_thread_instruction: str = "",
+        message_history: list[Any] | None = None,
+        thread_key: str = "",
         event_callback: EventCallback | None = None,
     ) -> Dict[str, Any]:
         command = ikaros_codex_command()
@@ -750,6 +1071,93 @@ class CodexKernelProvider:
         client: CodexAppServerClient | None = None
         last_agent_emit_at = 0.0
         last_agent_emit_len = 0
+        turn_started_ts = 0.0
+        emitted_file_paths: set[str] = set()
+        session_completion: asyncio.Future[dict[str, Any]] | None = None
+        completed_from_session = False
+
+        async def _emit_result_files(rows: list[dict[str, str]]) -> None:
+            if event_callback is None:
+                return
+            result_files = normalize_file_rows(rows)
+            if not result_files:
+                return
+            new_rows = [
+                row
+                for row in result_files
+                if str(row.get("path") or "").strip() not in emitted_file_paths
+            ]
+            if not new_rows:
+                return
+            emitted_file_paths.update(
+                str(row.get("path") or "").strip()
+                for row in new_rows
+                if str(row.get("path") or "").strip()
+            )
+            await event_callback(
+                "codex_result_files",
+                {
+                    "source": "codex_kernel",
+                    "kernel_provider": "codex",
+                    "turn": 1,
+                    "task_id": task_id,
+                    "codex_thread_id": thread_id,
+                    "codex_turn_id": turn_id,
+                    "files": new_rows,
+                    "terminal_payload": {"files": new_rows},
+                },
+            )
+
+        async def _monitor_codex_session_images(done: asyncio.Event) -> None:
+            nonlocal session_completion
+            session_file: Path | None = None
+            offset = 0
+            while not done.is_set():
+                try:
+                    if session_file is None:
+                        candidates = _codex_session_files_for_thread(thread_id)
+                        if candidates:
+                            session_file = candidates[-1]
+                            offset = 0
+                    if session_file is not None and session_file.exists():
+                        with session_file.open("r", encoding="utf-8") as handle:
+                            handle.seek(offset)
+                            lines = handle.readlines()
+                            offset = handle.tell()
+                        for line in lines:
+                            with contextlib.suppress(Exception):
+                                record = json.loads(line)
+                                if isinstance(record, dict):
+                                    await _emit_result_files(
+                                        _codex_session_image_rows_from_record(
+                                            record,
+                                            thread_id=thread_id,
+                                            since_ts=turn_started_ts,
+                                        )
+                                    )
+                                    completion = _codex_session_completion_from_record(
+                                        record,
+                                        since_ts=turn_started_ts,
+                                    )
+                                    completion_turn_id = _safe_text(
+                                        (completion or {}).get("turn_id")
+                                        or (completion or {}).get("turnId"),
+                                        160,
+                                    )
+                                    if (
+                                        completion
+                                        and session_completion is not None
+                                        and not session_completion.done()
+                                        and (
+                                            not completion_turn_id
+                                            or not turn_id
+                                            or completion_turn_id == turn_id
+                                        )
+                                    ):
+                                        session_completion.set_result(completion)
+                except Exception:
+                    logger.debug("Failed to monitor Codex session images.", exc_info=True)
+                await asyncio.sleep(1)
 
         async def _codex_event_callback(event: str, payload: Dict[str, Any]) -> None:
             nonlocal last_agent_emit_at, last_agent_emit_len
@@ -788,26 +1196,132 @@ class CodexKernelProvider:
                     },
                 )
                 return
+            if event == "generated_files":
+                await _emit_result_files(
+                    normalize_file_rows(
+                        payload.get("files")
+                        or (
+                            payload.get("terminal_payload", {}).get("files")
+                            if isinstance(payload.get("terminal_payload"), dict)
+                            else []
+                        )
+                    )
+                )
+                return
             return
 
         try:
             async with _PERSISTENT_TURN_LOCK:
-                client = await self._persistent_client(
-                    command=command,
-                    cwd=cwd,
-                    log_path=log_path,
-                )
-                client.reset_turn_state()
-                client.set_event_callback(_codex_event_callback)
-                thread_id, loaded_existing = await client.open_thread(
-                    existing_thread_id=existing_thread_id
-                )
+                loaded_existing = False
                 turn_instruction = instruction
-                if existing_thread_id and not loaded_existing and new_thread_instruction:
-                    turn_instruction = new_thread_instruction
-                turn_id = await client.start_turn(
-                    thread_id=thread_id,
-                    instruction=turn_instruction,
+                open_existing_thread_id = existing_thread_id
+                resume_setup_timeouts = 0
+                fresh_setup_timeouts = 0
+                while True:
+                    client = await self._persistent_client(
+                        command=command,
+                        cwd=cwd,
+                        log_path=log_path,
+                    )
+                    client.reset_turn_state()
+                    client.set_event_callback(_codex_event_callback)
+                    try:
+                        thread_id, loaded_existing = await client.open_thread(
+                            existing_thread_id=open_existing_thread_id
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Codex app-server thread open timed out; recycling client "
+                            "before retry. attempt=%s thread_id=%s",
+                            resume_setup_timeouts + fresh_setup_timeouts + 1,
+                            open_existing_thread_id or thread_id,
+                        )
+                        await close_persistent_codex_kernel_client()
+                        if open_existing_thread_id:
+                            resume_setup_timeouts += 1
+                            logger.warning(
+                                "Codex existing thread resume timed out; retrying "
+                                "same thread before failing. thread_id=%s",
+                                open_existing_thread_id,
+                            )
+                            if resume_setup_timeouts >= 2:
+                                raise
+                            continue
+                        fresh_setup_timeouts += 1
+                        if fresh_setup_timeouts >= 2:
+                            raise
+                        continue
+                    except JsonRpcError:
+                        await close_persistent_codex_kernel_client()
+                        raise
+
+                    if open_existing_thread_id and loaded_existing:
+                        turn_instruction = instruction
+                    else:
+                        turn_instruction = new_thread_instruction or instruction
+                    if (
+                        open_existing_thread_id
+                        and not loaded_existing
+                        and new_thread_instruction
+                    ):
+                        turn_instruction = new_thread_instruction
+                    turn_started_ts = time.time()
+                    turn_input_items = _codex_turn_input_items(
+                        instruction=turn_instruction,
+                        message_history=list(message_history or []),
+                        thread_key=thread_key or thread_id or user_id,
+                    )
+                    try:
+                        start_kwargs: dict[str, Any] = {
+                            "thread_id": thread_id,
+                            "instruction": turn_instruction,
+                        }
+                        if turn_input_items:
+                            start_kwargs["input_items"] = turn_input_items
+                        turn_id = await client.start_turn(**start_kwargs)
+                        break
+                    except asyncio.TimeoutError:
+                        recovered_turn_id = await _wait_for_codex_session_started_turn(
+                            thread_id=thread_id,
+                            since_ts=turn_started_ts,
+                        )
+                        if recovered_turn_id:
+                            turn_id = recovered_turn_id
+                            logger.warning(
+                                "Codex turn/start response timed out, but task_started "
+                                "was observed; continuing without retry. thread_id=%s "
+                                "turn_id=%s",
+                                thread_id,
+                                turn_id,
+                            )
+                            break
+                        logger.warning(
+                            "Codex app-server turn/start timed out before task_started; "
+                            "recycling client before retry. attempt=%s thread_id=%s",
+                            resume_setup_timeouts + fresh_setup_timeouts + 1,
+                            open_existing_thread_id or thread_id,
+                        )
+                        await close_persistent_codex_kernel_client()
+                        if open_existing_thread_id:
+                            resume_setup_timeouts += 1
+                            logger.warning(
+                                "Codex existing thread did not start a new turn; retrying "
+                                "same thread before failing. thread_id=%s",
+                                open_existing_thread_id,
+                            )
+                            if resume_setup_timeouts >= 2:
+                                raise
+                            continue
+                        fresh_setup_timeouts += 1
+                        if fresh_setup_timeouts >= 2:
+                            raise
+                    except JsonRpcError:
+                        await close_persistent_codex_kernel_client()
+                        raise
+                session_completion = asyncio.get_running_loop().create_future()
+                session_monitor_done = asyncio.Event()
+                session_monitor_task = asyncio.create_task(
+                    _monitor_codex_session_images(session_monitor_done)
                 )
                 active = ActiveCodexTurn(
                     user_id=user_id,
@@ -826,13 +1340,55 @@ class CodexKernelProvider:
                     result={"thread_id": thread_id, "turn_id": turn_id},
                     kernel_status="running",
                 )
-                turn = await client.wait_for_turn_completed(turn_id=turn_id)
+                wait_task = asyncio.create_task(
+                    client.wait_for_turn_completed(turn_id=turn_id)
+                )
+                try:
+                    completed_from_session = False
+                    done_tasks, pending_tasks = await asyncio.wait(
+                        {wait_task, session_completion},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if session_completion in done_tasks and session_completion.done():
+                        completed_from_session = True
+                        completion = session_completion.result()
+                        turn = {
+                            "id": _safe_text(
+                                completion.get("turn_id")
+                                or completion.get("turnId")
+                                or turn_id,
+                                160,
+                            ),
+                            "status": "completed",
+                            "source": "codex_session_task_complete",
+                            "last_agent_message": completion.get("last_agent_message"),
+                        }
+                        if not wait_task.done():
+                            wait_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError, Exception):
+                                await wait_task
+                    else:
+                        turn = await wait_task
+                    for pending_task in pending_tasks:
+                        pending_task.cancel()
+                finally:
+                    session_monitor_done.set()
+                    with contextlib.suppress(Exception):
+                        await session_monitor_task
                 result = client.build_result(
                     thread_id=thread_id,
                     turn_id=turn_id,
                     turn=turn,
                     loaded_existing_thread=loaded_existing,
                 )
+                result["files"] = merge_file_rows(
+                    normalize_file_rows(result.get("files")),
+                    _codex_generated_image_rows(
+                        thread_id=thread_id,
+                        since_ts=turn_started_ts,
+                    ),
+                )
+                await _emit_result_files(result["files"])
             _append_app_server_log(
                 log_path=log_path,
                 command=command,
@@ -866,11 +1422,11 @@ class CodexKernelProvider:
                 "message": "Codex kernel turn timed out.",
                 "command": _command_to_text(command),
                 "cwd": cwd,
-                "stdout": client._assistant_stdout() if client is not None else "",
+                "stdout": _client_stdout(client),
                 "stderr": _tail(client.stderr_text) if client is not None else "",
                 "summary": _tail(
                     (
-                        client._assistant_stdout() or client.stderr_text
+                        _client_stdout(client) or client.stderr_text
                     )
                     if client is not None
                     else ""
@@ -886,7 +1442,7 @@ class CodexKernelProvider:
                 "message": exc.message,
                 "command": _command_to_text(command),
                 "cwd": cwd,
-                "stdout": client._assistant_stdout() if client is not None else "",
+                "stdout": _client_stdout(client),
                 "stderr": _tail(client.stderr_text) if client is not None else "",
                 "summary": _tail(exc.message),
                 "thread_id": thread_id,
@@ -900,7 +1456,7 @@ class CodexKernelProvider:
                 "message": str(exc),
                 "command": _command_to_text(command),
                 "cwd": cwd,
-                "stdout": client._assistant_stdout() if client is not None else "",
+                "stdout": _client_stdout(client),
                 "stderr": _tail(client.stderr_text) if client is not None else "",
                 "summary": _tail(str(exc)),
                 "thread_id": thread_id,
@@ -925,6 +1481,7 @@ class CodexKernelProvider:
             tuple(command),
             cwd,
             max(30, int(IKAROS_CODEX_TIMEOUT_SEC or 1800)),
+            max(5, int(IKAROS_CODEX_REQUEST_TIMEOUT_SEC or 45)),
             log_path,
             IKAROS_CODEX_MODEL,
             IKAROS_CODEX_EFFORT,
@@ -946,6 +1503,10 @@ class CodexKernelProvider:
                 cwd=cwd,
                 env=_subprocess_env(),
                 timeout_sec=max(30, int(IKAROS_CODEX_TIMEOUT_SEC or 1800)),
+                request_timeout_sec=max(
+                    5,
+                    int(IKAROS_CODEX_REQUEST_TIMEOUT_SEC or 45),
+                ),
                 log_path=log_path,
                 model=IKAROS_CODEX_MODEL,
                 effort=IKAROS_CODEX_EFFORT,
@@ -966,6 +1527,12 @@ class CodexKernelProvider:
 
     @staticmethod
     def _output_text(result: Dict[str, Any]) -> str:
+        if normalize_file_rows(result.get("files")) and not (
+            _safe_text(result.get("stdout"))
+            or _safe_text(result.get("message"))
+            or _safe_text(result.get("summary"))
+        ):
+            return ""
         text = (
             _safe_text(result.get("stdout"))
             or _safe_text(result.get("summary"))
@@ -998,10 +1565,11 @@ class CodexKernelProvider:
             "kernel_updated_at": _now_iso(),
         }
         if task_inbox_id:
+            task_status = "waiting_user" if kernel_status == "waiting_user" else "running"
             with contextlib.suppress(Exception):
                 await task_inbox.update_status(
                     task_inbox_id,
-                    "running",
+                    task_status,
                     event="codex_kernel_metadata",
                     detail=kernel_status,
                     metadata=metadata,
@@ -1023,7 +1591,7 @@ class CodexKernelProvider:
                 with contextlib.suppress(Exception):
                     await task_inbox.update_status(
                         task_inbox_id,
-                        "running",
+                        task_status,
                         event="codex_kernel_command_output",
                         detail=f"{_safe_text(item_id, 40)}: {_safe_text(text, 160)}",
                     )
@@ -1119,7 +1687,7 @@ class CodexKernelProvider:
         if task_inbox_id:
             await task_inbox.update_status(
                 task_inbox_id,
-                "running",
+                "waiting_user",
                 event="codex_kernel_waiting_user",
                 detail=result_summary[:180],
                 metadata={

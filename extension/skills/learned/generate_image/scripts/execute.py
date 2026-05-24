@@ -28,6 +28,7 @@ prepare_default_env(REPO_ROOT)
 
 from core.config import get_client_for_model
 from core.model_config import (
+    get_image_generation_model,
     get_model_id_for_api,
     resolve_models_config_path,
     select_model_for_role,
@@ -224,7 +225,7 @@ async def execute(
         }
 
     aspect_ratio = _normalize_aspect_ratio(params.get("aspect_ratio"))
-    model_key = select_model_for_role("image_generation")
+    model_key = get_image_generation_model() or select_model_for_role("image_generation")
     if not model_key:
         return {
             "success": False,

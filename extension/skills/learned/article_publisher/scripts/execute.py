@@ -33,18 +33,27 @@ from core.skill_cli import (
     prepare_default_env,
     run_execute_cli,
 )
+from core.config import get_client_for_model
+from core.model_config import select_model_for_role
 from core.app_paths import data_dir
+from services.openai_adapter import generate_text
+from services.web_summary_service import fetch_webpage_content
 
 prepare_default_env(REPO_ROOT)
 
-from extension.skills.builtin.credential_manager.scripts.store import get_credential_entry
+from extension.skills.builtin.credential_manager.scripts.store import (
+    get_credential,
+    get_credential_entry,
+)
 
+from ap_stages import StageResult as _StageResult
 from ap_stages.illustrate import illustrate_stage
 from ap_stages.publish import publish_stage
 from ap_stages.search import search_stage
 from ap_stages.write import write_stage
 from ap_utils import (
     as_bool,
+    author_watermark,
     build_article_preview,
     build_news_rejection_message,
     derive_topic_requirements,
@@ -66,6 +75,125 @@ WECHAT_ACCOUNT_NAME_RE = re.compile(
     r"(?:发布到|发到|投递到|同步到)(?P<name>[\w\-\u4e00-\u9fff]{2,32})公众号"
 )
 GENERIC_WECHAT_ACCOUNT_NAMES = {"微信", "公众", "官方", "这个", "该", "默认", "目标"}
+
+
+class StageResult(_StageResult):
+    @staticmethod
+    def success(
+        data: dict[str, Any] | None = None,
+        output_path: str | None = None,
+        files: dict[str, bytes | str] | None = None,
+    ) -> _StageResult:
+        return _StageResult.success(data, output_path=output_path, files=files)
+
+    @staticmethod
+    def fail(
+        error: str,
+        *,
+        failure_mode: str = "recoverable",
+    ) -> _StageResult:
+        return _StageResult.fail(error, failure_mode=failure_mode)
+
+
+def get_current_model() -> str:
+    return str(select_model_for_role("primary") or "")
+
+
+def _author_watermark(author: str) -> str:
+    return author_watermark(author)
+
+
+def _resolve_article_author(
+    account: dict[str, Any] | None,
+    *,
+    fallback_author: str = "",
+) -> str:
+    return resolve_article_author(account, fallback_author=fallback_author)
+
+
+async def _prepare_wechat_publisher(ctx: UnifiedContext):
+    _ = ctx
+    return None, ""
+
+
+async def _prepare_xiaohongshu_opencli() -> str:
+    return ""
+
+
+async def _generate_images(
+    ctx: UnifiedContext,
+    article_data: dict[str, Any],
+    *,
+    author: str,
+):
+    """Legacy helper kept for tests and direct script consumers."""
+    prompt = str(article_data.get("cover_prompt") or "").strip()
+    if not prompt:
+        sections = list(article_data.get("sections") or [])
+        for section in sections:
+            prompt = str((section or {}).get("image_prompt") or "").strip()
+            if prompt:
+                break
+    if not prompt:
+        return None, {}, {}
+
+    full_prompt = (
+        f"{prompt}\n\n"
+        f"Use exactly one subtle author watermark: {_author_watermark(author)}. "
+        "no extra watermark, no extra signature, no logo."
+    )
+    result = await ctx.run_skill(
+        "generate_image",
+        {"prompt": full_prompt, "aspect_ratio": "16:9"},
+    )
+    files = dict((result or {}).get("files") or {}) if isinstance(result, dict) else {}
+    first = next((value for value in files.values() if isinstance(value, bytes)), None)
+    return first, {}, files
+
+
+async def run_single_stage(
+    stage: str,
+    source: str,
+    *,
+    ctx: UnifiedContext,
+    output_dir: str = "",
+    topic: str = "",
+):
+    safe_stage = str(stage or "").strip().lower()
+    safe_topic = str(topic or "").strip() or Path(str(source or "")).stem
+    if safe_stage == "write":
+        try:
+            return await write_stage(
+                source,
+                output_dir=output_dir,
+                topic=safe_topic,
+                ctx=ctx,
+            )
+        except TypeError:
+            return await write_stage(
+                topic=safe_topic,
+                source_path=source,
+                output_dir=output_dir,
+            )
+    return StageResult.fail(f"未知阶段: {stage}", failure_mode="fatal")
+
+
+def _sync_stage_compat_hooks() -> None:
+    """Keep legacy execute.py monkeypatch hooks working after stage split."""
+    try:
+        import ap_stages.search as search_module
+
+        search_module.fetch_webpage_content = fetch_webpage_content
+    except Exception:
+        pass
+    try:
+        import ap_stages.write as write_module
+
+        write_module.generate_text = generate_text
+        write_module.get_client_for_model = get_client_for_model
+        write_module.select_model_for_role = lambda _role: get_current_model()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +282,10 @@ async def _resolve_wechat_account(
         "wechat_official_account",
         selector or None,
     )
+    if not entry and not selector:
+        legacy_account = await get_credential(user_id, "wechat_official_account")
+        if legacy_account:
+            return dict(legacy_account), selector
     if not entry:
         return None, selector
 
@@ -451,6 +583,7 @@ async def _run_single_stage(
 
 async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
     _ = runtime
+    _sync_stage_compat_hooks()
     material_paths = resolve_local_material_paths(params)
     topic = resolve_topic(ctx, params, fallback_paths=material_paths)
     publish = as_bool(params.get("publish"), default=False)
@@ -489,6 +622,30 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
             "ui": {},
         }
         return
+
+    if publish and "wechat" in publish_channels:
+        yield "🔐 正在检查公众号发布权限..."
+        _publisher, preflight_error = await _prepare_wechat_publisher(ctx)
+        if str(preflight_error or "").strip():
+            yield {
+                "ok": False,
+                "failure_mode": "fatal",
+                "text": str(preflight_error),
+                "ui": {},
+            }
+            return
+
+    if publish and "xiaohongshu" in publish_channels:
+        yield "🔐 正在检查 opencli 小红书发布能力..."
+        preflight_error = await _prepare_xiaohongshu_opencli()
+        if str(preflight_error or "").strip():
+            yield {
+                "ok": False,
+                "failure_mode": "fatal",
+                "text": str(preflight_error),
+                "ui": {},
+            }
+            return
 
     current_date = await _resolve_current_date(ctx, topic) if topic else ""
     output_dir = _resolve_article_output_dir(params)

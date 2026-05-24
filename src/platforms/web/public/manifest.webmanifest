@@ -4,8 +4,8 @@
     "description": "A PWA application for Ikaros",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#ffffff",
-    "theme_color": "#18181b",
+    "background_color": "#fcfcfd",
+    "theme_color": "#0588f0",
     "icons": [
         {
             "src": "/logo.png",

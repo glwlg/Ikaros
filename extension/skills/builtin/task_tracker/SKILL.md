@@ -94,3 +94,9 @@ Ikaros 用这个 direct tool 显式维护未完成任务状态。它不是场景
 - 显式关闭任务（设为 `completed` 或 `failed` 状态）
 - 记录 `done_when`、`next_review_after` 和外部引用
 - 在 heartbeat 自动继续处理前，先给用户发一条简短通知
+
+CLI:
+
+```bash
+python scripts/execute.py '{"action":"list_open"}'
+```

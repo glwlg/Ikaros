@@ -97,6 +97,46 @@ async def test_runtime_tool_assembler_keeps_subagent_surface_without_ikaros_cont
 
 
 @pytest.mark.asyncio
+async def test_runtime_tool_assembler_filters_direct_skill_tools_by_scope(monkeypatch):
+    exports = [
+        {
+            "name": "teslamate_query",
+            "description": "query car",
+            "parameters": {"type": "object", "properties": {}},
+            "skill_name": "teslamate",
+            "entrypoint": "scripts/execute.py",
+            "allowed_roles": ["ikaros"],
+        },
+        {
+            "name": "web_search_query",
+            "description": "search web",
+            "parameters": {"type": "object", "properties": {}},
+            "skill_name": "web_search",
+            "entrypoint": "scripts/execute.py",
+            "allowed_roles": ["ikaros"],
+        },
+    ]
+    monkeypatch.setattr(runtime_tools_module.skill_loader, "get_tool_exports", lambda: exports)
+    monkeypatch.setattr(
+        runtime_tools_module.skill_loader,
+        "get_tool_export",
+        lambda name: next((item for item in exports if item["name"] == name), None),
+    )
+
+    assembler = RuntimeToolAssembler(
+        runtime_user_id="u-1",
+        platform_name="telegram",
+        runtime_tool_allowed=lambda **_kwargs: True,
+        allowed_skill_names={"teslamate"},
+    )
+
+    names = {tool["name"] for tool in await assembler.assemble()}
+
+    assert "teslamate_query" in names
+    assert "web_search_query" not in names
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_accepts_ikaros_runtime_only_tools_after_skill_load(
     monkeypatch,
 ):

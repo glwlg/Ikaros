@@ -1,3 +1,6 @@
+import asyncio
+import base64
+import json
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -103,14 +106,18 @@ def test_kernel_prompt_inherits_ikaros_base_identity(monkeypatch):
 
     assert "【SOUL】" in text
     assert "persona: ikaros" in text
-    assert text.index("【SOUL】") < text.index("【Codex kernel execution context】")
+    assert text.index("【SOUL】") < text.index("【Ikaros runtime】")
+    assert "【Codex kernel execution context】" not in text
     assert captured["runtime_user_id"] == "runtime-u"
     assert captured["platform"] == "telegram"
     assert captured["mode"] == "chat"
     assert captured["allowed_skill_names"] == []
 
 
-def test_kernel_prompt_includes_full_codex_skill_catalog(monkeypatch, tmp_path):
+def test_kernel_prompt_includes_filtered_ikaros_only_skill_catalog(
+    monkeypatch,
+    tmp_path,
+):
     skill_dir = tmp_path / "teslamate"
     skill_dir.mkdir()
     skill_md = skill_dir / "SKILL.md"
@@ -143,7 +150,24 @@ def test_kernel_prompt_includes_full_codex_skill_catalog(monkeypatch, tmp_path):
                         "prompt_hint": "用户询问开车去了哪里时调用。",
                     }
                 ],
-            }
+            },
+            "web_search": {
+                "name": "web_search",
+                "description": "聚合网络搜索",
+                "triggers": ["搜索"],
+                "allowed_roles": ["ikaros"],
+                "skill_md_path": str(tmp_path / "web_search" / "SKILL.md"),
+                "skill_dir": str(tmp_path / "web_search"),
+                "entrypoint": "scripts/execute.py",
+            },
+            "generate_image": {
+                "name": "generate_image",
+                "description": "文生图",
+                "allowed_roles": ["ikaros"],
+                "skill_md_path": str(tmp_path / "generate_image" / "SKILL.md"),
+                "skill_dir": str(tmp_path / "generate_image"),
+                "entrypoint": "scripts/execute.py",
+            },
         },
     )
     monkeypatch.setattr(
@@ -163,14 +187,192 @@ def test_kernel_prompt_includes_full_codex_skill_catalog(monkeypatch, tmp_path):
 
     assert captured["mode"] == "chat"
     assert captured["allowed_skill_names"] == []
-    assert "【Codex skill catalog】" in text
-    assert "`teslamate` (本轮路由提示可能相关)" in text
-    assert "triggers: 开车, 去了哪里, 行驶记录" in text
-    assert f"SKILL.md: `{skill_md}`" in text
-    assert f"entrypoint: `{skill_dir / 'scripts/execute.py'}`" in text
-    assert "teslamate_query" in text
-    assert "不要调用原生 Ikaros 的 `load_skill`" in text
+    assert "【Ikaros-only local skills】" in text
+    assert "- `teslamate`: TeslaMate 只读车况助手" in text
+    assert "`web_search`" not in text
+    assert "`generate_image`" not in text
+    assert "本轮路由提示可能相关" not in text
+    assert "triggers:" not in text
+    assert "SKILL.md:" not in text
+    assert "entrypoint:" not in text
+    assert "exports:" not in text
+    assert "prefer native Codex capabilities" in text
     assert "load_skill(skill_name" not in text
+
+
+def test_kernel_prompt_omits_skill_catalog_without_routed_candidates(monkeypatch):
+    monkeypatch.setattr(
+        codex_kernel_module.prompt_composer,
+        "compose_base",
+        lambda **_kwargs: "【SOUL】\n# Test SOUL",
+    )
+    monkeypatch.setattr(
+        "extension.skills.registry.skill_registry.get_enabled_skill_index",
+        lambda: {
+            "teslamate": {
+                "name": "teslamate",
+                "description": "TeslaMate 只读车况助手",
+                "allowed_roles": ["ikaros"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "core.tool_access_store.tool_access_store.is_tool_allowed",
+        lambda **_kwargs: (True, {}),
+    )
+
+    text = codex_kernel_module._kernel_prompt(
+        user_request="你好",
+        message_history=[],
+        request_mode="chat",
+        task_inbox_id="",
+        runtime_user_id="runtime-u",
+        platform="telegram",
+        candidate_skill_names=[],
+    )
+
+    assert "【Ikaros-only local skills】" not in text
+    assert "`teslamate`" not in text
+
+
+def test_codex_turn_input_items_materializes_inline_image(tmp_path):
+    png_bytes = b"\x89PNG\r\n\x1a\ninline"
+    items = codex_kernel_module._codex_turn_input_items(
+        instruction="看一下这张图",
+        message_history=[
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "看一下这张图"},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": base64.b64encode(png_bytes).decode("ascii"),
+                        }
+                    },
+                ],
+            }
+        ],
+        thread_key="thread-inline",
+    )
+
+    assert items[0]["type"] == "text"
+    assert "Attached local files" in items[0]["text"]
+    assert items[1]["type"] == "localImage"
+    image_path = items[1]["path"]
+    assert image_path.endswith(".png")
+    assert codex_kernel_module.Path(image_path).read_bytes() == png_bytes
+
+
+def test_codex_generated_image_rows_reads_current_thread_directory(tmp_path):
+    thread_dir = tmp_path / "data" / "codex" / "generated_images" / "thread-1"
+    thread_dir.mkdir(parents=True)
+    image_path = thread_dir / "ig_demo.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    rows = codex_kernel_module._codex_generated_image_rows(
+        thread_id="thread-1",
+        since_ts=0,
+    )
+
+    assert rows == [
+        {
+            "kind": "photo",
+            "path": str(image_path.resolve()),
+            "filename": "ig_demo.png",
+            "caption": "",
+        }
+    ]
+
+
+def test_codex_session_image_rows_extracts_image_generation_event(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        codex_kernel_module.Path,
+        "home",
+        classmethod(lambda _cls: tmp_path),
+    )
+    png_bytes = b"\x89PNG\r\n\x1a\nsession"
+    record = {
+        "timestamp": "2026-05-23T10:19:28.168Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "image_generation_end",
+            "call_id": "ig_session",
+            "result": base64.b64encode(png_bytes).decode("ascii"),
+        },
+    }
+
+    rows = codex_kernel_module._codex_session_image_rows_from_record(
+        record,
+        thread_id="thread-session",
+        since_ts=0,
+    )
+
+    image_path = (
+        tmp_path
+        / ".codex"
+        / "generated_images"
+        / "thread-session"
+        / "ig_session.png"
+    )
+    assert image_path.read_bytes() == png_bytes
+    assert rows == [
+        {
+            "kind": "photo",
+            "path": str(image_path.resolve()),
+            "filename": "ig_session.png",
+            "caption": "",
+        }
+    ]
+
+
+def test_codex_session_completion_from_record_detects_task_complete():
+    record = {
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "type": "event_msg",
+        "payload": {
+            "type": "task_complete",
+            "turn_id": "turn-session",
+            "last_agent_message": "完成了。",
+        },
+    }
+
+    completion = codex_kernel_module._codex_session_completion_from_record(
+        record,
+        since_ts=0,
+    )
+
+    assert completion == record["payload"]
+
+
+def test_kernel_prompt_deduplicates_current_user_request_from_history(monkeypatch):
+    monkeypatch.setattr(
+        codex_kernel_module.prompt_composer,
+        "compose_base",
+        lambda **_kwargs: "【SOUL】\n# Test SOUL",
+    )
+    monkeypatch.setattr(codex_kernel_module, "_codex_skill_catalog", lambda **_kwargs: "")
+
+    text = codex_kernel_module._kernel_prompt(
+        user_request="今天天气怎么样",
+        message_history=[
+            {
+                "role": "system",
+                "parts": [{"text": "【会话记忆种子】\n- 居住地：江苏无锡"}],
+            },
+            {"role": "user", "parts": [{"text": "今天天气怎么样"}]},
+        ],
+        request_mode="chat",
+        task_inbox_id="",
+        runtime_user_id="runtime-u",
+        platform="telegram",
+    )
+
+    assert text.count("今天天气怎么样") == 1
+    assert "system: 【会话记忆种子】" in text
 
 
 def test_existing_thread_instruction_is_only_latest_user_message():
@@ -261,7 +463,8 @@ async def test_orchestrator_can_use_codex_kernel(monkeypatch):
 
     assert chunks == ["Codex 完成了任务。"]
     rows = await task_inbox.list_recent(user_id="u-codex-done", limit=1)
-    assert rows == []
+    assert len(rows) == 1
+    assert rows[0].status == "completed"
 
 
 @pytest.mark.asyncio
@@ -406,6 +609,8 @@ async def test_codex_kernel_user_input_request_sets_waiting_user(monkeypatch):
     assert active["status"] == "waiting_user"
     assert active["kernel_provider"] == "codex"
     assert active["codex_thread_id"] == "thread-wait"
+    rows = await task_inbox.list_recent(user_id="u-codex-wait", limit=1)
+    assert rows[0].status == "waiting_user"
 
 
 @pytest.mark.asyncio
@@ -588,6 +793,460 @@ async def test_codex_kernel_keeps_app_server_client_resident(monkeypatch):
 
     await codex_kernel_module.close_persistent_codex_kernel_client()
     assert instances[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_completes_from_session_task_complete(monkeypatch, tmp_path):
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+    session_file = tmp_path / "rollout-thread-session.jsonl"
+    session_file.write_text(
+        json.dumps(
+            {
+                "timestamp": datetime.now().astimezone().isoformat(),
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn-session",
+                    "last_agent_message": None,
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    instances = []
+
+    class FakeCodexClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            self.event_callback = None
+            self.stderr_text = ""
+            self.wait_cancelled = False
+            instances.append(self)
+
+        def is_running(self):
+            return not self.closed
+
+        def reset_turn_state(self):
+            return None
+
+        def set_event_callback(self, callback):
+            self.event_callback = callback
+
+        async def start(self):
+            return None
+
+        async def initialize(self):
+            return {}
+
+        async def open_thread(self, *, existing_thread_id=""):
+            return existing_thread_id or "thread-session", bool(existing_thread_id)
+
+        async def start_turn(self, *, thread_id, instruction):
+            del thread_id, instruction
+            return "turn-session"
+
+        async def wait_for_turn_completed(self, *, turn_id):
+            del turn_id
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                self.wait_cancelled = True
+                raise
+
+        def build_result(
+            self,
+            *,
+            thread_id,
+            turn_id,
+            turn,
+            loaded_existing_thread,
+        ):
+            return {
+                "ok": True,
+                "stdout": "完成",
+                "summary": "完成",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "turn": dict(turn),
+                "transport": "app-server",
+                "stop_reason": turn.get("status"),
+                "loaded_existing_session": loaded_existing_thread,
+            }
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(codex_kernel_module, "CodexAppServerClient", FakeCodexClient)
+    monkeypatch.setattr(
+        codex_kernel_module,
+        "_codex_session_files_for_thread",
+        lambda _thread_id: [session_file],
+    )
+
+    result = await codex_kernel_provider._run_turn(
+        user_id="u-session-complete",
+        task_id="task-session",
+        task_inbox_id="",
+        instruction="画图",
+        platform="telegram",
+    )
+
+    assert result["ok"] is True
+    assert result["turn"]["source"] == "codex_session_task_complete"
+    assert "codex_client_recycled" not in result
+    assert instances[0].closed is False
+
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_keeps_client_after_file_result(monkeypatch, tmp_path):
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+    image_path = tmp_path / "codex-image.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    instances = []
+
+    class FakeCodexClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            self.event_callback = None
+            self.stderr_text = ""
+            instances.append(self)
+
+        def is_running(self):
+            return not self.closed
+
+        def reset_turn_state(self):
+            return None
+
+        def set_event_callback(self, callback):
+            self.event_callback = callback
+
+        async def start(self):
+            return None
+
+        async def initialize(self):
+            return {}
+
+        async def open_thread(self, *, existing_thread_id=""):
+            return existing_thread_id or "thread-files", bool(existing_thread_id)
+
+        async def start_turn(self, *, thread_id, instruction):
+            del thread_id, instruction
+            return "turn-files"
+
+        async def wait_for_turn_completed(self, *, turn_id):
+            return {"id": turn_id, "status": "completed"}
+
+        def build_result(
+            self,
+            *,
+            thread_id,
+            turn_id,
+            turn,
+            loaded_existing_thread,
+        ):
+            return {
+                "ok": True,
+                "stdout": "",
+                "summary": "",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "turn": dict(turn),
+                "transport": "app-server",
+                "stop_reason": "completed",
+                "loaded_existing_session": loaded_existing_thread,
+                "files": [
+                    {
+                        "kind": "photo",
+                        "path": str(image_path),
+                        "filename": "codex-image.png",
+                    }
+                ],
+            }
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(codex_kernel_module, "CodexAppServerClient", FakeCodexClient)
+
+    result = await codex_kernel_provider._run_turn(
+        user_id="u-files",
+        task_id="task-files",
+        task_inbox_id="",
+        instruction="画图",
+        platform="telegram",
+    )
+
+    assert "codex_client_recycled" not in result
+    assert instances[0].closed is False
+
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_retries_setup_after_request_timeout(monkeypatch):
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+    instances = []
+
+    class FakeCodexClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            self.event_callback = None
+            self.stderr_text = ""
+            instances.append(self)
+
+        def is_running(self):
+            return not self.closed
+
+        def reset_turn_state(self):
+            return None
+
+        def set_event_callback(self, callback):
+            self.event_callback = callback
+
+        async def start(self):
+            return None
+
+        async def initialize(self):
+            return {}
+
+        async def open_thread(self, *, existing_thread_id=""):
+            if len(instances) == 1:
+                raise asyncio.TimeoutError()
+            return existing_thread_id or "thread-retry", bool(existing_thread_id)
+
+        async def start_turn(self, *, thread_id, instruction):
+            del thread_id, instruction
+            return "turn-retry"
+
+        async def wait_for_turn_completed(self, *, turn_id):
+            return {"id": turn_id, "status": "completed"}
+
+        def build_result(
+            self,
+            *,
+            thread_id,
+            turn_id,
+            turn,
+            loaded_existing_thread,
+        ):
+            return {
+                "ok": True,
+                "stdout": "完成",
+                "summary": "完成",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "turn": dict(turn),
+                "transport": "app-server",
+                "stop_reason": "completed",
+                "loaded_existing_session": loaded_existing_thread,
+            }
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(codex_kernel_module, "CodexAppServerClient", FakeCodexClient)
+
+    result = await codex_kernel_provider._run_turn(
+        user_id="u-retry",
+        task_id="task-retry",
+        task_inbox_id="",
+        instruction="继续",
+        platform="telegram",
+    )
+
+    assert result["ok"] is True
+    assert result["thread_id"] == "thread-retry"
+    assert len(instances) == 2
+    assert instances[0].closed is True
+    assert instances[1].closed is False
+
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_does_not_rotate_thread_after_resume_timeout(monkeypatch):
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+    instances = []
+    turn_inputs = []
+
+    class FakeCodexClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            self.event_callback = None
+            self.stderr_text = ""
+            instances.append(self)
+
+        def is_running(self):
+            return not self.closed
+
+        def reset_turn_state(self):
+            return None
+
+        def set_event_callback(self, callback):
+            self.event_callback = callback
+
+        async def start(self):
+            return None
+
+        async def initialize(self):
+            return {}
+
+        async def open_thread(self, *, existing_thread_id=""):
+            if existing_thread_id == "thread-stuck":
+                raise asyncio.TimeoutError()
+            return existing_thread_id or "thread-fresh", bool(existing_thread_id)
+
+        async def start_turn(self, *, thread_id, instruction):
+            turn_inputs.append({"thread_id": thread_id, "instruction": instruction})
+            return "turn-fresh"
+
+        async def wait_for_turn_completed(self, *, turn_id):
+            return {"id": turn_id, "status": "completed"}
+
+        def build_result(
+            self,
+            *,
+            thread_id,
+            turn_id,
+            turn,
+            loaded_existing_thread,
+        ):
+            return {
+                "ok": True,
+                "stdout": "换新 thread 后完成",
+                "summary": "换新 thread 后完成",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "turn": dict(turn),
+                "transport": "app-server",
+                "stop_reason": "completed",
+                "loaded_existing_session": loaded_existing_thread,
+            }
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(codex_kernel_module, "CodexAppServerClient", FakeCodexClient)
+
+    result = await codex_kernel_provider._run_turn(
+        user_id="u-rotate",
+        task_id="task-rotate",
+        task_inbox_id="",
+        instruction="最新用户消息",
+        platform="telegram",
+        existing_thread_id="thread-stuck",
+        new_thread_instruction="完整新 thread 上下文 + 最新用户消息",
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "timeout"
+    assert result["thread_id"] == ""
+    assert result["turn_id"] == ""
+    assert len(instances) == 2
+    assert instances[0].closed is True
+    assert turn_inputs == []
+
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_continues_when_start_turn_response_times_out_after_task_started(
+    monkeypatch,
+):
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+    instances = []
+    waited_turn_ids = []
+
+    class FakeCodexClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            self.event_callback = None
+            self.stderr_text = ""
+            instances.append(self)
+
+        def is_running(self):
+            return not self.closed
+
+        def reset_turn_state(self):
+            return None
+
+        def set_event_callback(self, callback):
+            self.event_callback = callback
+
+        async def start(self):
+            return None
+
+        async def initialize(self):
+            return {}
+
+        async def open_thread(self, *, existing_thread_id=""):
+            return existing_thread_id or "thread-live", bool(existing_thread_id)
+
+        async def start_turn(self, *, thread_id, instruction):
+            del thread_id, instruction
+            raise asyncio.TimeoutError()
+
+        async def wait_for_turn_completed(self, *, turn_id):
+            waited_turn_ids.append(turn_id)
+            return {"id": turn_id, "status": "completed"}
+
+        def build_result(
+            self,
+            *,
+            thread_id,
+            turn_id,
+            turn,
+            loaded_existing_thread,
+        ):
+            return {
+                "ok": True,
+                "stdout": "已完成",
+                "summary": "已完成",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "turn": dict(turn),
+                "transport": "app-server",
+                "stop_reason": "completed",
+                "loaded_existing_session": loaded_existing_thread,
+            }
+
+        async def close(self):
+            self.closed = True
+
+    async def fake_wait_for_started_turn(**kwargs):
+        assert kwargs["thread_id"] == "thread-live"
+        return "turn-observed"
+
+    monkeypatch.setattr(codex_kernel_module, "CodexAppServerClient", FakeCodexClient)
+    monkeypatch.setattr(
+        codex_kernel_module,
+        "_wait_for_codex_session_started_turn",
+        fake_wait_for_started_turn,
+    )
+
+    result = await codex_kernel_provider._run_turn(
+        user_id="u-start-timeout",
+        task_id="task-start-timeout",
+        task_inbox_id="",
+        instruction="再来一张",
+        platform="telegram",
+        existing_thread_id="thread-live",
+    )
+
+    assert result["ok"] is True
+    assert result["thread_id"] == "thread-live"
+    assert result["turn_id"] == "turn-observed"
+    assert result["loaded_existing_session"] is True
+    assert "codex_thread_rotated" not in result
+    assert waited_turn_ids == ["turn-observed"]
+    assert len(instances) == 1
+    assert instances[0].closed is False
+
+    await codex_kernel_module.close_persistent_codex_kernel_client()
 
 
 @pytest.mark.asyncio

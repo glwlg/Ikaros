@@ -154,6 +154,10 @@ class HeartbeatWorker:
         for user_id in users:
             if task_manager.has_active_task(user_id):
                 continue
+            active_task = await heartbeat_store.get_session_active_task(user_id)
+            active_status = str((active_task or {}).get("status") or "").strip().lower()
+            if active_status in {"running", "waiting_user"}:
+                continue
             if user_id in self._running:
                 continue
             should_run = await heartbeat_store.should_run_heartbeat(user_id)
