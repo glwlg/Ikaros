@@ -150,6 +150,36 @@ def test_channel_runtime_store_strips_session_event_history_on_write(
     assert "last_event" not in state
 
 
+def test_channel_runtime_store_completed_status_clears_active_task(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    channel_runtime_store.set_active_task(
+        {
+            "id": "task-completed",
+            "status": "running",
+            "goal": "complete me",
+        },
+        platform="telegram",
+        platform_user_id="u-completed",
+    )
+    channel_runtime_store.update_active_task(
+        platform="telegram",
+        platform_user_id="u-completed",
+        status="completed",
+    )
+
+    assert (
+        channel_runtime_store.get_active_task(
+            platform="telegram",
+            platform_user_id="u-completed",
+        )
+        is None
+    )
+
+
 def test_channel_runtime_store_expands_tilde_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("DATA_DIR", "~/.ikaros/data")

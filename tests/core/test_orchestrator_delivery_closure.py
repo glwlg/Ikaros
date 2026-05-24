@@ -106,6 +106,8 @@ def _build_event_handler(task_goal: str):
 
 @pytest.fixture(autouse=True)
 def _stub_intent_router(monkeypatch):
+    monkeypatch.setenv("IKAROS_KERNEL", "native")
+
     async def fake_route(**_kwargs):
         return RoutingDecision(
             request_mode="task",

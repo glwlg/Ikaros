@@ -68,8 +68,8 @@ class PTZRequest(BaseModel):
         "zoom_out",
         "stop",
     ]
-    speed: float = Field(default=0.4, ge=0.05, le=1.0)
-    duration_ms: int = Field(default=180, ge=60, le=800)
+    speed: float = Field(default=0.2, ge=0.05, le=1.0)
+    duration_ms: int = Field(default=100, ge=60, le=800)
 
 
 class MediaMTXAuthRequest(BaseModel):

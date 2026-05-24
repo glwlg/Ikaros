@@ -54,7 +54,9 @@ _PATH_EXTENSIONS = tuple(
 _SAVED_FILE_RE = re.compile(r"(?im)^\s*saved_file=(?P<path>.+?)\s*$")
 _TOOL_RESULT_RE = re.compile(r"(?im)^\s*tool_result=(?P<payload>.+?)\s*$")
 _LABELED_PATH_RE = re.compile(
-    r"(?im)^\s*(?:保存路径|文件路径|图片路径|输出路径|附件路径|图片已保存至|save(?:d)?[_ ]file|saved to|output file|file path)\s*[:：=]?\s*`?(?P<path>/[^`\n]+?)`?\s*$"
+    r"(?im)^\s*(?:保存路径|文件路径|图片路径|输出路径|附件路径|图片已保存至|save(?:d)?[_ ]file|saved to|output file|file path)\s*[:：=]?\s*`?(?P<path>(?:/|\.{1,2}/)?[^`\n]+?(?:"
+    + "|".join(re.escape(ext) for ext in _PATH_EXTENSIONS)
+    + r"))`?\s*$"
 )
 _BACKTICK_PATH_RE = re.compile(
     r"`(?P<path>/[^`\n]+?(?:"
@@ -165,6 +167,7 @@ def extract_saved_file_rows(
     *,
     max_size_bytes: int | None = _DEFAULT_MAX_BYTES,
     limit: int = 8,
+    base_dir: str | Path | None = None,
 ) -> list[dict[str, str]]:
     return _extract_file_rows_from_matches(
         text,
@@ -172,6 +175,7 @@ def extract_saved_file_rows(
         allow_any_extension=True,
         max_size_bytes=max_size_bytes,
         limit=limit,
+        base_dir=base_dir,
     )
 
 
@@ -200,6 +204,7 @@ def extract_file_rows_from_text(
     *,
     max_size_bytes: int | None = _DEFAULT_MAX_BYTES,
     limit: int = 8,
+    base_dir: str | Path | None = None,
 ) -> list[dict[str, str]]:
     explicit = _extract_file_rows_from_matches(
         text,
@@ -207,6 +212,7 @@ def extract_file_rows_from_text(
         allow_any_extension=True,
         max_size_bytes=max_size_bytes,
         limit=limit,
+        base_dir=base_dir,
     )
     if len(explicit) >= max(1, int(limit)):
         return explicit[:limit]
@@ -217,6 +223,7 @@ def extract_file_rows_from_text(
         allow_any_extension=False,
         max_size_bytes=max_size_bytes,
         limit=max(1, int(limit)) - len(explicit),
+        base_dir=base_dir,
     )
     return merge_file_rows(explicit, hinted)[: max(1, int(limit))]
 
@@ -226,6 +233,7 @@ def extract_markdown_file_link_rows(
     *,
     max_size_bytes: int | None = _DEFAULT_MAX_BYTES,
     limit: int = 8,
+    base_dir: str | Path | None = None,
 ) -> list[dict[str, str]]:
     return _extract_file_rows_from_matches(
         text,
@@ -233,6 +241,7 @@ def extract_markdown_file_link_rows(
         allow_any_extension=False,
         max_size_bytes=max_size_bytes,
         limit=limit,
+        base_dir=base_dir,
     )
 
 
@@ -269,6 +278,7 @@ def _extract_file_rows_from_matches(
     allow_any_extension: bool,
     max_size_bytes: int | None,
     limit: int,
+    base_dir: str | Path | None = None,
 ) -> list[dict[str, str]]:
     raw = str(text or "")
     if not raw:
@@ -289,6 +299,7 @@ def _extract_file_rows_from_matches(
                 caption=None,
                 max_size_bytes=max_size_bytes,
                 allow_any_extension=allow_any_extension,
+                base_dir=base_dir,
             )
             if row is None:
                 continue
@@ -313,11 +324,15 @@ def _build_file_row(
     caption: str | None,
     max_size_bytes: int | None,
     allow_any_extension: bool = True,
+    base_dir: str | Path | None = None,
 ) -> dict[str, str] | None:
     if not path_text:
         return None
     try:
-        path_obj = Path(path_text).expanduser().resolve()
+        path_obj = Path(path_text).expanduser()
+        if not path_obj.is_absolute() and base_dir is not None:
+            path_obj = Path(base_dir).expanduser() / path_obj
+        path_obj = path_obj.resolve()
     except Exception:
         return None
     if not path_obj.exists() or not path_obj.is_file():

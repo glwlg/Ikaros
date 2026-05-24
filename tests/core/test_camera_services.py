@@ -1,3 +1,4 @@
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -174,6 +175,7 @@ async def test_mediamtx_client_adds_missing_rtsp_path():
 
 
 def test_ptz_velocity_mapping_clamps_speed():
+    assert velocity_for_action("right") == PTZVelocity(pan=0.2)
     assert velocity_for_action("up_left", 2.0) == PTZVelocity(pan=-1.0, tilt=1.0)
     assert velocity_for_action("zoom_out", 0.01) == PTZVelocity(zoom=-0.05)
     with pytest.raises(ValueError):
@@ -233,3 +235,16 @@ def test_ptz_move_stops_after_bounded_duration(monkeypatch):
     assert calls[2][0] == "sleep"
     assert calls[2][1] == pytest.approx(0.12)
     assert calls[3] == ("stop", "profile-1", True, True)
+
+
+def test_camera_view_uses_safe_mobile_ptz_defaults():
+    view_path = (
+        Path(__file__).resolve().parents[2]
+        / "src/platforms/web/src/views/Modules/CameraView.vue"
+    )
+    text = view_path.read_text(encoding="utf-8")
+
+    assert "const ptzSpeed = ref(0.12)" in text
+    assert "const PTZ_MOVE_DURATION_MS = 80" in text
+    assert ".camera-ptz-panel" in text
+    assert "order: 1;" in text

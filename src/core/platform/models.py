@@ -26,6 +26,27 @@ MAX_REPLY_TEXT_CHARS: Final[int] = 3500
 MAX_EDIT_PREVIEW_CHARS: Final[int] = 1800
 
 
+@dataclass(frozen=True)
+class PlatformCapabilities:
+    edit_message: bool = True
+    delete_message: bool = True
+    reply_photo: bool = True
+    reply_video: bool = True
+    reply_audio: bool = True
+    reply_document: bool = True
+    reactions: bool = False
+
+    def supports_reply_kind(self, kind: str) -> bool:
+        normalized = str(kind or "document").strip().lower() or "document"
+        if normalized == "photo":
+            return self.reply_photo
+        if normalized == "video":
+            return self.reply_video
+        if normalized == "audio":
+            return self.reply_audio
+        return self.reply_document
+
+
 @dataclass
 class User:
     """Unified User Model"""
@@ -68,7 +89,6 @@ class UnifiedMessage:
     text: Optional[str] = None
     caption: Optional[str] = None
     file_id: Optional[str] = None  # Platform-specific file ID
-    file_url: Optional[str] = None  # Direct download URL if available
     file_url: Optional[str] = None  # Direct download URL if available
     file_name: Optional[str] = None
     file_size: Optional[int] = None

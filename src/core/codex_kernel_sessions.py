@@ -7,6 +7,7 @@ from threading import Lock
 from typing import Any, Dict
 
 from core.app_paths import data_dir
+from core.atomic_io import atomic_write_text, sync_file_lock
 
 
 def _now_iso() -> str:
@@ -25,6 +26,10 @@ class CodexKernelSessionStore:
     @property
     def path(self) -> Path:
         return (data_dir() / "system" / "codex_kernel_sessions.json").resolve()
+
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_suffix(self.path.suffix + ".lock")
 
     def _default_payload(self) -> Dict[str, Any]:
         return {"version": 1, "sessions": {}}
@@ -46,10 +51,9 @@ class CodexKernelSessionStore:
         return merged
 
     def _write_unlocked(self, payload: Dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        atomic_write_text(
+            self.path,
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
         )
 
     @staticmethod
@@ -110,20 +114,21 @@ class CodexKernelSessionStore:
             return {}
         now = _now_iso()
         with self._lock:
-            payload = self._read_unlocked()
-            sessions = payload.setdefault("sessions", {})
-            current = dict(sessions.get(key) or {})
-            row = {
-                "user_id": _safe_text(user_id, 128),
-                "platform": _safe_text(platform, 64).lower(),
-                "session_id": _safe_text(session_id, 160),
-                "codex_thread_id": safe_thread,
-                "codex_turn_id": _safe_text(codex_turn_id, 160),
-                "created_at": _safe_text(current.get("created_at"), 64) or now,
-                "updated_at": now,
-            }
-            sessions[key] = row
-            self._write_unlocked(payload)
+            with sync_file_lock(self.lock_path):
+                payload = self._read_unlocked()
+                sessions = payload.setdefault("sessions", {})
+                current = dict(sessions.get(key) or {})
+                row = {
+                    "user_id": _safe_text(user_id, 128),
+                    "platform": _safe_text(platform, 64).lower(),
+                    "session_id": _safe_text(session_id, 160),
+                    "codex_thread_id": safe_thread,
+                    "codex_turn_id": _safe_text(codex_turn_id, 160),
+                    "created_at": _safe_text(current.get("created_at"), 64) or now,
+                    "updated_at": now,
+                }
+                sessions[key] = row
+                self._write_unlocked(payload)
         return {"key": key, **row}
 
     def delete(
@@ -141,13 +146,14 @@ class CodexKernelSessionStore:
             session_id=session_id,
         )
         with self._lock:
-            payload = self._read_unlocked()
-            sessions = payload.setdefault("sessions", {})
-            existed = key in sessions
-            sessions.pop(key, None)
-            if existed:
-                self._write_unlocked(payload)
-            return existed
+            with sync_file_lock(self.lock_path):
+                payload = self._read_unlocked()
+                sessions = payload.setdefault("sessions", {})
+                existed = key in sessions
+                sessions.pop(key, None)
+                if existed:
+                    self._write_unlocked(payload)
+                return existed
 
 
 codex_kernel_sessions = CodexKernelSessionStore()

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -1006,7 +1007,14 @@ async def test_heartbeat_process_once_skips_waiting_user_active_task(monkeypatch
     )
     await heartbeat_store.set_session_active_task(
         user_id,
-        {"id": "hb-waiting-task", "status": "waiting_user", "needs_confirmation": True},
+        {
+            "id": "hb-waiting-task",
+            "status": "waiting_user",
+            "needs_confirmation": True,
+            "confirmation_deadline": (
+                datetime.now().astimezone() + timedelta(minutes=5)
+            ).isoformat(timespec="seconds"),
+        },
     )
     calls: list[str] = []
 
@@ -1020,7 +1028,70 @@ async def test_heartbeat_process_once_skips_waiting_user_active_task(monkeypatch
     monkeypatch.setattr(worker, "_run_heartbeat_for_user", _fake_run)
 
     await worker.process_once()
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
 
     assert calls == []
     assert worker._running == {}
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_process_once_clears_expired_waiting_user_and_runs(
+    monkeypatch,
+    tmp_path,
+):
+    runtime_root = (tmp_path / "runtime_tasks").resolve()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(heartbeat_store, "root", runtime_root)
+    heartbeat_store._locks.clear()
+
+    class _FakeChannelRuntimeStore:
+        def __init__(self):
+            self.updated: list[dict] = []
+
+        def update_active_task(self, **kwargs):
+            self.updated.append(dict(kwargs))
+            return None
+
+    fake_channel_store = _FakeChannelRuntimeStore()
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        fake_channel_store,
+    )
+
+    user_id = "user"
+    await heartbeat_store.set_heartbeat_spec(
+        user_id,
+        every="1m",
+        active_start="00:00",
+        active_end="23:59",
+        paused=False,
+    )
+    await heartbeat_store.set_session_active_task(
+        user_id,
+        {
+            "id": "hb-expired-waiting-task",
+            "status": "waiting_user",
+            "needs_confirmation": True,
+            "confirmation_deadline": (
+                datetime.now().astimezone() - timedelta(minutes=5)
+            ).isoformat(timespec="seconds"),
+        },
+    )
+    calls: list[str] = []
+
+    async def _fake_run(user_id_arg: str, *, force: bool = False):
+        _ = force
+        calls.append(user_id_arg)
+        return "HEARTBEAT_OK"
+
+    worker = HeartbeatWorker()
+    worker.enabled = True
+    monkeypatch.setattr(worker, "_run_heartbeat_for_user", _fake_run)
+
+    await worker.process_once()
+    await asyncio.sleep(0.01)
+
+    assert calls == [user_id]
+    assert worker._running == {}
+    assert fake_channel_store.updated[-1]["clear_active"] is True
+    assert await heartbeat_store.get_session_active_task(user_id) is None

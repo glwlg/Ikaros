@@ -21,7 +21,10 @@ from core.document_artifacts import (
     build_document_forward_text,
     pop_pending_document_artifacts,
 )
+from core.artifact_ledger import record_artifact_receipts
+from core.app_paths import project_root
 from core.file_artifacts import (
+    extract_file_rows_from_text,
     extract_markdown_file_link_rows,
     extract_saved_file_rows,
     merge_file_rows,
@@ -48,11 +51,11 @@ logger = logging.getLogger(__name__)
 LONG_RESPONSE_FILE_THRESHOLD = 9000
 
 DEFAULT_RECEIVED_PHRASES = [
-    "⏳ 正在处理",
+    "我看一下。",
 ]
 
 DEFAULT_LOADING_PHRASES = [
-    "⏳ 正在处理",
+    "我还在看。",
 ]
 
 ACK_REACTION_EMOJI = "👀"
@@ -406,7 +409,7 @@ def _build_ikaros_progress_text(snapshot: dict[str, Any]) -> str:
     final_preview = _compact_text(str(payload.get("final_preview") or ""), limit=220)
     summary = _compact_text(str(payload.get("summary") or ""), limit=220)
 
-    if event == "codex_agent_message":
+    if event in {"codex_agent_message", "codex_activity"}:
         return final_preview
     if event.startswith("codex_"):
         return ""
@@ -521,6 +524,15 @@ def _pop_pending_ui_payload(user_data: dict[str, Any]) -> dict[str, Any] | None:
     return {"actions": merged_actions}
 
 
+def _ctx_supports_result_kind(ctx: UnifiedContext, kind: str) -> bool:
+    adapter = getattr(ctx, "_adapter", None)
+    capabilities = getattr(adapter, "capabilities", None)
+    supports = getattr(capabilities, "supports_reply_kind", None)
+    if callable(supports):
+        return bool(supports(kind))
+    return True
+
+
 async def _send_result_files(
     ctx: UnifiedContext,
     file_rows: list[dict[str, str]],
@@ -549,6 +561,7 @@ async def _send_result_files(
 
     delivered_rows: list[dict[str, str]] = []
     failed_names: list[str] = []
+    failed_rows: list[dict[str, str]] = []
     for item in merge_file_rows(prepared_rows):
         path_text = str(item.get("path") or "").strip()
         if not path_text:
@@ -556,10 +569,15 @@ async def _send_result_files(
         path_obj = Path(path_text).expanduser().resolve()
         if not path_obj.exists() or not path_obj.is_file():
             failed_names.append(str(item.get("filename") or path_obj.name))
+            failed_rows.append(dict(item))
             continue
         caption = str(item.get("caption") or "").strip() or None
         filename = str(item.get("filename") or path_obj.name).strip() or path_obj.name
         kind = str(item.get("kind") or "document").strip().lower() or "document"
+        if not _ctx_supports_result_kind(ctx, kind):
+            failed_names.append(filename)
+            failed_rows.append(dict(item))
+            continue
 
         try:
             if kind == "photo":
@@ -594,8 +612,44 @@ async def _send_result_files(
             delivered_rows.append(dict(item))
         except Exception:
             failed_names.append(filename)
+            failed_rows.append(dict(item))
             logger.warning(
                 "Failed to send result attachment: %s", path_obj, exc_info=True
+            )
+    platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
+    chat_id = str(getattr(getattr(ctx.message, "chat", None), "id", "") or "").strip()
+    target = f"{platform}:{chat_id}" if platform or chat_id else ""
+    record_artifact_receipts(
+        getattr(ctx, "user_data", None),
+        delivered_rows,
+        status="delivered",
+        source="result_files",
+        target=target,
+    )
+    record_artifact_receipts(
+        getattr(ctx, "user_data", None),
+        failed_rows,
+        status="failed",
+        source="result_files",
+        target=target,
+        error="attachment delivery failed",
+    )
+    task_inbox_id = str(
+        (getattr(ctx, "user_data", {}) or {}).get("task_inbox_id") or ""
+    ).strip()
+    if task_inbox_id and (delivered_rows or failed_rows):
+        with contextlib.suppress(Exception):
+            from core.task_inbox import task_inbox
+
+            await task_inbox.append_event(
+                task_inbox_id,
+                "artifact_delivery",
+                detail=f"delivered={len(delivered_rows)}; failed={len(failed_rows)}",
+                extra={
+                    "delivered": list(delivered_rows),
+                    "failed": list(failed_rows),
+                    "target": target,
+                },
             )
     if failed_names:
         preview = "、".join(failed_names[:3])
@@ -778,8 +832,23 @@ async def _try_handle_waiting_confirmation(
     channel_waiting = bool(active_task and active_task.get("status") == "waiting_user")
     control_intent = _waiting_control_intent(user_message)
 
-    if not channel_waiting and control_intent:
-        active_task = await heartbeat_store.get_session_active_task(user_id)
+    if not channel_waiting:
+        heartbeat_active = await heartbeat_store.get_session_active_task(user_id)
+        heartbeat_waiting = bool(
+            heartbeat_active and heartbeat_active.get("status") == "waiting_user"
+        )
+        if heartbeat_waiting and is_confirmation_expired(heartbeat_active):
+            await clear_expired_waiting_confirmation(
+                user_id=user_id,
+                platform=platform,
+                active_task=heartbeat_active,
+            )
+            if control_intent:
+                await ctx.reply("⌛ 等待确认已超过 3 分钟，任务已过期。请重新发送请求。")
+                return True
+            return False
+        if control_intent:
+            active_task = heartbeat_active
     if not active_task or active_task.get("status") != "waiting_user":
         return False
     if not channel_waiting and not control_intent:
@@ -1107,6 +1176,7 @@ async def handle_ai_chat(
         "semantic_loop_guard",
         "tool_budget_guard",
         "codex_agent_message",
+        "codex_activity",
         "final_response",
     }
     ikaros_progress_thread_id = None
@@ -1157,9 +1227,10 @@ async def handle_ai_chat(
 
     def _extract_result_file_rows(text: str) -> list[dict[str, str]]:
         if codex_kernel_ui:
+            base_dir = project_root()
             return merge_file_rows(
-                extract_saved_file_rows(text),
-                extract_markdown_file_link_rows(text),
+                extract_file_rows_from_text(text, base_dir=base_dir),
+                extract_markdown_file_link_rows(text, base_dir=base_dir),
             )
         return extract_saved_file_rows(text)
 
@@ -1173,7 +1244,10 @@ async def handle_ai_chat(
             return None
         if time.time() - float(state.get("request_started_at") or 0.0) < 1.0:
             return None
-        text = str(initial_text or default_thinking_text or "⏳ 正在处理").strip() or "⏳ 正在处理"
+        text = (
+            str(initial_text or default_thinking_text or "我看一下。").strip()
+            or "我看一下。"
+        )
         thinking_msg = await ctx.reply(text)
         return thinking_msg
 
@@ -1344,7 +1418,7 @@ async def handle_ai_chat(
             state["ikaros_progress_final_preview"] = str(
                 payload.get("text_preview") or ""
             )[:180]
-        elif event_name == "codex_agent_message":
+        elif event_name in {"codex_agent_message", "codex_activity"}:
             preview = str(payload.get("text_preview") or "").strip()
             if preview:
                 state["ikaros_progress_final_preview"] = preview[-220:]

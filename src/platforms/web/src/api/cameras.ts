@@ -67,5 +67,5 @@ export const createStreamToken = (id: number) =>
 
 export const testCamera = (id: number) => request.post(`/cameras/${id}/test`)
 
-export const sendPtz = (id: number, action: PtzAction, speed: number, durationMs = 180) =>
+export const sendPtz = (id: number, action: PtzAction, speed: number, durationMs = 100) =>
     request.post(`/cameras/${id}/ptz`, { action, speed, duration_ms: durationMs })
