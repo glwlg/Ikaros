@@ -69,6 +69,7 @@ class PTZRequest(BaseModel):
         "stop",
     ]
     speed: float = Field(default=0.4, ge=0.05, le=1.0)
+    duration_ms: int = Field(default=180, ge=60, le=800)
 
 
 class MediaMTXAuthRequest(BaseModel):
@@ -213,6 +214,7 @@ async def camera_ptz(
             password=get_camera_onvif_password(camera),
             action=payload.action,
             speed=payload.speed,
+            duration_ms=payload.duration_ms,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

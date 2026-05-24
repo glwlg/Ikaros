@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
+
+DEFAULT_MOVE_DURATION_MS = 180
+MIN_MOVE_DURATION_MS = 60
+MAX_MOVE_DURATION_MS = 800
 
 
 @dataclass(frozen=True)
@@ -17,6 +22,14 @@ def _clamp_speed(speed: float | int | None) -> float:
     except Exception:
         value = 0.4
     return min(1.0, max(0.05, value))
+
+
+def _clamp_duration_ms(duration_ms: float | int | None) -> int:
+    try:
+        value = int(duration_ms if duration_ms is not None else DEFAULT_MOVE_DURATION_MS)
+    except Exception:
+        value = DEFAULT_MOVE_DURATION_MS
+    return min(MAX_MOVE_DURATION_MS, max(MIN_MOVE_DURATION_MS, value))
 
 
 def velocity_for_action(action: str, speed: float | int | None = None) -> PTZVelocity:
@@ -46,6 +59,14 @@ def _profile_token(media_service) -> str:
     return str(getattr(profiles[0], "token", "") or profiles[0]["token"])
 
 
+def _stop_ptz(ptz_service, token: str) -> None:
+    request = ptz_service.create_type("Stop")
+    request.ProfileToken = token
+    request.PanTilt = True
+    request.Zoom = True
+    ptz_service.Stop(request)
+
+
 def _run_onvif_command(
     *,
     host: str,
@@ -54,6 +75,7 @@ def _run_onvif_command(
     password: str,
     action: str,
     speed: float,
+    duration_ms: float | int | None = None,
 ) -> None:
     try:
         from onvif import ONVIFCamera  # type: ignore[reportMissingImports]
@@ -69,11 +91,7 @@ def _run_onvif_command(
 
     normalized = str(action or "").strip().lower().replace("-", "_")
     if normalized == "stop":
-        request = ptz_service.create_type("Stop")
-        request.ProfileToken = token
-        request.PanTilt = True
-        request.Zoom = True
-        ptz_service.Stop(request)
+        _stop_ptz(ptz_service, token)
         return
 
     velocity = velocity_for_action(normalized, speed)
@@ -84,6 +102,10 @@ def _run_onvif_command(
         "Zoom": {"x": velocity.zoom},
     }
     ptz_service.ContinuousMove(request)
+    try:
+        time.sleep(_clamp_duration_ms(duration_ms) / 1000)
+    finally:
+        _stop_ptz(ptz_service, token)
 
 
 async def send_ptz_command(
@@ -94,6 +116,7 @@ async def send_ptz_command(
     password: str,
     action: str,
     speed: float = 0.4,
+    duration_ms: float | int | None = None,
 ) -> None:
     if not str(host or "").strip():
         raise RuntimeError("ONVIF host is required")
@@ -105,4 +128,5 @@ async def send_ptz_command(
         password=str(password or ""),
         action=str(action or ""),
         speed=float(speed),
+        duration_ms=duration_ms,
     )
