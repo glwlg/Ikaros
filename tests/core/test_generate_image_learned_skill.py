@@ -1,4 +1,5 @@
 import base64
+import importlib
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,13 @@ generate_image_module = pytest.importorskip(
 )
 from core.model_config import resolve_models_config_path
 from core.skill_cli import prepare_default_env, _infer_skill_name, _resolve_output_dir
+
+
+def test_learned_generate_image_timeout_env_falls_back_on_invalid_value(monkeypatch):
+    monkeypatch.setenv("IMAGE_GENERATION_TIMEOUT_SECONDS", "5m")
+    module = importlib.reload(generate_image_module)
+
+    assert module.IMAGE_GENERATION_TIMEOUT_SECONDS == 300
 
 
 @pytest.mark.asyncio

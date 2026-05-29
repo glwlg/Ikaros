@@ -6,6 +6,7 @@ import pytest
 
 import core.channel_runtime_store as channel_runtime_store_module
 import core.heartbeat_store as heartbeat_store_module
+import core.task_confirmation as task_confirmation_module
 import core.task_manager as task_manager_module
 import handlers.start_handlers as start_handlers
 import user_context
@@ -32,7 +33,8 @@ class _DummyContext:
         self.replies.append(str(text))
         return SimpleNamespace(id="reply")
 
-    async def answer_callback(self):
+    async def answer_callback(self, *args, **kwargs):
+        _ = (args, kwargs)
         return True
 
 
@@ -57,6 +59,7 @@ class _FakeHeartbeatStore:
         self.updated: list[tuple[str, dict]] = []
         self.released: list[str] = []
         self.events: list[tuple[str, str]] = []
+        self.delivery_targets: list[dict] = []
 
     async def get_session_active_task(self, user_id: str):
         _ = user_id
@@ -74,12 +77,30 @@ class _FakeHeartbeatStore:
     async def append_session_event(self, user_id: str, event: str):
         self.events.append((str(user_id), str(event)))
 
+    async def set_delivery_target(
+        self,
+        user_id: str,
+        platform: str,
+        chat_id: str,
+        *,
+        session_id: str = "",
+    ):
+        self.delivery_targets.append(
+            {
+                "user_id": str(user_id),
+                "platform": str(platform),
+                "chat_id": str(chat_id),
+                "session_id": str(session_id),
+            }
+        )
+
 
 class _FakeChannelRuntimeStore:
     def __init__(self, active_task=None):
         self.active_task = active_task
         self.updated: list[dict] = []
         self.session_ids: list[dict] = []
+        self.current_session_id = ""
 
     def get_active_task(self, *, platform: str = "", platform_user_id: str = "", runtime_key: str = ""):
         _ = (platform, platform_user_id, runtime_key)
@@ -109,6 +130,7 @@ class _FakeChannelRuntimeStore:
         platform_user_id: str = "",
         runtime_key: str = "",
     ):
+        self.current_session_id = str(session_id)
         self.session_ids.append(
             {
                 "session_id": str(session_id),
@@ -117,6 +139,16 @@ class _FakeChannelRuntimeStore:
                 "runtime_key": str(runtime_key),
             }
         )
+
+    def get_session_id(
+        self,
+        *,
+        platform: str = "",
+        platform_user_id: str = "",
+        runtime_key: str = "",
+    ):
+        _ = (platform, platform_user_id, runtime_key)
+        return self.current_session_id
 
 
 class _FakeSubagentSupervisor:
@@ -395,6 +427,110 @@ async def test_button_callback_continue_expires_stale_confirmation(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_button_callback_stop_closes_runtime_v2_waiting_task(
+    monkeypatch,
+    tmp_path,
+):
+    from core.runtime_v2 import RuntimeV2Store
+
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr(start_handlers, "check_permission_unified", _allow)
+
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(task_confirmation_module, "runtime_v2", runtime_store)
+    session = runtime_store.ensure_session(
+        session_id="telegram:u-callback:main",
+        platform="telegram",
+        platform_user_id="u-callback",
+    )
+    turn = runtime_store.create_turn(session_id=session["id"], status="running")
+    turn = runtime_store.update_turn_status(turn["id"], "waiting_user")
+    task = runtime_store.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="等待按钮确认",
+        status="running",
+    )
+    task = runtime_store.update_task_status(task["id"], "waiting_user")
+    active_task = {
+        "id": "mgr-stop",
+        "status": "waiting_user",
+        "runtime_v2_session_id": session["id"],
+        "runtime_v2_turn_id": turn["id"],
+        "runtime_v2_task_id": task["id"],
+    }
+    fake_heartbeat_store = _FakeHeartbeatStore(active_task=active_task)
+    fake_channel_store = _FakeChannelRuntimeStore(active_task=active_task)
+    interrupt_calls: list[dict] = []
+
+    async def _fake_interrupt(**kwargs):
+        interrupt_calls.append(dict(kwargs))
+        return None
+
+    monkeypatch.setattr(heartbeat_store_module, "heartbeat_store", fake_heartbeat_store)
+    monkeypatch.setattr(
+        channel_runtime_store_module,
+        "channel_runtime_store",
+        fake_channel_store,
+    )
+    monkeypatch.setattr(
+        "core.codex_kernel.interrupt_codex_kernel_task",
+        _fake_interrupt,
+    )
+
+    ctx = _DummyContext("u-callback", text="noop")
+    ctx.callback_data = "task_stop"
+
+    result = await start_handlers.button_callback(ctx)
+
+    assert result == start_handlers.CONVERSATION_END
+    assert interrupt_calls == [
+        {"user_id": "u-callback", "task_id": "mgr-stop", "task_inbox_id": ""}
+    ]
+    assert fake_channel_store.updated[-1]["clear_active"] is True
+    assert fake_heartbeat_store.updated[-1][1]["clear_active"] is True
+    assert runtime_store.get_turn(turn["id"])["status"] == "cancelled"
+    assert runtime_store.get_task(task["id"])["status"] == "cancelled"
+    events = runtime_store.list_events(session_id=session["id"])
+    assert events[-1]["type"] == "task.user_confirm_stop"
+    assert "已停止" in ctx.replies[-1]
+
+
+def test_set_visible_session_updates_runtime_session_keys(monkeypatch):
+    fake_channel_store = _FakeChannelRuntimeStore()
+    monkeypatch.setattr(
+        channel_runtime_store_module,
+        "channel_runtime_store",
+        fake_channel_store,
+    )
+
+    ctx = _DummyContext("u-visible")
+    ctx.user_data = {
+        "current_session_id": "old-session",
+        "runtime_v2_session_id": "old-runtime-session",
+        "runtime_v2_turn_id": "old-turn",
+        "runtime_v2_task_id": "old-task",
+    }
+
+    start_handlers._set_visible_session(
+        ctx,
+        session_id="scheduler-task-9",
+        user_id="u-visible",
+        platform="telegram",
+        scheduler_session=True,
+    )
+
+    assert ctx.user_data["current_session_id"] == "scheduler-task-9"
+    assert ctx.user_data["runtime_v2_session_id"] == "scheduler-task-9"
+    assert "runtime_v2_turn_id" not in ctx.user_data
+    assert "runtime_v2_task_id" not in ctx.user_data
+    assert ctx.user_data["codex_kernel_session_platform"] == "scheduler"
+    assert fake_channel_store.current_session_id == "scheduler-task-9"
+
+
+@pytest.mark.asyncio
 async def test_new_command_resets_active_task_state(monkeypatch):
     async def _allow(_ctx):
         return True
@@ -471,3 +607,56 @@ async def test_new_command_resets_active_task_state(monkeypatch):
     assert fake_heartbeat_store.events == [("u-new", "user_new_session:mgr-new-1")]
     assert fake_channel_store.session_ids
     assert "已开启新对话" in ctx.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_session_button_enters_and_main_command_exits(monkeypatch):
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr(start_handlers, "check_permission_unified", _allow)
+
+    fake_channel_store = _FakeChannelRuntimeStore()
+    fake_heartbeat_store = _FakeHeartbeatStore(active_task=None)
+    monkeypatch.setattr(
+        channel_runtime_store_module,
+        "channel_runtime_store",
+        fake_channel_store,
+    )
+    monkeypatch.setattr(heartbeat_store_module, "heartbeat_store", fake_heartbeat_store)
+
+    ctx = _DummyContext("u-scheduler", text="")
+    ctx.user_data = {"current_session_id": "main-session"}
+    ctx.callback_data = "schsess_enter_9"
+
+    await start_handlers.handle_scheduler_session_callback(ctx)
+
+    assert ctx.user_data["current_session_id"] == "scheduler-task-9"
+    assert ctx.user_data["codex_kernel_session_platform"] == "scheduler"
+    assert ctx.user_data["codex_kernel_session_user_id"] == "user"
+    assert (
+        ctx.user_data[start_handlers.SCHEDULER_SESSION_RETURN_KEY]
+        == "main-session"
+    )
+    assert fake_channel_store.session_ids[-1] == {
+        "session_id": "scheduler-task-9",
+        "platform": "telegram",
+        "platform_user_id": "u-scheduler",
+        "runtime_key": "",
+    }
+    assert fake_heartbeat_store.delivery_targets[-1]["session_id"] == "scheduler-task-9"
+    assert "已进入定时任务 #9" in ctx.replies[-1]
+
+    await start_handlers.main_session_command(ctx)
+
+    assert ctx.user_data["current_session_id"] == "main-session"
+    assert "codex_kernel_session_platform" not in ctx.user_data
+    assert "codex_kernel_session_user_id" not in ctx.user_data
+    assert fake_channel_store.session_ids[-1] == {
+        "session_id": "main-session",
+        "platform": "telegram",
+        "platform_user_id": "u-scheduler",
+        "runtime_key": "",
+    }
+    assert fake_heartbeat_store.delivery_targets[-1]["session_id"] == "main-session"
+    assert "已回到主会话" in ctx.replies[-1]

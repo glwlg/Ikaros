@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,7 @@ from api.api.binding_helpers import get_primary_platform_user_id
 from extension.skills.builtin.scheduler_manager.scripts import store as scheduler_store
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class TaskCreate(BaseModel):
@@ -18,6 +21,15 @@ class TaskCreate(BaseModel):
 
 class TaskStatusUpdate(BaseModel):
     is_active: bool
+
+
+async def _reload_scheduler_runtime() -> None:
+    try:
+        from core.scheduler import reload_scheduler_jobs
+
+        await reload_scheduler_jobs()
+    except Exception:
+        logger.warning("Failed to reload scheduler runtime after config change.", exc_info=True)
 
 
 async def _resolve_platform_uid(user: User, session: AsyncSession) -> str:
@@ -51,6 +63,7 @@ async def create_task(
         await scheduler_store.add_scheduled_task(
             task.crontab, task.instruction, platform_uid
         )
+        await _reload_scheduler_runtime()
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -65,6 +78,7 @@ async def delete_task(
     platform_uid = await _resolve_platform_uid(current_user, session)
     try:
         await scheduler_store.delete_task(task_id, platform_uid)
+        await _reload_scheduler_runtime()
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -84,6 +98,7 @@ async def update_task_status(
         )
         if not ok:
             raise HTTPException(status_code=404, detail="Task not found")
+        await _reload_scheduler_runtime()
         return {"success": True}
     except HTTPException:
         raise
@@ -110,6 +125,7 @@ async def update_task(
         )
         if not ok:
             raise HTTPException(status_code=404, detail="Task not found")
+        await _reload_scheduler_runtime()
         return {"success": True}
     except HTTPException:
         raise

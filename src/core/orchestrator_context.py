@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
+from core.runtime_v2 import TERMINAL_STATUSES, runtime_v2
 from core.task_inbox import task_inbox
 from core.task_manager import task_manager
 from core.tool_access_store import tool_access_store
@@ -30,6 +31,7 @@ class OrchestratorRuntimeContext:
     task_id: str
     task_inbox_id: str
     session_id: str = ""
+    runtime_v2_task_id: str = ""
     session_state_active: bool = False
     workspace_event_logged: bool = False
 
@@ -112,6 +114,52 @@ class OrchestratorRuntimeContext:
             return "subagent"
         return "user_chat"
 
+    def _runtime_v2_session_id(self) -> str:
+        existing = str(self.user_data.get("runtime_v2_session_id") or "").strip()
+        if existing:
+            return existing
+        if self.session_id:
+            return self.session_id
+        platform = self.platform_name or "channel"
+        user_id = self.user_id or self.runtime_user_id or "user"
+        return f"{platform}:{user_id}:main"
+
+    def _runtime_v2_session_kind(self, session_id: str) -> str:
+        if self.platform_name == "scheduler" or session_id.startswith("scheduler-task-"):
+            return "scheduled_task"
+        if self.platform_name == "web":
+            return "web_workspace"
+        return "channel_chat"
+
+    def _runtime_v2_turn_source(self) -> str:
+        if self.platform_name == "scheduler":
+            return "scheduler"
+        if self.heartbeat_runtime_user:
+            return "system"
+        return "user"
+
+    def _usable_runtime_v2_task_id(
+        self,
+        task_id: str,
+        *,
+        session_id: str,
+        goal: str,
+    ) -> str:
+        safe_task_id = str(task_id or "").strip()
+        if not safe_task_id:
+            return ""
+        task = runtime_v2.get_task(safe_task_id)
+        if not task:
+            return ""
+        if str(task.get("status") or "").strip() in TERMINAL_STATUSES:
+            return ""
+        if session_id and str(task.get("session_id") or "").strip() != session_id:
+            return ""
+        existing_goal = str(task.get("goal") or "").strip()
+        if goal and existing_goal and existing_goal != goal:
+            return ""
+        return safe_task_id
+
     async def ensure_task_inbox(self, *, task_goal: str) -> str:
         if self.task_inbox_id:
             self.user_data["task_inbox_id"] = self.task_inbox_id
@@ -156,6 +204,86 @@ class OrchestratorRuntimeContext:
         if self.task_inbox_id:
             self.user_data["task_inbox_id"] = self.task_inbox_id
         return self.task_inbox_id
+
+    async def ensure_runtime_v2_task(self, *, task_goal: str) -> str:
+        if not self.session_state_enabled:
+            return ""
+
+        goal = str(task_goal or "").strip()
+        if not goal:
+            return ""
+
+        session_id = self._runtime_v2_session_id()
+        if not session_id:
+            return ""
+        existing = str(
+            self.runtime_v2_task_id or self.user_data.get("runtime_v2_task_id") or ""
+        ).strip()
+        usable_existing = self._usable_runtime_v2_task_id(
+            existing,
+            session_id=session_id,
+            goal=goal,
+        )
+        if usable_existing:
+            self.runtime_v2_task_id = usable_existing
+            self.user_data["runtime_v2_task_id"] = usable_existing
+            return usable_existing
+        if existing:
+            self.runtime_v2_task_id = ""
+            self.user_data.pop("runtime_v2_task_id", None)
+        session = runtime_v2.ensure_session(
+            session_id=session_id,
+            kind=self._runtime_v2_session_kind(session_id),
+            platform=self.platform_name,
+            platform_user_id=self.user_id or self.runtime_user_id,
+            title=goal[:80],
+            metadata={
+                "runtime_task_id": self.task_id,
+                "task_inbox_id": self.task_inbox_id,
+            },
+        )
+        runtime_turn_id = str(self.user_data.get("runtime_v2_turn_id") or "").strip()
+        current_turn = runtime_v2.get_turn(runtime_turn_id) if runtime_turn_id else {}
+        current_turn_status = str(current_turn.get("status") or "").strip()
+        if (
+            not current_turn
+            or str(current_turn.get("session_id") or "").strip() != session["id"]
+            or current_turn_status in TERMINAL_STATUSES
+        ):
+            runtime_turn_id = ""
+        if runtime_turn_id and current_turn_status == "queued":
+            runtime_v2.update_turn_status(runtime_turn_id, "running")
+        if not runtime_turn_id:
+            turn = runtime_v2.create_turn(
+                session_id=session["id"],
+                source=self._runtime_v2_turn_source(),
+                input_text=goal,
+                status="running",
+                metadata={
+                    "runtime_task_id": self.task_id,
+                    "task_inbox_id": self.task_inbox_id,
+                    "platform": self.platform_name,
+                },
+            )
+            runtime_turn_id = str(turn.get("id") or "").strip()
+
+        task = runtime_v2.create_task(
+            session_id=session["id"],
+            turn_id=runtime_turn_id,
+            goal=goal,
+            status="running",
+            metadata={
+                "runtime_task_id": self.task_id,
+                "task_inbox_id": self.task_inbox_id,
+                "source": self._task_inbox_source(),
+            },
+        )
+        self.runtime_v2_task_id = str(task.get("id") or "").strip()
+        if self.runtime_v2_task_id:
+            self.user_data["runtime_v2_session_id"] = session["id"]
+            self.user_data["runtime_v2_turn_id"] = runtime_turn_id
+            self.user_data["runtime_v2_task_id"] = self.runtime_v2_task_id
+        return self.runtime_v2_task_id
 
     async def update_session_task(
         self,

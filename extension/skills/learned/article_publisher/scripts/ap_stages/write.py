@@ -175,9 +175,13 @@ async def _generate_article_json(
         f"- 主题：{subject}",
         "- 面向公众号读者，语言自然、清楚、可直接发布。",
         "- 目标是让读者愿意停留、转发，并在微信信息流里有足够清晰的点击理由。",
+        "- 如果用户给了固定标题或标题格式，必须遵守；如果需要自行拟题，标题不要像内部归档名，要有具体对象、数字、动作或冲突。",
     ]
     if requirements["prefer_news"]:
         brief_lines.append("- 按新闻综述写作，先交代事实，再说明背后的变化脉络。")
+        brief_lines.append(
+            "- 新闻快讯标题优先使用“大数字 + 冲突/反常识/悬念”的短钩子，例如“300亿还不够AI烧”；避免“AI进入收入表”“算力账本重写”这类抽象同质化标题。"
+        )
         brief_lines.append(
             "- 严禁出现“没有新官宣但… / 虽然没有官宣… / 值得关注的是行业信号…”这类硬凑表述。"
         )
@@ -205,12 +209,13 @@ async def _generate_article_json(
         f"素材内容：\n{search_context[:MAX_SEARCH_CONTEXT_CHARS]}\n\n"
         "**风格要求**：\n"
         "- 用中文写作，语气清楚、自然、克制，同时要有轻松幽默的故事感，避免生硬报告腔。\n"
+        "- 可以借用国内营销号的注意力机制：大数字、强反差、反常识、悬念问题、具体公司或具体动作；但正文必须用真实事实和经济逻辑兑现，禁止空心标题党。\n"
         "- 从读者的痛点、好奇心和实际需求切入，用具体场景让读者觉得“这和我有关”。\n"
         "- 每一段都要传达一个清楚信息点，少写空泛形容，多写事实、判断、案例和影响。\n"
         "- 可以使用高级中文词汇和生动比喻，但逻辑必须清晰，不要为了煽情牺牲准确性。\n"
         "- 观点可以有，但必须建立在素材事实之上，不要脱离素材做空泛延展。\n"
-        "- 开头用一个问题、反差或具体场景制造钩子，快速引出主题；不写自我介绍，不写创作说明。\n"
-        "- <h2> 小标题可少量使用贴合段落内容的 emoji；正文段落也可在段首或段尾点缀一个对应 emoji，但不要堆砌。\n\n"
+        "- 开头第一屏要先兑现标题承诺：用 3-5 个短段落写出“为什么这个数字/冲突值得点开”，不要用“过去三天的主线是...”这类报告腔开场。\n"
+        "- 小标题要像信息流里的二级钩子，优先用具体冲突或动作，例如“机器人还没进家门，先冲进交易所”。\n\n"
         "**篇幅要求**：\n"
         f"- 正文总字数要求约 {word_count} 字；不要在正文里暴露字数要求。\n"
         "- 拆分为 4 到 6 个 section，每个 section 有独立小标题。\n"
@@ -227,13 +232,18 @@ async def _generate_article_json(
         "- 互动提问：最后可以用一个自然问题邀请读者思考或留言，但不要写营销式关注话术。\n\n"
         "**排版要求**：\n"
         "- 正文使用 HTML 标签排版，不要用 Markdown。\n"
-        "- 每个 section 以 <h2> 小标题开头。\n"
-        "- 正文段落使用 <p>，段与段之间自然分隔。\n"
-        "- 可使用 <ul>/<li> 做列举，<b> 做关键词加粗，但不要堆砌格式。\n"
-        '- 在每个 section 末尾加一行 <p style="margin-bottom:1.5em;"></p> 作为段间留白。\n\n'
+        "- 面向微信公众号，必须使用内联 style 写出排版，而不是裸 HTML；样式要能通过微信 draft/get 回读保留。\n"
+        "- 开头可使用一块导语卡片，例如 <section style=\"margin:4px 0 20px;padding:16px 15px;background:#fff7ed;border-left:4px solid #ff7a1a;border-radius:8px;\">...</section>。\n"
+        "- 每个 section 的小标题优先使用带底色和左侧强调线的 <section style=\"margin:30px 0 14px;padding:10px 12px;border-left:4px solid #ff7a1a;background:#fff7ed;border-radius:6px;font-size:17px;line-height:1.55;color:#171717;font-weight:700;letter-spacing:0;\">标题</section>，不要只用裸 <h2>。\n"
+        "- 正文段落使用 <p style=\"font-size:15px;line-height:1.9;color:#2f3437;margin:0 0 12px;letter-spacing:0;\">...</p>，短段落优先，不要让公众号里出现大段文字墙。\n"
+        "- 关键数字、公司对比、四点清单要做成 callout，例如 <section style=\"margin:18px 0;padding:14px 14px;background:#f8fafc;border:1px solid #e5edf5;border-radius:8px;\">...</section>。\n"
+        "- 关键反问或收束句可使用浅橙色强调块，但不要每段都加，避免花。\n"
+        '- 在每个 section 末尾加一行 <p style="margin:0 0 18px;"></p> 作为段间留白。\n\n'
         "**配图要求**：\n"
         "- 必须设计 1 张封面图 PROMPT（cover_prompt），用于生成公众号封面：少字、强视觉钩子、手绘插画感。\n"
         "- 在 1-3 个 section 中设计 image_prompt（正文插图），其余为 null；如果用户明确要求更多或至少几张配图，按用户要求补足正文 image_prompt。\n"
+        "- cover_prompt 和 image_prompt 只描述给内部 illustrate 阶段的 generate_image 图像意图；禁止要求、暗示或输出 SVG、HTML/CSS、Canvas、矢量图、代码绘图、手工制图方案。\n"
+        "- 配图产物必须由 article_publisher 的 illustrate 阶段生成栅格图片，不得绕过内部画图流程使用 SVG 或外部兜底图。\n"
         "- 每个正文 image_prompt 必须服务对应 section 的事实内容，禁止为了凑图生成无关泛图。\n"
         "- 正文插图最终会生成中文信息图，而不是普通插画；image_prompt 只需说明这张图应突出哪些事实、分组、元素或关系。\n"
         "- 不要把 image_prompt 写成 generic illustration、abstract background、people looking at screen 这类无信息描述。\n"
@@ -243,16 +253,16 @@ async def _generate_article_json(
         "- 不要 ```json 包裹，不要解释性文字。\n"
         "- JSON 必须使用双引号，结构如下：\n"
         "{\n"
-        '  "title": "信息明确、适合公众号的标题",\n'
+        '  "title": "信息明确、适合公众号且有数字/冲突/具体对象钩子的标题",\n'
         '  "author": "笔名",\n'
         '  "digest": "100-150字摘要，概括今天这篇文章告诉读者什么",\n'
         '  "cover_prompt": "公众号封面应突出的短标题钩子、主视觉元素和高对比色彩方向",\n'
         '  "sections": [\n'
-        '    { "content": "<h2>第一部分标题</h2><p>段落一正文...</p><p>段落二正文...</p>'
-        '<p style=\\"margin-bottom:1.5em;\\"></p>", '
+        '    { "content": "<section style=\\"margin:30px 0 14px;padding:10px 12px;border-left:4px solid #ff7a1a;background:#fff7ed;border-radius:6px;font-size:17px;line-height:1.55;color:#171717;font-weight:700;letter-spacing:0;\\">第一部分标题</section><p style=\\"font-size:15px;line-height:1.9;color:#2f3437;margin:0 0 12px;letter-spacing:0;\\">段落一正文...</p>'
+        '<p style=\\"margin:0 0 18px;\\"></p>", '
         '"image_prompt": "这一节信息图应突出的事实、节点和关系；不需要时为 null" },\n'
-        '    { "content": "<h2>第二部分标题</h2><p>段落一正文...</p><p>段落二正文...</p>'
-        '<p style=\\"margin-bottom:1.5em;\\"></p>", "image_prompt": null }\n'
+        '    { "content": "<section style=\\"margin:30px 0 14px;padding:10px 12px;border-left:4px solid #ff7a1a;background:#fff7ed;border-radius:6px;font-size:17px;line-height:1.55;color:#171717;font-weight:700;letter-spacing:0;\\">第二部分标题</section><p style=\\"font-size:15px;line-height:1.9;color:#2f3437;margin:0 0 12px;letter-spacing:0;\\">段落一正文...</p>'
+        '<p style=\\"margin:0 0 18px;\\"></p>", "image_prompt": null }\n'
         "  ]\n"
         "}"
     )

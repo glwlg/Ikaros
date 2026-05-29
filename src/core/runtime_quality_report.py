@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from core.runtime_v2 import runtime_v2
+
 
 def build_task_quality_report(tasks: list[Any]) -> dict[str, Any]:
     status_counts: Counter[str] = Counter()
@@ -44,3 +46,8 @@ def build_task_quality_report(tasks: list[Any]) -> dict[str, Any]:
         "artifact_failed": artifact_failed,
         "recommendations": recommendations,
     }
+
+
+def build_runtime_v2_quality_report() -> dict[str, Any]:
+    """Return the Runtime v2 quality view used by diagnostics surfaces."""
+    return runtime_v2.build_quality_report()

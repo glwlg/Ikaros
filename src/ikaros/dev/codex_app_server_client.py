@@ -35,20 +35,6 @@ MEDIA_EXTENSIONS = {
     ".ogg": "audio",
     ".flac": "audio",
 }
-DOCUMENT_EXTENSIONS = {
-    ".pdf",
-    ".txt",
-    ".md",
-    ".csv",
-    ".tsv",
-    ".json",
-    ".jsonl",
-    ".xlsx",
-    ".xls",
-    ".docx",
-    ".pptx",
-    ".zip",
-}
 PATH_KEYS = {
     "path",
     "file_path",
@@ -138,7 +124,7 @@ class CodexAppServerClient:
         cwd: str,
         env: Dict[str, str],
         timeout_sec: int,
-        request_timeout_sec: int = 45,
+        request_timeout_sec: int = 300,
         log_path: str = "",
         model: str = "",
         effort: str = "",
@@ -683,14 +669,14 @@ class CodexAppServerClient:
                 return
 
             if method == "item/tool/requestUserInput":
-                self.user_input_requests.append(
-                    {
-                        "at": _now_iso(),
-                        "method": method,
-                        "params": dict(params or {}),
-                    }
-                )
+                request_payload = {
+                    "at": _now_iso(),
+                    "method": method,
+                    "params": dict(params or {}),
+                }
+                self.user_input_requests.append(request_payload)
                 self.user_input_requests = self.user_input_requests[-20:]
+                await self._emit_event("request_user_input", request_payload)
                 await self._send_response(request_id, result={"answers": {}})
                 return
 
@@ -995,8 +981,6 @@ def _extract_local_media_files(value: Any) -> List[Dict[str, str]]:
             return
         suffix = path_obj.suffix.lower()
         kind = MEDIA_EXTENSIONS.get(suffix)
-        if not kind and suffix in DOCUMENT_EXTENSIONS:
-            kind = "document"
         if not kind or not path_obj.exists() or not path_obj.is_file():
             return
         resolved = str(path_obj)

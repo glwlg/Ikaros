@@ -6,10 +6,13 @@ import io
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+from core.app_paths import data_dir
 from core.heartbeat_store import heartbeat_store
 from core.platform.registry import adapter_manager
+from core.runtime_v2 import runtime_event_bus, runtime_v2
 from core.state_store import get_latest_session_id, get_session_entries, save_message
 from services.md_converter import adapt_md_file_for_platform
 
@@ -117,12 +120,15 @@ async def _send_document(
     text: str,
     filename_prefix: str,
     caption: str,
+    runtime_session_id: str = "",
+    runtime_turn_id: str = "",
+    runtime_source: str = "background_delivery",
 ) -> bool:
     payload = str(text or "").strip()
     if not payload:
         return True
 
-    filename = f"{filename_prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+    filename = f"{filename_prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.md"
     document_bytes = payload.encode("utf-8")
     with contextlib.suppress(Exception):
         document_bytes, filename = adapt_md_file_for_platform(
@@ -131,6 +137,14 @@ async def _send_document(
             platform=platform,
         )
 
+    artifact = _record_runtime_document_artifact(
+        document_bytes=document_bytes,
+        filename=filename,
+        runtime_session_id=runtime_session_id,
+        runtime_turn_id=runtime_turn_id,
+        source=runtime_source,
+    )
+    target = _runtime_target(platform, chat_id)
     try:
         send_document = getattr(adapter, "send_document", None)
         if callable(send_document):
@@ -142,6 +156,14 @@ async def _send_document(
             )
             if inspect.isawaitable(result):
                 await result
+            _record_runtime_artifact_delivery(
+                artifact=artifact,
+                runtime_session_id=runtime_session_id,
+                runtime_turn_id=runtime_turn_id,
+                platform=platform,
+                target=target,
+                status="delivered",
+            )
             return True
 
         bot = getattr(adapter, "bot", None)
@@ -155,9 +177,35 @@ async def _send_document(
             )
             if inspect.isawaitable(result):
                 await result
+            _record_runtime_artifact_delivery(
+                artifact=artifact,
+                runtime_session_id=runtime_session_id,
+                runtime_turn_id=runtime_turn_id,
+                platform=platform,
+                target=target,
+                status="delivered",
+            )
             return True
-    except Exception:
+    except Exception as exc:
+        _record_runtime_artifact_delivery(
+            artifact=artifact,
+            runtime_session_id=runtime_session_id,
+            runtime_turn_id=runtime_turn_id,
+            platform=platform,
+            target=target,
+            status="failed",
+            error=str(exc),
+        )
         return False
+    _record_runtime_artifact_delivery(
+        artifact=artifact,
+        runtime_session_id=runtime_session_id,
+        runtime_turn_id=runtime_turn_id,
+        platform=platform,
+        target=target,
+        status="failed",
+        error="document delivery method unavailable",
+    )
     return False
 
 
@@ -167,18 +215,35 @@ async def _send_text_chunk(
     platform: str,
     chat_id: str,
     text: str,
+    ui: dict[str, Any] | None = None,
     disable_web_page_preview: bool = True,
+    runtime_session_id: str = "",
+    runtime_turn_id: str = "",
 ) -> bool:
     try:
         send_message = getattr(adapter, "send_message", None)
         if callable(send_message):
-            result = send_message(
-                chat_id=chat_id,
-                text=text,
-                disable_web_page_preview=disable_web_page_preview,
-            )
+            kwargs = {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": disable_web_page_preview,
+            }
+            if ui:
+                kwargs["ui"] = ui
+            result = send_message(**kwargs)
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            _publish_runtime_background_event(
+                runtime_session_id=runtime_session_id,
+                runtime_turn_id=runtime_turn_id,
+                event_type="background_message_sent",
+                payload={
+                    "platform": platform,
+                    "target": _runtime_target(platform, chat_id),
+                    "text": text,
+                    "message_id": _message_id_from_result(result),
+                },
+            )
             return True
 
         bot = getattr(adapter, "bot", None)
@@ -195,11 +260,152 @@ async def _send_text_chunk(
                 disable_web_page_preview=disable_web_page_preview,
             )
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            _publish_runtime_background_event(
+                runtime_session_id=runtime_session_id,
+                runtime_turn_id=runtime_turn_id,
+                event_type="background_message_sent",
+                payload={
+                    "platform": platform,
+                    "target": _runtime_target(platform, chat_id),
+                    "text": text,
+                    "message_id": _message_id_from_result(result),
+                },
+            )
             return True
-    except Exception:
+    except Exception as exc:
+        _publish_runtime_background_event(
+            runtime_session_id=runtime_session_id,
+            runtime_turn_id=runtime_turn_id,
+            event_type="background_delivery_failed",
+            payload={
+                "platform": platform,
+                "target": _runtime_target(platform, chat_id),
+                "text": text,
+                "error": str(exc),
+            },
+        )
         return False
     return False
+
+
+def _runtime_target(platform: str, chat_id: str) -> str:
+    safe_platform = str(platform or "").strip().lower()
+    safe_chat_id = str(chat_id or "").strip()
+    return f"{safe_platform}:{safe_chat_id}" if safe_platform or safe_chat_id else ""
+
+
+def _message_id_from_result(result: Any) -> str:
+    return str(
+        getattr(result, "message_id", "")
+        or getattr(result, "id", "")
+        or ""
+    ).strip()
+
+
+def _publish_runtime_background_event(
+    *,
+    runtime_session_id: str,
+    runtime_turn_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    if not str(runtime_session_id or "").strip():
+        return
+    with contextlib.suppress(Exception):
+        runtime_event_bus.publish(
+            session_id=str(runtime_session_id or "").strip(),
+            turn_id=str(runtime_turn_id or "").strip(),
+            event_type=event_type,
+            payload=dict(payload or {}),
+        )
+
+
+def _background_artifact_path(filename: str) -> Path:
+    safe_name = Path(str(filename or "background.md")).name or "background.md"
+    root = data_dir() / "runtime_artifacts" / "background_delivery"
+    root.mkdir(parents=True, exist_ok=True)
+    return (root / safe_name).resolve()
+
+
+def _record_runtime_document_artifact(
+    *,
+    document_bytes: bytes,
+    filename: str,
+    runtime_session_id: str,
+    runtime_turn_id: str,
+    source: str,
+) -> dict[str, Any]:
+    if not str(runtime_session_id or "").strip():
+        return {}
+    try:
+        path = _background_artifact_path(filename)
+        path.write_bytes(document_bytes)
+        artifact = runtime_v2.record_artifact(
+            session_id=str(runtime_session_id or "").strip(),
+            turn_id=str(runtime_turn_id or "").strip(),
+            kind="document",
+            path=str(path),
+            mime="text/markdown" if path.suffix.lower() == ".md" else "text/plain",
+            filename=filename,
+            source=source,
+            metadata={"generated_by": "background_delivery"},
+        )
+        if artifact:
+            runtime_event_bus.publish(
+                session_id=str(runtime_session_id or "").strip(),
+                turn_id=str(runtime_turn_id or "").strip(),
+                event_type="artifact_created",
+                payload={
+                    "artifact_id": artifact.get("id"),
+                    "kind": artifact.get("kind"),
+                    "path": artifact.get("path"),
+                    "filename": artifact.get("filename"),
+                    "mime": artifact.get("mime"),
+                    "source": source,
+                },
+            )
+        return artifact
+    except Exception:
+        logger.warning("Runtime v2 background artifact registration failed.", exc_info=True)
+        return {}
+
+
+def _record_runtime_artifact_delivery(
+    *,
+    artifact: dict[str, Any],
+    runtime_session_id: str,
+    runtime_turn_id: str,
+    platform: str,
+    target: str,
+    status: str,
+    error: str = "",
+) -> None:
+    artifact_id = str((artifact or {}).get("id") or "").strip()
+    if not artifact_id:
+        return
+    try:
+        runtime_v2.record_delivery(
+            artifact_id=artifact_id,
+            platform=platform,
+            target=target,
+            status=status,
+            error=error,
+        )
+        runtime_event_bus.publish(
+            session_id=str(runtime_session_id or "").strip(),
+            turn_id=str(runtime_turn_id or "").strip(),
+            event_type="artifact_delivered" if status == "delivered" else "delivery_failed",
+            payload={
+                "artifact_id": artifact_id,
+                "platform": platform,
+                "target": target,
+                "path": str(artifact.get("path") or ""),
+                **({"error": error} if error else {}),
+            },
+        )
+    except Exception:
+        logger.warning("Runtime v2 background delivery receipt failed.", exc_info=True)
 
 
 async def push_background_text(
@@ -214,9 +420,13 @@ async def push_background_text(
     file_threshold: int | None = None,
     max_text_chunks: int | None = None,
     disable_web_page_preview: bool = True,
+    ui: dict[str, Any] | None = None,
     record_history: bool = False,
     history_user_id: str | int = "",
     history_session_id: str = "",
+    runtime_session_id: str = "",
+    runtime_turn_id: str = "",
+    runtime_source: str = "background_delivery",
 ) -> bool:
     safe_platform = str(platform or "").strip().lower()
     safe_chat_id = str(chat_id or "").strip()
@@ -264,8 +474,22 @@ async def push_background_text(
             text=payload,
             filename_prefix=filename_prefix,
             caption=file_caption,
+            runtime_session_id=runtime_session_id,
+            runtime_turn_id=runtime_turn_id,
+            runtime_source=runtime_source,
         )
     ):
+        if ui:
+            await _send_text_chunk(
+                adapter=adapter,
+                platform=safe_platform,
+                chat_id=safe_chat_id,
+                text="可继续进入对应会话处理。",
+                ui=ui,
+                disable_web_page_preview=disable_web_page_preview,
+                runtime_session_id=runtime_session_id,
+                runtime_turn_id=runtime_turn_id,
+            )
         if record_history:
             await _record_background_history(
                 user_id=str(history_user_id or ""),
@@ -284,7 +508,10 @@ async def push_background_text(
             platform=safe_platform,
             chat_id=safe_chat_id,
             text=body,
+            ui=ui if idx == total else None,
             disable_web_page_preview=disable_web_page_preview,
+            runtime_session_id=runtime_session_id,
+            runtime_turn_id=runtime_turn_id,
         )
         if not sent:
             return False

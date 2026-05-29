@@ -7,7 +7,14 @@ from typing import Any, Dict
 from core.background_delivery import push_background_text
 from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
+from core.runtime_v2 import (
+    TERMINAL_STATUSES,
+    RuntimeV2TransitionError,
+    runtime_v2,
+)
 from core.task_inbox import TaskEnvelope, task_inbox
+
+RUNTIME_OPEN_STATUSES = ("queued", "running", "waiting_user", "waiting_external")
 
 
 def _now_iso() -> str:
@@ -111,8 +118,40 @@ class TaskTrackerService:
         return dict(followup) if isinstance(followup, dict) else {}
 
     @staticmethod
+    def _runtime_followup(row: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = dict(row.get("metadata") or {})
+        followup = metadata.get("followup")
+        return dict(followup) if isinstance(followup, dict) else {}
+
+    @staticmethod
+    def _runtime_status(value: Any, *, fallback: str = "running") -> str:
+        token = str(value or "").strip().lower()
+        aliases = {
+            "completed": "succeeded",
+            "complete": "succeeded",
+            "done": "succeeded",
+            "pending": "queued",
+            "planning": "queued",
+            "timed_out": "expired",
+            "timeout": "expired",
+        }
+        token = aliases.get(token, token)
+        allowed = set(RUNTIME_OPEN_STATUSES) | TERMINAL_STATUSES
+        if token in allowed:
+            return token
+        return fallback if fallback in allowed else "running"
+
+    @staticmethod
     def _is_due(task: TaskEnvelope, *, now: datetime) -> bool:
         followup = TaskTrackerService._followup(task)
+        review_after = _parse_iso(followup.get("next_review_after"))
+        if review_after is None:
+            return True
+        return review_after <= now
+
+    @staticmethod
+    def _is_runtime_due(row: Dict[str, Any], *, now: datetime) -> bool:
+        followup = TaskTrackerService._runtime_followup(row)
         review_after = _parse_iso(followup.get("next_review_after"))
         if review_after is None:
             return True
@@ -126,6 +165,101 @@ class TaskTrackerService:
         if user_id and str(task.user_id or "").strip() != str(user_id or "").strip():
             return None
         return task
+
+    @staticmethod
+    def _merge_runtime_task_context(row: Dict[str, Any]) -> Dict[str, Any]:
+        merged = dict(row or {})
+        session = runtime_v2.get_session(str(merged.get("session_id") or ""))
+        turn = runtime_v2.get_turn(str(merged.get("turn_id") or ""))
+        merged.update(
+            {
+                "session_kind": str(session.get("kind") or ""),
+                "platform": str(session.get("platform") or ""),
+                "platform_user_id": str(session.get("platform_user_id") or ""),
+                "session_title": str(session.get("title") or ""),
+                "turn_source": str(turn.get("source") or ""),
+                "turn_input_text": str(turn.get("input_text") or ""),
+                "turn_status": str(turn.get("status") or ""),
+                "kernel_provider": str(turn.get("kernel_provider") or ""),
+            }
+        )
+        return merged
+
+    @staticmethod
+    def _get_owned_runtime_task(user_id: str, task_id: str) -> Dict[str, Any] | None:
+        row = runtime_v2.get_task(task_id)
+        if not row:
+            return None
+        merged = TaskTrackerService._merge_runtime_task_context(row)
+        if user_id and str(merged.get("platform_user_id") or "").strip() != str(user_id).strip():
+            return None
+        if bool(dict(merged.get("metadata") or {}).get("deleted")):
+            return None
+        return merged
+
+    def _serialize_runtime_task(
+        self,
+        row: Dict[str, Any],
+        *,
+        include_events: bool = False,
+        event_limit: int = 20,
+    ) -> Dict[str, Any]:
+        metadata = dict(row.get("metadata") or {})
+        source = (
+            str(metadata.get("source") or "").strip()
+            or str(row.get("turn_source") or "").strip()
+            or str(row.get("session_kind") or "").strip()
+            or "runtime_v2"
+        )
+        events = [
+            self._serialize_runtime_event(item)
+            for item in runtime_v2.list_events(
+                session_id=str(row.get("session_id") or ""),
+                turn_id=str(row.get("turn_id") or ""),
+                limit=max(1, int(event_limit or 20)),
+            )
+        ]
+        result_summary = (
+            str(metadata.get("result_summary") or "").strip()
+            or str(metadata.get("last_action_summary") or "").strip()
+        )
+        payload: Dict[str, Any] = {
+            "task_id": str(row.get("id") or "").strip(),
+            "source": source,
+            "goal": str(row.get("goal") or "").strip(),
+            "user_id": str(row.get("platform_user_id") or "").strip(),
+            "status": str(row.get("status") or "").strip(),
+            "updated_at": str(row.get("updated_at") or "").strip(),
+            "created_at": str(row.get("created_at") or "").strip(),
+            "priority": "normal",
+            "metadata": metadata,
+            "result": {"summary": result_summary} if result_summary else {},
+            "output": {"text": result_summary} if result_summary else {},
+            "final_output": result_summary
+            if str(row.get("status") or "") == "succeeded"
+            else "",
+        }
+        if events:
+            payload["last_event"] = events[-1]
+        if include_events:
+            payload["events"] = events[-max(1, int(event_limit or 20)) :]
+        return payload
+
+    @staticmethod
+    def _serialize_runtime_event(event: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(event.get("payload") or {})
+        detail = (
+            str(payload.get("detail") or "").strip()
+            or str(payload.get("text") or "").strip()
+            or str(payload.get("summary") or "").strip()
+            or str(payload.get("error") or "").strip()
+        )
+        return {
+            "at": str(event.get("created_at") or "").strip(),
+            "event": str(event.get("type") or "").strip(),
+            "detail": detail,
+            "extra": payload,
+        }
 
     async def list_open(
         self,
@@ -147,9 +281,34 @@ class TaskTrackerService:
             user_id=safe_user_id,
             limit=0,
         )
+        runtime_rows = runtime_v2.list_tasks_for_user(
+            platform_user_id=safe_user_id,
+            statuses=RUNTIME_OPEN_STATUSES,
+            limit=max(200, int(limit or 20) * 20),
+        )
         now = datetime.now().astimezone()
+        runtime_filtered: list[Dict[str, Any]] = []
+        runtime_legacy_ids: set[str] = set()
+        for row in runtime_rows:
+            metadata = dict(row.get("metadata") or {})
+            source = (
+                str(metadata.get("source") or "").strip()
+                or str(row.get("turn_source") or "").strip()
+            )
+            if source.lower() == "heartbeat":
+                continue
+            if str(row.get("status") or "").strip().lower() == "waiting_user":
+                continue
+            if due_only and not self._is_runtime_due(row, now=now):
+                continue
+            runtime_filtered.append(row)
+            legacy_id = str(metadata.get("task_inbox_id") or "").strip()
+            if legacy_id:
+                runtime_legacy_ids.add(legacy_id)
         filtered: list[TaskEnvelope] = []
         for task in rows:
+            if str(task.task_id or "").strip() in runtime_legacy_ids:
+                continue
             if str(task.source or "").strip().lower() == "heartbeat":
                 continue
             if str(task.status or "").strip().lower() == "waiting_user":
@@ -164,10 +323,27 @@ class TaskTrackerService:
                 str(item.updated_at or ""),
             )
         )
+        runtime_filtered.sort(
+            key=lambda item: (
+                _parse_iso(self._runtime_followup(item).get("next_review_after"))
+                or datetime.min.replace(tzinfo=now.tzinfo),
+                str(item.get("updated_at") or ""),
+            )
+        )
         tasks = [
-            self._serialize_task(task, include_events=False, event_limit=event_limit)
-            for task in filtered[: max(1, int(limit or 1))]
-        ]
+            *[
+                self._serialize_runtime_task(
+                    row,
+                    include_events=False,
+                    event_limit=event_limit,
+                )
+                for row in runtime_filtered
+            ],
+            *[
+                self._serialize_task(task, include_events=False, event_limit=event_limit)
+                for task in filtered
+            ],
+        ][: max(1, int(limit or 1))]
         return self._response(
             ok=True,
             summary=f"{len(tasks)} open task(s)",
@@ -201,12 +377,28 @@ class TaskTrackerService:
                 error_code="invalid_args",
             )
         task = await self._get_owned_task(safe_user_id, safe_task_id)
-        if task is None:
+        runtime_task = None if task is not None else self._get_owned_runtime_task(
+            safe_user_id,
+            safe_task_id,
+        )
+        if task is None and runtime_task is None:
             return self._response(
                 ok=False,
                 summary="task_tracker get failed",
                 text="task not found",
                 error_code="task_not_found",
+            )
+        if runtime_task is not None:
+            payload = self._serialize_runtime_task(
+                runtime_task,
+                include_events=True,
+                event_limit=event_limit,
+            )
+            return self._response(
+                ok=True,
+                summary=f"task {safe_task_id}",
+                text=f"[{payload['status']}] {payload['goal']}",
+                data={"task": payload},
             )
         payload = self._serialize_task(
             task, include_events=True, event_limit=event_limit
@@ -323,6 +515,132 @@ class TaskTrackerService:
             },
         )
 
+    async def _update_runtime(
+        self,
+        *,
+        row: Dict[str, Any],
+        user_id: str,
+        task_id: str,
+        status: str = "",
+        result_summary: str = "",
+        done_when: str = "",
+        next_review_after: str = "",
+        refs: Dict[str, Any] | None = None,
+        notes: str = "",
+        announce_before_action: bool | None = None,
+        last_observation: str = "",
+        last_action_summary: str = "",
+        announce_text: str = "",
+        announce_key: str = "",
+        announce_platform: str = "",
+        announce_chat_id: str = "",
+    ) -> Dict[str, Any]:
+        now = _now_iso()
+        metadata = dict(row.get("metadata") or {})
+        followup = self._runtime_followup(row)
+        if done_when:
+            followup["done_when"] = str(done_when).strip()
+        if next_review_after:
+            followup["next_review_after"] = str(next_review_after).strip()
+        if isinstance(refs, dict) and refs:
+            current_refs = followup.get("refs")
+            current_refs_obj = (
+                dict(current_refs) if isinstance(current_refs, dict) else {}
+            )
+            current_refs_obj.update(dict(refs))
+            followup["refs"] = current_refs_obj
+        if notes:
+            followup["notes"] = str(notes).strip()
+        if announce_before_action is not None:
+            followup["announce_before_action"] = bool(announce_before_action)
+        if last_observation:
+            followup["last_review_at"] = now
+            followup["last_observation"] = str(last_observation).strip()
+        if last_action_summary:
+            followup["last_review_at"] = now
+            followup["last_action_summary"] = str(last_action_summary).strip()
+
+        safe_status = self._runtime_status(
+            status or row.get("status") or "running",
+            fallback=str(row.get("status") or "running"),
+        )
+        safe_summary = str(result_summary or "").strip()
+        announcement_sent = False
+        duplicate_announcement = False
+        safe_announce_key = str(announce_key or "").strip()
+        safe_announce_text = str(announce_text or "").strip()
+        if safe_announce_text and safe_announce_key:
+            duplicate_announcement = (
+                followup.get("last_announcement_key") == safe_announce_key
+            )
+
+        if safe_announce_text and not duplicate_announcement:
+            followup["announcement_attempt_at"] = now
+            followup["announcement_attempt_key"] = safe_announce_key
+            platform = str(announce_platform or "").strip()
+            chat_id = str(announce_chat_id or "").strip()
+            session_id = ""
+            if not platform or not chat_id:
+                target = await heartbeat_store.get_delivery_target(user_id)
+                platform = platform or str(target.get("platform") or "").strip()
+                chat_id = chat_id or str(target.get("chat_id") or "").strip()
+                session_id = str(target.get("session_id") or "").strip()
+            if platform and chat_id:
+                announcement_sent = bool(
+                    await push_background_text(
+                        platform=platform,
+                        chat_id=chat_id,
+                        text=safe_announce_text,
+                        record_history=True,
+                        history_user_id=user_id,
+                        history_session_id=session_id,
+                    )
+                )
+            if announcement_sent:
+                followup["last_announcement_at"] = now
+                followup["last_announcement_key"] = safe_announce_key
+
+        metadata["followup"] = followup
+        if safe_summary:
+            metadata["result_summary"] = safe_summary
+        try:
+            updated = runtime_v2.update_task_status(
+                task_id,
+                safe_status,
+                metadata=metadata,
+            )
+        except RuntimeV2TransitionError as exc:
+            return self._response(
+                ok=False,
+                summary="task_tracker update failed",
+                text=str(exc),
+                error_code="invalid_status_transition",
+            )
+        runtime_v2.append_event(
+            session_id=str(row.get("session_id") or ""),
+            turn_id=str(row.get("turn_id") or ""),
+            event_type="task_tracker.updated",
+            payload={
+                "task_id": task_id,
+                "status": safe_status,
+                "summary": safe_summary,
+                "followup": followup,
+            },
+        )
+        payload = self._serialize_runtime_task(
+            self._merge_runtime_task_context(updated)
+        )
+        return self._response(
+            ok=True,
+            summary=f"task {task_id} updated",
+            text=safe_summary or f"task {task_id} updated",
+            data={
+                "task": payload,
+                "announcement_sent": announcement_sent,
+                "announcement_skipped_duplicate": duplicate_announcement,
+            },
+        )
+
     async def update(
         self,
         *,
@@ -355,12 +673,35 @@ class TaskTrackerService:
         lock = self._locks.setdefault(safe_task_id, asyncio.Lock())
         async with lock:
             task = await self._get_owned_task(safe_user_id, safe_task_id)
-            if task is None:
+            runtime_task = None if task is not None else self._get_owned_runtime_task(
+                safe_user_id,
+                safe_task_id,
+            )
+            if task is None and runtime_task is None:
                 return self._response(
                     ok=False,
                     summary="task_tracker update failed",
                     text="task not found",
                     error_code="task_not_found",
+                )
+            if runtime_task is not None:
+                return await self._update_runtime(
+                    row=runtime_task,
+                    user_id=safe_user_id,
+                    task_id=safe_task_id,
+                    status=status,
+                    result_summary=result_summary,
+                    done_when=done_when,
+                    next_review_after=next_review_after,
+                    refs=refs,
+                    notes=notes,
+                    announce_before_action=announce_before_action,
+                    last_observation=last_observation,
+                    last_action_summary=last_action_summary,
+                    announce_text=announce_text,
+                    announce_key=announce_key,
+                    announce_platform=announce_platform,
+                    announce_chat_id=announce_chat_id,
                 )
 
             now = _now_iso()

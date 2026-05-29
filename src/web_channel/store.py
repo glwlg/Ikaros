@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any, Dict
 
 from core.config import DATA_DIR
-from core.state_store import create_chat_session, list_chat_sessions
+from core.runtime_v2 import runtime_v2
+from core.state_store import (
+    create_chat_session,
+    get_session_entries,
+    list_chat_sessions,
+)
 from core.platform.models import MessageType
 from shared.queue.jsonl_queue import FileLock, JsonlTable
 
@@ -23,7 +28,9 @@ WEB_CHANNEL_UPLOADS_DIR = (WEB_CHANNEL_ROOT / "uploads").resolve()
 WEB_CHANNEL_ARTIFACTS_DIR = (WEB_CHANNEL_ROOT / "artifacts").resolve()
 WEB_CHANNEL_FILES_DIR = (WEB_CHANNEL_ROOT / "files").resolve()
 WEB_CHANNEL_SESSIONS_DIR = (WEB_CHANNEL_ROOT / "sessions").resolve()
-WEB_CHANNEL_INBOX_TABLE = JsonlTable(str((WEB_CHANNEL_INBOX_DIR / "events.jsonl").resolve()))
+WEB_CHANNEL_INBOX_TABLE = JsonlTable(
+    str((WEB_CHANNEL_INBOX_DIR / "events.jsonl").resolve())
+)
 
 
 for directory in (
@@ -66,10 +73,14 @@ def _outbox_table(user_id: str) -> JsonlTable:
 def _session_path(user_id: str, session_id: str) -> Path:
     safe_user_id = _slug(user_id) or "__anonymous__"
     safe_session_id = _slug(session_id) or uuid.uuid4().hex
-    return (WEB_CHANNEL_SESSIONS_DIR / safe_user_id / f"{safe_session_id}.json").resolve()
+    return (
+        WEB_CHANNEL_SESSIONS_DIR / safe_user_id / f"{safe_session_id}.json"
+    ).resolve()
 
 
-def _session_default(session_id: str, *, title: str = "", preferences: dict[str, Any] | None = None) -> dict[str, Any]:
+def _session_default(
+    session_id: str, *, title: str = "", preferences: dict[str, Any] | None = None
+) -> dict[str, Any]:
     current_time = now_iso()
     safe_title = _safe_text(title) or "新对话"
     return {
@@ -102,6 +113,342 @@ def _preview_for_message(message: dict[str, Any]) -> str:
     return ""
 
 
+def _dedupe_texts(values: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        safe = _safe_text(value)
+        if not safe or safe in seen:
+            continue
+        seen.add(safe)
+        output.append(safe)
+    return output
+
+
+def _allowed_runtime_user_ids(
+    user_id: str,
+    source_user_ids: list[str] | tuple[str, ...] = (),
+) -> set[str]:
+    return set(_dedupe_texts([_safe_text(user_id), *list(source_user_ids or [])]))
+
+
+def runtime_session_visible_to_user(
+    user_id: str,
+    session_id: str,
+    *,
+    source_user_ids: list[str] | tuple[str, ...] = (),
+) -> bool:
+    runtime_session = runtime_v2.get_session(_safe_text(session_id))
+    if not runtime_session:
+        return True
+    owner = _safe_text(runtime_session.get("platform_user_id"))
+    return bool(owner and owner in _allowed_runtime_user_ids(user_id, source_user_ids))
+
+
+def _state_session_kind(session_id: str) -> str:
+    if _safe_text(session_id).startswith("scheduler-task-"):
+        return "scheduled_task"
+    return "channel"
+
+
+def _state_session_projection(
+    item: dict[str, Any],
+    *,
+    source_user_id: str,
+) -> dict[str, Any]:
+    session_id = _safe_text(item.get("session_id"))
+    kind = _state_session_kind(session_id)
+    title = _safe_text(item.get("title")) or (
+        "定时任务" if kind == "scheduled_task" else "历史会话"
+    )
+    return {
+        "id": session_id,
+        "title": title,
+        "preview": _safe_text(item.get("preview")),
+        "message_count": int(item.get("message_count") or 0),
+        "created_at": _safe_text(item.get("created_at")),
+        "updated_at": _safe_text(item.get("updated_at")),
+        "last_message_at": _safe_text(item.get("updated_at")),
+        "preferences": {
+            "source": "state_store",
+            "source_user_id": _safe_text(source_user_id),
+            "kind": kind,
+        },
+    }
+
+
+def _runtime_session_projection(item: dict[str, Any]) -> dict[str, Any]:
+    session_id = _safe_text(item.get("id"))
+    kind = _safe_text(item.get("kind")) or _state_session_kind(session_id)
+    title = _safe_text(item.get("title")) or (
+        "定时任务" if kind == "scheduled_task" else "历史会话"
+    )
+    updated_at = _safe_text(item.get("updated_at"))
+    event_summary = _runtime_session_event_summary(session_id)
+    last_message_at = _safe_text(event_summary.get("last_message_at")) or updated_at
+    return {
+        "id": session_id,
+        "title": title,
+        "preview": _safe_text((item.get("metadata") or {}).get("preview"))
+        or _safe_text(event_summary.get("preview")),
+        "message_count": int(event_summary.get("message_count") or 0),
+        "created_at": _safe_text(item.get("created_at")),
+        "updated_at": updated_at,
+        "last_message_at": last_message_at,
+        "preferences": {
+            "source": "runtime_v2",
+            "kind": kind,
+            "platform": _safe_text(item.get("platform")),
+            "platform_user_id": _safe_text(item.get("platform_user_id")),
+        },
+    }
+
+
+def _state_entry_message(
+    item: dict[str, str],
+    *,
+    session_id: str,
+    source_user_id: str,
+    index: int,
+) -> dict[str, Any]:
+    role = _safe_text(item.get("role")).lower()
+    return {
+        "id": f"history-{_slug(source_user_id)}-{index}",
+        "session_id": _safe_text(session_id),
+        "role": "assistant" if role == "model" else (role or "user"),
+        "content": str(item.get("content") or ""),
+        "status": "completed",
+        "message_type": "text",
+        "attachments": [],
+        "actions": [],
+        "meta": {
+            "source": "state_store",
+            "source_user_id": _safe_text(source_user_id),
+        },
+        "created_at": "",
+        "updated_at": "",
+    }
+
+
+def _runtime_event_message(event: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+    event_type = _safe_text(event.get("type"))
+    payload = event.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    role = ""
+    content = ""
+    message_type = "text"
+    attachments: list[dict[str, Any]] = []
+
+    if event_type in {"user_message", "scheduler_triggered"}:
+        role = "user"
+        content = _safe_text(payload.get("text") or payload.get("instruction"))
+    elif event_type in {
+        "assistant_message_final",
+        "message_update",
+        "background_message_sent",
+    }:
+        role = "assistant"
+        content = _safe_text(payload.get("text"))
+        message_type = _safe_text(payload.get("message_type")) or "text"
+        attachments = [
+            dict(item)
+            for item in list(payload.get("attachments") or [])
+            if isinstance(item, dict)
+        ]
+    elif event_type == "artifact_created":
+        role = "assistant"
+        kind = _safe_text(payload.get("kind")) or "document"
+        filename = (
+            _safe_text(payload.get("filename"))
+            or Path(_safe_text(payload.get("path"))).name
+        )
+        artifact_id = _safe_text(payload.get("artifact_id")) or _safe_text(
+            payload.get("id")
+        )
+        artifact = runtime_v2.get_artifact(artifact_id) if artifact_id else {}
+        path_text = _safe_text(payload.get("path"))
+        if path_text and not artifact:
+            artifact = runtime_v2.record_artifact(
+                session_id=session_id,
+                turn_id=_safe_text(event.get("turn_id")),
+                kind=kind,
+                path=path_text,
+                mime=_safe_text(payload.get("mime") or payload.get("mime_type")),
+                filename=filename,
+                source=_safe_text(payload.get("source")) or "runtime_event",
+            )
+            artifact_id = _safe_text(artifact.get("id")) or artifact_id
+            filename = _safe_text(artifact.get("filename")) or filename
+        message_type = kind
+        content = f"[附件] {filename}".strip()
+        attachments = [
+            {
+                "id": artifact_id,
+                "file_id": artifact_id,
+                "kind": kind,
+                "name": filename,
+                "mime_type": _safe_text(payload.get("mime"))
+                or _safe_text(artifact.get("mime")),
+                "path": path_text or _safe_text(artifact.get("path")),
+            }
+        ]
+    elif event_type == "request_user_input":
+        role = "assistant"
+        content = _safe_text(payload.get("prompt")) or "需要用户补充输入。"
+    elif event_type == "delivery_failed":
+        role = "assistant"
+        path_text = _safe_text(payload.get("path"))
+        filename = _safe_text(payload.get("filename")) or (
+            Path(path_text).name if path_text else ""
+        )
+        error = _safe_text(payload.get("error"))
+        target = _safe_text(payload.get("target"))
+        subject = filename or _safe_text(payload.get("artifact_id")) or "附件"
+        content = f"附件发送失败：{subject}"
+        details = "；".join(part for part in [target, error] if part)
+        if details:
+            content = f"{content}（{details}）"
+    elif event_type == "error":
+        role = "assistant"
+        content = (
+            _safe_text(payload.get("message"))
+            or _safe_text(payload.get("error"))
+            or "处理失败。"
+        )
+
+    if not role or not content:
+        return {}
+    return {
+        "id": f"runtime-{event.get('seq')}",
+        "session_id": _safe_text(session_id),
+        "role": role,
+        "content": content,
+        "status": "completed",
+        "message_type": message_type,
+        "attachments": attachments,
+        "actions": [],
+        "meta": {"source": "runtime_v2", "event_type": event_type},
+        "created_at": _safe_text(event.get("created_at")),
+        "updated_at": _safe_text(event.get("created_at")),
+    }
+
+
+def _runtime_event_messages_for_event(
+    event: dict[str, Any],
+    *,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    event_type = _safe_text(event.get("type"))
+    payload = event.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    if event_type == "artifact_created":
+        artifact_payloads = [
+            dict(item)
+            for item in list(payload.get("artifacts") or [])
+            if isinstance(item, dict)
+        ]
+        if not artifact_payloads:
+            artifact_payloads = [
+                dict(item)
+                for item in list(payload.get("files") or [])
+                if isinstance(item, dict)
+            ]
+        if artifact_payloads:
+            messages: list[dict[str, Any]] = []
+            for index, artifact in enumerate(artifact_payloads, start=1):
+                event_copy = {
+                    **dict(event),
+                    "payload": {
+                        **artifact,
+                        "artifact_id": artifact.get("id")
+                        or artifact.get("artifact_id")
+                        or artifact.get("path"),
+                        "source": payload.get("source") or artifact.get("source"),
+                    },
+                }
+                message = _runtime_event_message(event_copy, session_id=session_id)
+                if message:
+                    message["id"] = f"runtime-{event.get('seq')}-{index}"
+                    messages.append(message)
+            return messages
+    message = _runtime_event_message(event, session_id=session_id)
+    return [message] if message else []
+
+
+def _message_key(message: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        _safe_text(message.get("role")),
+        _safe_text(message.get("content")),
+        _safe_text(message.get("message_type")),
+        tuple(sorted(_attachment_identities(message))),
+    )
+
+
+def _attachment_identities(message: dict[str, Any]) -> set[tuple[str, str]]:
+    output: set[tuple[str, str]] = set()
+    for item in list(message.get("attachments") or []):
+        if not isinstance(item, dict):
+            continue
+        kind = _safe_text(item.get("kind"))
+        for key in ("file_id", "id", "path", "name"):
+            value = _safe_text(item.get(key))
+            if value:
+                output.add((kind, value))
+    return output
+
+
+def _merge_projection_and_runtime_messages(
+    projection_messages: list[dict[str, Any]],
+    runtime_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not projection_messages:
+        return list(runtime_messages)
+    output = list(projection_messages)
+    seen = {_message_key(item) for item in output}
+    seen_attachments: set[tuple[str, str]] = set()
+    for item in output:
+        seen_attachments.update(_attachment_identities(item))
+    for message in runtime_messages:
+        key = _message_key(message)
+        if key in seen:
+            continue
+        attachment_identities = _attachment_identities(message)
+        meta = message.get("meta") if isinstance(message.get("meta"), dict) else {}
+        if (
+            meta.get("event_type") == "artifact_created"
+            and attachment_identities
+            and attachment_identities.intersection(seen_attachments)
+        ):
+            continue
+        output.append(message)
+        seen.add(key)
+        seen_attachments.update(attachment_identities)
+    return output
+
+
+def _runtime_event_messages(session_id: str) -> list[dict[str, Any]]:
+    runtime_events = runtime_v2.list_events(
+        session_id=session_id, limit=500, latest=True
+    )
+    return [
+        message
+        for event in runtime_events
+        for message in _runtime_event_messages_for_event(event, session_id=session_id)
+    ]
+
+
+def _runtime_session_event_summary(session_id: str) -> dict[str, Any]:
+    messages = _runtime_event_messages(session_id)
+    if not messages:
+        return {}
+    return {
+        "message_count": len(messages),
+        "preview": _preview_for_message(messages[-1]),
+        "last_message_at": _safe_text(messages[-1].get("updated_at"))
+        or _safe_text(messages[-1].get("created_at")),
+    }
+
+
 async def _read_session_payload(user_id: str, session_id: str) -> dict[str, Any]:
     path = _session_path(user_id, session_id)
     lock = path.with_suffix(path.suffix + ".lock")
@@ -127,7 +474,9 @@ async def _read_session_payload(user_id: str, session_id: str) -> dict[str, Any]
         return payload
 
 
-async def _write_session_payload(user_id: str, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def _write_session_payload(
+    user_id: str, session_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     path = _session_path(user_id, session_id)
     lock = path.with_suffix(path.suffix + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,7 +521,9 @@ async def register_upload_file(
     session_id: str = "",
 ) -> dict[str, Any]:
     file_id = uuid.uuid4().hex
-    suffix = Path(original_name).suffix or mimetypes.guess_extension(mime_type or "") or ""
+    suffix = (
+        Path(original_name).suffix or mimetypes.guess_extension(mime_type or "") or ""
+    )
     target_path = (WEB_CHANNEL_UPLOADS_DIR / f"{file_id}{suffix}").resolve()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_path, target_path)
@@ -210,7 +561,11 @@ async def register_artifact_file(
         target_path.write_bytes(source)
     else:
         shutil.copyfile(str(source), target_path)
-    resolved_mime = _safe_text(mime_type) or _safe_text(mimetypes.guess_type(file_name)[0]) or "application/octet-stream"
+    resolved_mime = (
+        _safe_text(mime_type)
+        or _safe_text(mimetypes.guess_type(file_name)[0])
+        or "application/octet-stream"
+    )
     payload = {
         "id": file_id,
         "storage": "artifact",
@@ -284,7 +639,9 @@ async def claim_inbound_events(*, limit: int = 20) -> list[dict[str, Any]]:
     return claimed
 
 
-async def ack_inbound_event(event_id: str, *, status: str = "done", error: str = "") -> None:
+async def ack_inbound_event(
+    event_id: str, *, status: str = "done", error: str = ""
+) -> None:
     async with WEB_CHANNEL_INBOX_TABLE._inproc_lock:
         async with FileLock(WEB_CHANNEL_INBOX_TABLE.lock_path):
             rows = WEB_CHANNEL_INBOX_TABLE._read_all_unlocked()
@@ -348,7 +705,10 @@ async def list_outbound_events(
             seq = 0
         if seq <= int(after_seq or 0):
             continue
-        if target_session_id and _safe_text(row.get("session_id")) not in {"", target_session_id}:
+        if target_session_id and _safe_text(row.get("session_id")) not in {
+            "",
+            target_session_id,
+        }:
             continue
         output.append(dict(row))
         if len(output) >= max(1, int(limit)):
@@ -401,6 +761,14 @@ async def ensure_session_projection(
                 encoding="utf-8",
             )
     await create_chat_session(safe_user_id, safe_session_id)
+    runtime_v2.ensure_session(
+        session_id=safe_session_id,
+        kind="web_workspace",
+        platform="web",
+        platform_user_id=safe_user_id,
+        title=title,
+        metadata={"source": "web_channel_projection"},
+    )
     return await _read_session_payload(safe_user_id, safe_session_id)
 
 
@@ -472,7 +840,10 @@ async def upsert_session_message(
         else:
             rows.append(normalized)
             target = normalized
-        if target["role"] == "user" and _safe_text(session.get("title")) in {"", "新对话"}:
+        if target["role"] == "user" and _safe_text(session.get("title")) in {
+            "",
+            "新对话",
+        }:
             preview_title = _preview_for_message(target)
             if preview_title:
                 session["title"] = preview_title[:48]
@@ -487,19 +858,119 @@ async def upsert_session_message(
     return dict(target)
 
 
-async def get_session_projection(user_id: str, session_id: str) -> dict[str, Any]:
-    return await ensure_session_projection(user_id=user_id, session_id=session_id)
+async def get_session_projection(
+    user_id: str,
+    session_id: str,
+    *,
+    source_user_ids: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    safe_user_id = _safe_text(user_id)
+    safe_session_id = _safe_text(session_id)
+    if _session_path(safe_user_id, safe_session_id).exists():
+        return await ensure_session_projection(
+            user_id=safe_user_id,
+            session_id=safe_session_id,
+        )
+
+    runtime_session = runtime_v2.get_session(safe_session_id)
+    if runtime_session:
+        if not runtime_session_visible_to_user(
+            safe_user_id,
+            safe_session_id,
+            source_user_ids=source_user_ids,
+        ):
+            return _session_default(safe_session_id)
+        return {
+            "version": 1,
+            "session": _runtime_session_projection(runtime_session),
+            "messages": [],
+        }
+
+    for source_user_id in _dedupe_texts([safe_user_id, *list(source_user_ids or [])]):
+        for item in await list_chat_sessions(source_user_id, limit=200):
+            if _safe_text(item.get("session_id")) != safe_session_id:
+                continue
+            return {
+                "version": 1,
+                "session": _state_session_projection(
+                    item,
+                    source_user_id=source_user_id,
+                ),
+                "messages": [],
+            }
+    return await ensure_session_projection(
+        user_id=safe_user_id,
+        session_id=safe_session_id,
+    )
 
 
-async def get_session_messages(user_id: str, session_id: str) -> list[dict[str, Any]]:
-    payload = await ensure_session_projection(user_id=user_id, session_id=session_id)
+async def get_session_messages(
+    user_id: str,
+    session_id: str,
+    *,
+    source_user_ids: list[str] | tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    safe_user_id = _safe_text(user_id)
+    safe_session_id = _safe_text(session_id)
+    projection_messages: list[dict[str, Any]] = []
+    if _session_path(safe_user_id, safe_session_id).exists():
+        payload = await ensure_session_projection(
+            user_id=safe_user_id,
+            session_id=safe_session_id,
+        )
+        projection_messages = list(payload.get("messages") or [])
+
+    if not runtime_session_visible_to_user(
+        safe_user_id,
+        safe_session_id,
+        source_user_ids=source_user_ids,
+    ):
+        return projection_messages
+
+    runtime_messages = _runtime_event_messages(safe_session_id)
+    if projection_messages:
+        return _merge_projection_and_runtime_messages(
+            projection_messages,
+            runtime_messages,
+        )
+
+    for source_user_id in _dedupe_texts([safe_user_id, *list(source_user_ids or [])]):
+        rows = await get_session_entries(source_user_id, safe_session_id)
+        if not rows:
+            continue
+        state_messages = [
+            _state_entry_message(
+                item,
+                session_id=safe_session_id,
+                source_user_id=source_user_id,
+                index=index,
+            )
+            for index, item in enumerate(rows, start=1)
+        ]
+        return _merge_projection_and_runtime_messages(
+            state_messages,
+            runtime_messages,
+        )
+
+    if runtime_messages:
+        return runtime_messages
+
+    payload = await ensure_session_projection(
+        user_id=safe_user_id,
+        session_id=safe_session_id,
+    )
     return list(payload.get("messages") or [])
 
 
-async def list_session_projections(user_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
+async def list_session_projections(
+    user_id: str,
+    *,
+    source_user_ids: list[str] | tuple[str, ...] = (),
+    limit: int = 50,
+) -> list[dict[str, Any]]:
     safe_user_id = _slug(user_id) or "__anonymous__"
     root = (WEB_CHANNEL_SESSIONS_DIR / safe_user_id).resolve()
-    rows: list[dict[str, Any]] = []
+    rows_by_id: dict[str, dict[str, Any]] = {}
     if root.exists():
         for path in root.glob("*.json"):
             try:
@@ -511,22 +982,44 @@ async def list_session_projections(user_id: str, *, limit: int = 50) -> list[dic
             session_meta = loaded.get("session")
             if not isinstance(session_meta, dict):
                 continue
-            rows.append(dict(session_meta))
-    if not rows:
-        fallback_sessions = await list_chat_sessions(user_id, limit=limit)
+            row = dict(session_meta)
+            session_id = _safe_text(row.get("id"))
+            if session_id:
+                rows_by_id[session_id] = row
+
+    for source_user_id in _dedupe_texts([str(user_id), *list(source_user_ids or [])]):
+        fallback_sessions = await list_chat_sessions(source_user_id, limit=limit)
         for item in fallback_sessions:
-            rows.append(
-                {
-                    "id": _safe_text(item.get("session_id")),
-                    "title": _safe_text(item.get("title")) or "历史会话",
-                    "preview": _safe_text(item.get("preview")),
-                    "message_count": int(item.get("message_count") or 0),
-                    "created_at": _safe_text(item.get("created_at")),
-                    "updated_at": _safe_text(item.get("updated_at")),
-                    "last_message_at": _safe_text(item.get("updated_at")),
-                    "preferences": {},
-                }
-            )
+            row = _state_session_projection(item, source_user_id=source_user_id)
+            session_id = _safe_text(row.get("id"))
+            if not session_id:
+                continue
+            existing = rows_by_id.get(session_id)
+            if existing:
+                existing_count = int(existing.get("message_count") or 0)
+                row_count = int(row.get("message_count") or 0)
+                if row_count <= existing_count:
+                    continue
+            rows_by_id[session_id] = row
+
+    runtime_sessions = runtime_v2.list_sessions(
+        platform_user_ids=_dedupe_texts([str(user_id), *list(source_user_ids or [])]),
+        limit=max(100, int(limit or 50)),
+    )
+    for item in runtime_sessions:
+        row = _runtime_session_projection(item)
+        session_id = _safe_text(row.get("id"))
+        if not session_id:
+            continue
+        existing = rows_by_id.get(session_id)
+        if existing:
+            existing_updated = _safe_text(existing.get("updated_at"))
+            row_updated = _safe_text(row.get("updated_at"))
+            if existing_updated and existing_updated >= row_updated:
+                continue
+        rows_by_id[session_id] = row
+
+    rows = list(rows_by_id.values())
     rows.sort(
         key=lambda item: (
             _safe_text(item.get("updated_at")),

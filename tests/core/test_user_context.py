@@ -7,7 +7,12 @@ import pytest
 from core.channel_runtime_store import channel_runtime_store
 from core.task_inbox import task_inbox
 from core.heartbeat_store import heartbeat_store
-from user_context import SESSION_ID_KEY, get_or_create_session_id, get_user_context
+from user_context import (
+    SESSION_ID_KEY,
+    clear_context,
+    get_or_create_session_id,
+    get_user_context,
+)
 
 
 def _reset_task_inbox(tmp_path: Path) -> None:
@@ -31,6 +36,24 @@ def _reset_heartbeat_store(tmp_path: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     heartbeat_store.root = root
     heartbeat_store._locks.clear()
+
+
+def test_clear_context_drops_stale_runtime_v2_turn_binding():
+    ctx = SimpleNamespace(
+        user_data={
+            SESSION_ID_KEY: "old-session",
+            "runtime_v2_session_id": "old-session",
+            "runtime_v2_turn_id": "old-turn",
+            "runtime_v2_task_id": "old-task",
+        }
+    )
+
+    clear_context(ctx)
+
+    assert ctx.user_data[SESSION_ID_KEY] != "old-session"
+    assert "runtime_v2_session_id" not in ctx.user_data
+    assert "runtime_v2_turn_id" not in ctx.user_data
+    assert "runtime_v2_task_id" not in ctx.user_data
 
 
 @pytest.mark.asyncio
@@ -178,6 +201,39 @@ def test_channel_runtime_store_completed_status_clears_active_task(
         )
         is None
     )
+
+
+def test_channel_runtime_store_preserves_runtime_v2_active_task_ids(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    channel_runtime_store.set_active_task(
+        {
+            "id": "legacy-active",
+            "status": "waiting_user",
+            "runtime_v2_session_id": "telegram:u-runtime:main",
+            "runtime_v2_turn_id": "turn-runtime",
+            "runtime_v2_task_id": "task-runtime",
+        },
+        platform="telegram",
+        platform_user_id="u-runtime",
+    )
+    channel_runtime_store.update_active_task(
+        platform="telegram",
+        platform_user_id="u-runtime",
+        result_summary="still waiting",
+    )
+
+    active = channel_runtime_store.get_active_task(
+        platform="telegram",
+        platform_user_id="u-runtime",
+    )
+
+    assert active["runtime_v2_session_id"] == "telegram:u-runtime:main"
+    assert active["runtime_v2_turn_id"] == "turn-runtime"
+    assert active["runtime_v2_task_id"] == "task-runtime"
 
 
 def test_channel_runtime_store_expands_tilde_data_dir(tmp_path, monkeypatch):

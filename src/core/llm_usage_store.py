@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Iterator
 
 from core.config import DATA_DIR
 from core.model_config import get_model_id_for_api, get_models_config, load_models_config
@@ -593,6 +593,15 @@ class LlmUsageStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _ensure_db(self) -> None:
         def _ensure_columns(conn: sqlite3.Connection) -> None:
             existing_columns = {
@@ -612,7 +621,7 @@ class LlmUsageStore:
         with self._lock:
             if self._db_ready:
                 return
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.execute(
                     f"""
                     CREATE TABLE IF NOT EXISTS {_USAGE_TABLE} (
@@ -760,7 +769,7 @@ class LlmUsageStore:
         self._ensure_db()
         with self._lock:
             try:
-                with self._connect() as conn:
+                with self._connection() as conn:
                     conn.execute(
                         f"""
                         INSERT INTO {_USAGE_TABLE} ({", ".join(columns)})
@@ -786,7 +795,7 @@ class LlmUsageStore:
             params.append(str(day))
 
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 overall_row = conn.execute(
                     f"""
                     SELECT
@@ -908,7 +917,7 @@ class LlmUsageStore:
         where_sql = f"WHERE {' AND '.join(where_clauses)}"
 
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 rows = conn.execute(
                     f"""
                     SELECT
@@ -1015,7 +1024,7 @@ class LlmUsageStore:
     def reset(self) -> int:
         self._ensure_db()
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 count_row = conn.execute(
                     f"SELECT COUNT(*) AS count FROM {_USAGE_TABLE}"
                 ).fetchone()

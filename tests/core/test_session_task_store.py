@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from core.heartbeat_store import heartbeat_store
+from core.runtime_v2 import runtime_v2
 from core.session_task_store import session_task_store
 from core.task_inbox import task_inbox
 
@@ -34,10 +35,13 @@ def _reset_heartbeat_store(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def _isolated_state(tmp_path):
+def _isolated_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("IKAROS_RUNTIME_DB_PATH", str(tmp_path / "runtime.db"))
     _reset_task_inbox(tmp_path)
     _reset_heartbeat_store(tmp_path)
     return tmp_path
+
+
 @pytest.mark.asyncio
 async def test_list_recent_completed_ignores_expired_completed_session(_isolated_state):
     session = await task_inbox.submit(
@@ -109,3 +113,90 @@ async def test_get_active_prefers_heartbeat_session_view(_isolated_state):
     assert active.current_stage_id == "stage-2"
     assert active.delivery_state == "retrying"
     assert "任务暂时卡住了" in active.last_user_visible_summary
+
+
+@pytest.mark.asyncio
+async def test_get_active_can_read_runtime_v2_task_without_legacy_active_state(
+    _isolated_state,
+):
+    session = runtime_v2.ensure_session(
+        session_id="telegram:u-rv2-active:main",
+        kind="channel_chat",
+        platform="telegram",
+        platform_user_id="u-rv2-active",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="继续 Runtime v2 活跃任务",
+        status="running",
+    )
+    task = runtime_v2.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="Runtime v2 活跃任务",
+        status="waiting_user",
+        metadata={
+            "result_summary": "等待用户确认。",
+        },
+    )
+
+    active = await session_task_store.get_active("u-rv2-active")
+
+    assert active is not None
+    assert active.session_task_id == task["id"]
+    assert active.status == "waiting_user"
+    assert active.task_goal == "Runtime v2 活跃任务"
+    assert active.last_user_visible_summary == "等待用户确认。"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_completed_reads_runtime_v2_resume_window(
+    _isolated_state,
+):
+    resume_until = (datetime.now().astimezone() + timedelta(minutes=10)).isoformat(
+        timespec="seconds"
+    )
+    legacy_task = await task_inbox.submit(
+        source="user_chat",
+        goal="legacy duplicate",
+        user_id="u-rv2-completed",
+    )
+    await task_inbox.update_status(
+        legacy_task.task_id,
+        "completed",
+        event="done",
+        metadata={
+            "resume_window_until": resume_until,
+            "last_user_visible_summary": "legacy summary",
+        },
+    )
+    session = runtime_v2.ensure_session(
+        session_id="telegram:u-rv2-completed:main",
+        kind="channel_chat",
+        platform="telegram",
+        platform_user_id="u-rv2-completed",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="Runtime v2 completed",
+        status="running",
+    )
+    task = runtime_v2.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="Runtime v2 completed",
+        status="running",
+        metadata={
+            "task_inbox_id": legacy_task.task_id,
+            "resume_window_until": resume_until,
+            "result_summary": "Runtime v2 summary",
+        },
+    )
+    runtime_v2.update_task_status(task["id"], "succeeded")
+
+    rows = await session_task_store.list_recent_completed("u-rv2-completed", limit=2)
+
+    assert [row.session_task_id for row in rows] == [task["id"]]
+    assert rows[0].last_user_visible_summary == "Runtime v2 summary"

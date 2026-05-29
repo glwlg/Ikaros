@@ -147,6 +147,11 @@ class ChannelRuntimeStore:
             "codex_session_id": self._safe_text(task.get("codex_session_id"), 160),
             "codex_thread_id": self._safe_text(task.get("codex_thread_id"), 160),
             "codex_turn_id": self._safe_text(task.get("codex_turn_id"), 160),
+            "runtime_v2_session_id": self._safe_text(
+                task.get("runtime_v2_session_id"), 180
+            ),
+            "runtime_v2_turn_id": self._safe_text(task.get("runtime_v2_turn_id"), 180),
+            "runtime_v2_task_id": self._safe_text(task.get("runtime_v2_task_id"), 180),
         }
         if not normalized["id"]:
             return None
@@ -353,6 +358,9 @@ class ChannelRuntimeStore:
                     "codex_session_id",
                     "codex_thread_id",
                     "codex_turn_id",
+                    "runtime_v2_session_id",
+                    "runtime_v2_turn_id",
+                    "runtime_v2_task_id",
                 ):
                     if key in fields:
                         current[key] = fields[key]
@@ -363,6 +371,7 @@ class ChannelRuntimeStore:
                     "failed",
                     "cancelled",
                     "timed_out",
+                    "expired",
                 }
                 should_clear = bool(fields.get("clear_active")) or (
                     self._safe_text(current.get("status")).lower() in terminal_statuses

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 from typing import Any
+
+from core.runtime_v2 import TERMINAL_STATUSES, runtime_v2
 
 
 def _safe_text(value: Any, limit: int = 0) -> str:
@@ -84,6 +87,12 @@ async def clear_expired_waiting_confirmation(
         safe_user_id,
         f"confirmation_expired:{task_id}",
     )
+    close_runtime_v2_waiting_task(
+        active_task=active_task,
+        status="expired",
+        reason=result_summary,
+        event_type="task.confirmation_expired",
+    )
     if task_inbox_id:
         from core.task_inbox import task_inbox
 
@@ -95,3 +104,119 @@ async def clear_expired_waiting_confirmation(
             result={"summary": result_summary},
             output={"text": result_summary},
         )
+
+
+def _runtime_task_from_active(active_task: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(active_task, dict):
+        return {}
+    candidates = (
+        active_task.get("runtime_v2_task_id"),
+        active_task.get("task_id"),
+        active_task.get("id"),
+        active_task.get("session_task_id"),
+    )
+    for candidate in candidates:
+        task_id = _safe_text(candidate, 180)
+        if not task_id:
+            continue
+        with contextlib.suppress(Exception):
+            task = runtime_v2.get_task(task_id)
+            if task:
+                return task
+    return {}
+
+
+def _runtime_turn_from_active(
+    active_task: dict[str, Any] | None,
+    runtime_task: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(active_task, dict):
+        active_task = {}
+    candidates = (
+        active_task.get("runtime_v2_turn_id"),
+        active_task.get("turn_id"),
+        (runtime_task or {}).get("turn_id"),
+    )
+    for candidate in candidates:
+        turn_id = _safe_text(candidate, 180)
+        if not turn_id:
+            continue
+        with contextlib.suppress(Exception):
+            turn = runtime_v2.get_turn(turn_id)
+            if turn:
+                return turn
+    return {}
+
+
+def close_runtime_v2_waiting_task(
+    *,
+    active_task: dict[str, Any] | None,
+    status: str,
+    reason: str,
+    event_type: str,
+) -> bool:
+    target = _safe_text(status, 40).lower()
+    if target not in {"expired", "cancelled", "failed"}:
+        target = "cancelled"
+    summary = _safe_text(reason, 1000)
+    runtime_task = _runtime_task_from_active(active_task)
+    runtime_turn = _runtime_turn_from_active(active_task, runtime_task)
+    changed = False
+
+    if runtime_turn and _safe_text(runtime_turn.get("status"), 40) not in TERMINAL_STATUSES:
+        with contextlib.suppress(Exception):
+            if _safe_text(runtime_turn.get("status"), 40) == "queued":
+                runtime_v2.update_turn_status(
+                    _safe_text(runtime_turn.get("id"), 180),
+                    "running",
+                    metadata={"waiting_confirmation_close": True},
+                )
+            runtime_v2.update_turn_status(
+                _safe_text(runtime_turn.get("id"), 180),
+                target,
+                error=summary if target == "failed" else "",
+                metadata={
+                    "waiting_confirmation_closed": True,
+                    "waiting_confirmation_close_reason": summary,
+                },
+            )
+            changed = True
+
+    if runtime_task and _safe_text(runtime_task.get("status"), 40) not in TERMINAL_STATUSES:
+        with contextlib.suppress(Exception):
+            if _safe_text(runtime_task.get("status"), 40) == "queued":
+                runtime_v2.update_task_status(
+                    _safe_text(runtime_task.get("id"), 180),
+                    "running",
+                    metadata={"waiting_confirmation_close": True},
+                )
+            runtime_v2.update_task_status(
+                _safe_text(runtime_task.get("id"), 180),
+                target,
+                metadata={
+                    "waiting_confirmation_closed": True,
+                    "waiting_confirmation_close_reason": summary,
+                },
+            )
+            changed = True
+
+    session_id = _safe_text(
+        (active_task or {}).get("runtime_v2_session_id")
+        or runtime_task.get("session_id")
+        or runtime_turn.get("session_id"),
+        180,
+    )
+    if session_id:
+        with contextlib.suppress(Exception):
+            runtime_v2.append_event(
+                session_id=session_id,
+                turn_id=_safe_text(runtime_turn.get("id"), 180),
+                event_type=_safe_text(event_type, 120) or "task.waiting_closed",
+                payload={
+                    "status": target,
+                    "reason": summary,
+                    "runtime_v2_task_id": _safe_text(runtime_task.get("id"), 180),
+                },
+            )
+            changed = True
+    return changed

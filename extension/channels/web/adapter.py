@@ -13,6 +13,8 @@ from core.channel_runtime_store import channel_runtime_store
 from core.platform.adapter import BotAdapter
 from core.platform.exceptions import MessageSendError
 from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
+from core.runtime_v2 import runtime_event_bus, runtime_v2
+from core.state_paths import SINGLE_USER_SCOPE
 from services.tts_service import synthesize_speech
 from web_channel.store import (
     ack_inbound_event,
@@ -57,12 +59,16 @@ class WebUnifiedContext(UnifiedContext):
 class WebAdapter(BotAdapter):
     def __init__(self, *, poll_interval_sec: float = DEFAULT_POLL_INTERVAL_SEC):
         super().__init__("web")
-        self.poll_interval_sec = max(0.2, float(poll_interval_sec or DEFAULT_POLL_INTERVAL_SEC))
+        self.poll_interval_sec = max(
+            0.2, float(poll_interval_sec or DEFAULT_POLL_INTERVAL_SEC)
+        )
         self._poll_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._message_handler: Optional[Callable[[UnifiedContext], Any]] = None
         self._command_handlers: Dict[str, Callable[[UnifiedContext], Any]] = {}
-        self._callback_handlers: List[Tuple[re.Pattern[str], Callable[[UnifiedContext], Any]]] = []
+        self._callback_handlers: List[
+            Tuple[re.Pattern[str], Callable[[UnifiedContext], Any]]
+        ] = []
         self._user_data_store: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
@@ -99,7 +105,13 @@ class WebAdapter(BotAdapter):
         self._message_handler = handler_func
         logger.info("Registered Web message handler")
 
-    def on_command(self, command: str, handler: Callable[[UnifiedContext], Any], description: str = None, **kwargs):
+    def on_command(
+        self,
+        command: str,
+        handler: Callable[[UnifiedContext], Any],
+        description: str = None,
+        **kwargs,
+    ):
         _ = description
         _ = kwargs
         safe_command = self._safe_text(command).lstrip("/")
@@ -115,7 +127,9 @@ class WebAdapter(BotAdapter):
         if self._poll_task and not self._poll_task.done():
             return
         self._stop_event.clear()
-        self._poll_task = asyncio.create_task(self._poll_loop(), name="web-channel-poll")
+        self._poll_task = asyncio.create_task(
+            self._poll_loop(), name="web-channel-poll"
+        )
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -164,8 +178,27 @@ class WebAdapter(BotAdapter):
         if not session_id and isinstance(raw_data, dict):
             session_id = self._safe_text(raw_data.get("session_id"))
         if not session_id:
-            session_id = self._safe_text(getattr(getattr(message, "chat", None), "id", ""))
+            session_id = self._safe_text(
+                getattr(getattr(message, "chat", None), "id", "")
+            )
         return session_id
+
+    def _runtime_context_ids(self, context: UnifiedContext) -> tuple[str, str]:
+        user_data = getattr(getattr(context, "platform_ctx", None), "user_data", None)
+        if isinstance(user_data, dict):
+            if user_data.get("_runtime_delivery_managed"):
+                return "", ""
+            session_id = self._safe_text(user_data.get("runtime_v2_session_id"))
+            turn_id = self._safe_text(user_data.get("runtime_v2_turn_id"))
+            if session_id:
+                return session_id, turn_id
+        raw_data = getattr(getattr(context, "message", None), "raw_data", None)
+        if isinstance(raw_data, dict):
+            session_id = self._safe_text(raw_data.get("runtime_v2_session_id"))
+            turn_id = self._safe_text(raw_data.get("runtime_v2_turn_id"))
+            if session_id:
+                return session_id, turn_id
+        return "", ""
 
     async def _process_event(self, event: dict[str, Any]) -> None:
         event_id = self._safe_text(event.get("id"))
@@ -176,9 +209,14 @@ class WebAdapter(BotAdapter):
                 return
             ctx = await self._build_context(event)
             if event_type == "menu_action":
-                handled = await self._dispatch_callback(ctx, self._safe_text((event.get("payload") or {}).get("callback_data")))
+                handled = await self._dispatch_callback(
+                    ctx,
+                    self._safe_text((event.get("payload") or {}).get("callback_data")),
+                )
             elif event_type == "command":
-                handled = await self._dispatch_command(ctx, self._safe_text((event.get("payload") or {}).get("text")))
+                handled = await self._dispatch_command(
+                    ctx, self._safe_text((event.get("payload") or {}).get("text"))
+                )
             else:
                 handled = await self._dispatch_command(ctx, ctx.message.content)
                 if not handled and self._message_handler is not None:
@@ -197,8 +235,35 @@ class WebAdapter(BotAdapter):
             logger.exception("Web adapter failed to process event %s", event_id)
             await fail_inbound_event(event_id, str(exc))
             payload = event.get("payload") or {}
-            owner_user_id = self._safe_text(event.get("owner_user_id")) or self._safe_text(payload.get("user_id"))
-            session_id = self._safe_text(event.get("session_id")) or self._safe_text(payload.get("session_id"))
+            owner_user_id = self._safe_text(
+                event.get("owner_user_id")
+            ) or self._safe_text(payload.get("user_id"))
+            session_id = self._safe_text(event.get("session_id")) or self._safe_text(
+                payload.get("session_id")
+            )
+            runtime_session_id = self._safe_text(payload.get("runtime_v2_session_id"))
+            runtime_turn_id = self._safe_text(payload.get("runtime_v2_turn_id"))
+            if runtime_session_id:
+                if runtime_turn_id:
+                    try:
+                        runtime_v2.update_turn_status(
+                            runtime_turn_id,
+                            "failed",
+                            error=str(exc),
+                            metadata={"handler": "web_adapter"},
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to mark Runtime v2 turn %s as failed",
+                            runtime_turn_id,
+                            exc_info=True,
+                        )
+                runtime_event_bus.publish(
+                    session_id=runtime_session_id,
+                    turn_id=runtime_turn_id,
+                    event_type="error",
+                    payload={"message": str(exc), "source": "web_adapter"},
+                )
             if owner_user_id and session_id:
                 await append_outbound_event(
                     owner_user_id=owner_user_id,
@@ -209,8 +274,12 @@ class WebAdapter(BotAdapter):
 
     async def _build_context(self, event: dict[str, Any]) -> WebUnifiedContext:
         payload = dict(event.get("payload") or {})
-        owner_user_id = self._safe_text(event.get("owner_user_id")) or self._safe_text(payload.get("user_id"))
-        session_id = self._safe_text(event.get("session_id")) or self._safe_text(payload.get("session_id"))
+        owner_user_id = self._safe_text(event.get("owner_user_id")) or self._safe_text(
+            payload.get("user_id")
+        )
+        session_id = self._safe_text(event.get("session_id")) or self._safe_text(
+            payload.get("session_id")
+        )
         display_name = self._safe_text(payload.get("display_name")) or None
         username = self._safe_text(payload.get("username")) or None
         event_type = self._safe_text(event.get("type"))
@@ -221,15 +290,25 @@ class WebAdapter(BotAdapter):
         mime_type = self._safe_text(payload.get("mime_type")) or None
         file_size = None
         try:
-            file_size = int(payload.get("file_size")) if payload.get("file_size") is not None else None
+            file_size = (
+                int(payload.get("file_size"))
+                if payload.get("file_size") is not None
+                else None
+            )
         except Exception:
             file_size = None
         if event_type in {"message_file", "message_voice"} and file_id:
             if not mime_type or not file_name or file_size is None:
                 file_record = await get_file_record(file_id)
                 if isinstance(file_record, dict):
-                    file_name = file_name or self._safe_text(file_record.get("name")) or None
-                    mime_type = mime_type or self._safe_text(file_record.get("mime_type")) or None
+                    file_name = (
+                        file_name or self._safe_text(file_record.get("name")) or None
+                    )
+                    mime_type = (
+                        mime_type
+                        or self._safe_text(file_record.get("mime_type"))
+                        or None
+                    )
                     try:
                         file_size = file_size or int(file_record.get("size") or 0)
                     except Exception:
@@ -239,8 +318,16 @@ class WebAdapter(BotAdapter):
                 file_name=file_name,
                 force_voice=force_voice,
             )
-        text = self._safe_text(payload.get("text")) if event_type in {"message_text", "command"} else None
-        caption = self._safe_text(payload.get("caption")) if event_type in {"message_file", "message_voice"} else None
+        text = (
+            self._safe_text(payload.get("text"))
+            if event_type in {"message_text", "command"}
+            else None
+        )
+        caption = (
+            self._safe_text(payload.get("caption"))
+            if event_type in {"message_file", "message_voice"}
+            else None
+        )
         user = User(
             id=owner_user_id,
             username=username,
@@ -248,10 +335,16 @@ class WebAdapter(BotAdapter):
             raw_data={"session_id": session_id},
         )
         message = UnifiedMessage(
-            id=self._safe_text(payload.get("message_id")) or event.get("id") or uuid.uuid4().hex,
+            id=self._safe_text(payload.get("message_id"))
+            or event.get("id")
+            or uuid.uuid4().hex,
             platform="web",
             user=user,
-            chat=Chat(id=session_id or owner_user_id, type="private", title=display_name or "Web Chat"),
+            chat=Chat(
+                id=session_id or owner_user_id,
+                type="private",
+                title=display_name or "Web Chat",
+            ),
             date=datetime_now(),
             type=message_type,
             text=text,
@@ -267,7 +360,25 @@ class WebAdapter(BotAdapter):
                 "callback_data": self._safe_text(payload.get("callback_data")),
             },
         )
-        platform_ctx = SimpleNamespace(user_data=self.get_user_data(owner_user_id))
+        user_data = self.get_user_data(owner_user_id)
+        user_data["current_session_id"] = session_id
+        runtime_session_id = self._safe_text(payload.get("runtime_v2_session_id"))
+        runtime_turn_id = self._safe_text(payload.get("runtime_v2_turn_id"))
+        if runtime_session_id:
+            user_data["runtime_v2_session_id"] = runtime_session_id
+        else:
+            user_data.pop("runtime_v2_session_id", None)
+        if runtime_turn_id:
+            user_data["runtime_v2_turn_id"] = runtime_turn_id
+        else:
+            user_data.pop("runtime_v2_turn_id", None)
+        if session_id.startswith("scheduler-task-"):
+            user_data["codex_kernel_session_platform"] = "scheduler"
+            user_data["codex_kernel_session_user_id"] = SINGLE_USER_SCOPE
+        else:
+            user_data.pop("codex_kernel_session_platform", None)
+            user_data.pop("codex_kernel_session_user_id", None)
+        platform_ctx = SimpleNamespace(user_data=user_data)
         ctx = WebUnifiedContext(
             message=message,
             platform_ctx=platform_ctx,
@@ -325,6 +436,26 @@ class WebAdapter(BotAdapter):
             event_type=event_type,
             payload={"message": stored},
         )
+        runtime_session_id, runtime_turn_id = self._runtime_context_ids(context)
+        if runtime_session_id and self._safe_text(stored.get("role")) == "assistant":
+            try:
+                runtime_event_bus.publish(
+                    session_id=runtime_session_id,
+                    turn_id=runtime_turn_id,
+                    event_type=(
+                        "message_update"
+                        if event_type == "message_updated"
+                        else "assistant_message_final"
+                    ),
+                    payload={
+                        "text": str(stored.get("content") or ""),
+                        "message_id": str(stored.get("id") or ""),
+                        "message_type": str(stored.get("message_type") or "text"),
+                        "attachments": list(stored.get("attachments") or []),
+                    },
+                )
+            except Exception:
+                logger.warning("Runtime v2 web message event failed.", exc_info=True)
         return SimpleNamespace(id=stored["id"], message_id=stored["id"])
 
     async def _maybe_emit_tts(
@@ -409,13 +540,19 @@ class WebAdapter(BotAdapter):
                 "role": "assistant",
                 "content": str(text or ""),
                 "message_type": "text",
-                "actions": list((ui or {}).get("actions") or []) if isinstance(ui, dict) else [],
+                "actions": (
+                    list((ui or {}).get("actions") or [])
+                    if isinstance(ui, dict)
+                    else []
+                ),
                 "meta": {"ui": ui} if ui else {},
             },
         )
         return stored
 
-    async def edit_text(self, context: UnifiedContext, message_id: str, text: str, **kwargs) -> Any:
+    async def edit_text(
+        self, context: UnifiedContext, message_id: str, text: str, **kwargs
+    ) -> Any:
         ui = kwargs.get("ui")
         return await self._emit_message_event(
             context,
@@ -425,7 +562,11 @@ class WebAdapter(BotAdapter):
                 "role": "assistant",
                 "content": str(text or ""),
                 "message_type": "text",
-                "actions": list((ui or {}).get("actions") or []) if isinstance(ui, dict) else [],
+                "actions": (
+                    list((ui or {}).get("actions") or [])
+                    if isinstance(ui, dict)
+                    else []
+                ),
                 "meta": {"ui": ui} if ui else {},
             },
         )
@@ -470,8 +611,15 @@ class WebAdapter(BotAdapter):
         caption: Optional[str] = None,
         **kwargs,
     ) -> Any:
-        inferred_name = self._safe_text(filename) or self._safe_text(kwargs.get("filename")) or "document.bin"
-        guessed_mime = self._safe_text(mimetypes.guess_type(inferred_name)[0]) or "application/octet-stream"
+        inferred_name = (
+            self._safe_text(filename)
+            or self._safe_text(kwargs.get("filename"))
+            or "document.bin"
+        )
+        guessed_mime = (
+            self._safe_text(mimetypes.guess_type(inferred_name)[0])
+            or "application/octet-stream"
+        )
         return await self._reply_attachment(
             context,
             content=document,
@@ -499,11 +647,15 @@ class WebAdapter(BotAdapter):
         )
         session_id = self._resolve_session_id(context)
         if context.effective_user_id and session_id:
-            projection = await get_session_projection(context.effective_user_id, session_id)
+            projection = await get_session_projection(
+                context.effective_user_id, session_id
+            )
             messages = list(projection.get("messages") or [])
             attachment = None
             for item in messages:
-                if self._safe_text(item.get("id")) != self._safe_text(getattr(result, "id", "")):
+                if self._safe_text(item.get("id")) != self._safe_text(
+                    getattr(result, "id", "")
+                ):
                     continue
                 attachments = item.get("attachments")
                 if isinstance(attachments, list) and attachments:
@@ -534,7 +686,9 @@ class WebAdapter(BotAdapter):
         session_id = self._resolve_session_id(context)
         user_id = context.effective_user_id
         if not user_id or not session_id:
-            raise MessageSendError("web attachment target is missing user_id or session_id")
+            raise MessageSendError(
+                "web attachment target is missing user_id or session_id"
+            )
         artifact = await register_artifact_file(
             owner_user_id=user_id,
             session_id=session_id,
@@ -543,6 +697,34 @@ class WebAdapter(BotAdapter):
             mime_type=mime_type,
         )
         attachment = self._attachment_from_record(artifact, kind=kind)
+        runtime_session_id, runtime_turn_id = self._runtime_context_ids(context)
+        runtime_artifact: dict[str, Any] = {}
+        if runtime_session_id:
+            try:
+                runtime_artifact = runtime_v2.record_artifact(
+                    session_id=runtime_session_id,
+                    turn_id=runtime_turn_id,
+                    kind=kind,
+                    path=str(artifact.get("path") or ""),
+                    mime=str(artifact.get("mime_type") or mime_type),
+                    filename=str(artifact.get("name") or file_name),
+                    source="web_adapter",
+                )
+                if runtime_artifact:
+                    runtime_event_bus.publish(
+                        session_id=runtime_session_id,
+                        turn_id=runtime_turn_id,
+                        event_type="artifact_created",
+                        payload={
+                            "artifact_id": runtime_artifact.get("id"),
+                            "kind": kind,
+                            "path": artifact.get("path"),
+                            "filename": artifact.get("name"),
+                            "mime": artifact.get("mime_type"),
+                        },
+                    )
+            except Exception:
+                logger.warning("Runtime v2 web artifact event failed.", exc_info=True)
         response = await self._emit_message_event(
             context,
             event_type="message_created",
@@ -558,8 +740,33 @@ class WebAdapter(BotAdapter):
             owner_user_id=user_id,
             session_id=session_id,
             event_type="attachment_ready",
-            payload={"message_id": getattr(response, "id", ""), "attachment": attachment},
+            payload={
+                "message_id": getattr(response, "id", ""),
+                "attachment": attachment,
+            },
         )
+        if runtime_artifact:
+            try:
+                runtime_v2.record_delivery(
+                    artifact_id=str(runtime_artifact.get("id") or ""),
+                    platform="web",
+                    target=f"web:{user_id}",
+                    status="delivered",
+                )
+                runtime_event_bus.publish(
+                    session_id=runtime_session_id,
+                    turn_id=runtime_turn_id,
+                    event_type="artifact_delivered",
+                    payload={
+                        "artifact_id": runtime_artifact.get("id"),
+                        "platform": "web",
+                        "target": f"web:{user_id}",
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Runtime v2 web artifact delivery failed.", exc_info=True
+                )
         return response
 
     async def delete_message(
@@ -629,7 +836,9 @@ class WebAdapter(BotAdapter):
         )
         return True
 
-    async def download_file(self, context: UnifiedContext, file_id: str, **kwargs) -> bytes:
+    async def download_file(
+        self, context: UnifiedContext, file_id: str, **kwargs
+    ) -> bytes:
         _ = context
         _ = kwargs
         return await load_file_bytes(file_id)

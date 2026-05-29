@@ -3,6 +3,7 @@ from core.channel_user_store import DEFAULT_ACCESS
 from core.platform.models import UnifiedContext
 from core.task_confirmation import (
     clear_expired_waiting_confirmation,
+    close_runtime_v2_waiting_task,
     is_confirmation_expired,
 )
 from core.skill_menu import make_callback, parse_callback
@@ -20,6 +21,8 @@ from .base_handlers import (
 logger = logging.getLogger(__name__)
 HOME_MENU_NS = "home"
 HELP_MENU_NS = "helpm"
+SCHEDULER_SESSION_NS = "schsess"
+SCHEDULER_SESSION_RETURN_KEY = "_scheduler_session_return_session_id"
 
 WELCOME_MESSAGE = (
     "👋 **欢迎使用 Ikaros！**\n\n"
@@ -349,6 +352,8 @@ async def stop_command(ctx: UnifiedContext) -> None:
             heartbeat_path = str(heartbeat_store.heartbeat_path(str(user_id)))
     if session_snapshot is None and active_task_id:
         session_snapshot = await session_task_store.get(str(active_task_id))
+    if session_snapshot is not None and not active_task_id:
+        active_task_id = str(session_snapshot.session_task_id or "")
 
     codex_interrupted = await interrupt_codex_kernel_task(
         user_id=str(user_id),
@@ -429,6 +434,161 @@ async def stop_command(ctx: UnifiedContext) -> None:
         await ctx.reply(
             "ℹ️ **当前没有正在执行的任务**\n\n您可以直接发送新消息开始对话。"
         )
+
+
+def _is_scheduler_session_id(session_id: str) -> bool:
+    return str(session_id or "").strip().startswith("scheduler-task-")
+
+
+def _message_chat_id(ctx: UnifiedContext) -> str:
+    chat = getattr(getattr(ctx, "message", None), "chat", None)
+    return str(getattr(chat, "id", "") or "").strip()
+
+
+def _set_visible_session(
+    ctx: UnifiedContext,
+    *,
+    session_id: str,
+    user_id: str,
+    platform: str,
+    scheduler_session: bool,
+) -> None:
+    from core.channel_runtime_store import channel_runtime_store
+    from core.state_paths import SINGLE_USER_SCOPE
+    from user_context import SESSION_ID_KEY
+
+    safe_session_id = str(session_id or "").strip()
+    ctx.user_data[SESSION_ID_KEY] = safe_session_id
+    ctx.user_data["runtime_v2_session_id"] = safe_session_id
+    ctx.user_data.pop("runtime_v2_turn_id", None)
+    ctx.user_data.pop("runtime_v2_task_id", None)
+    if scheduler_session:
+        ctx.user_data["codex_kernel_session_platform"] = "scheduler"
+        ctx.user_data["codex_kernel_session_user_id"] = SINGLE_USER_SCOPE
+    else:
+        ctx.user_data.pop("codex_kernel_session_platform", None)
+        ctx.user_data.pop("codex_kernel_session_user_id", None)
+    if platform and user_id:
+        channel_runtime_store.set_session_id(
+            session_id=safe_session_id,
+            platform=platform,
+            platform_user_id=user_id,
+        )
+
+
+async def _remember_visible_session_target(
+    ctx: UnifiedContext,
+    *,
+    user_id: str,
+    platform: str,
+    session_id: str,
+) -> None:
+    chat_id = _message_chat_id(ctx)
+    if not platform or not user_id or not chat_id or not session_id:
+        return
+    try:
+        from core.heartbeat_store import heartbeat_store
+
+        await heartbeat_store.set_delivery_target(
+            user_id,
+            platform,
+            chat_id,
+            session_id=session_id,
+        )
+    except Exception:
+        logger.debug("Failed to remember visible session target.", exc_info=True)
+
+
+async def handle_scheduler_session_callback(ctx: UnifiedContext) -> int:
+    if not await check_permission_unified(ctx):
+        return CONVERSATION_END
+
+    action, parts = parse_callback(ctx.callback_data or "", SCHEDULER_SESSION_NS)
+    if action != "enter" or not parts:
+        await ctx.answer_callback()
+        return CONVERSATION_END
+
+    scheduled_task_id = str(parts[0] or "").strip()
+    if not scheduled_task_id:
+        await ctx.answer_callback("任务不存在")
+        return CONVERSATION_END
+
+    from core.channel_runtime_store import channel_runtime_store
+    from extension.skills.builtin.scheduler_manager.scripts.store import (
+        scheduler_task_session_id,
+    )
+    from user_context import SESSION_ID_KEY
+
+    platform = get_effective_platform(ctx)
+    user_id = get_effective_user_id(ctx)
+    target_session_id = scheduler_task_session_id(scheduled_task_id)
+    current_session_id = str(ctx.user_data.get(SESSION_ID_KEY) or "").strip()
+    if not current_session_id and platform and user_id:
+        current_session_id = channel_runtime_store.get_session_id(
+            platform=platform,
+            platform_user_id=user_id,
+        )
+    if current_session_id and not _is_scheduler_session_id(current_session_id):
+        ctx.user_data[SCHEDULER_SESSION_RETURN_KEY] = current_session_id
+
+    _set_visible_session(
+        ctx,
+        session_id=target_session_id,
+        user_id=user_id,
+        platform=platform,
+        scheduler_session=True,
+    )
+    await _remember_visible_session_target(
+        ctx,
+        user_id=user_id,
+        platform=platform,
+        session_id=target_session_id,
+    )
+    await ctx.answer_callback("已进入定时任务会话")
+    await ctx.reply(
+        f"已进入定时任务 #{scheduled_task_id} 的会话。\n"
+        "接下来直接发送修改意见就行；退出用 /main。"
+    )
+    return CONVERSATION_END
+
+
+async def main_session_command(ctx: UnifiedContext) -> None:
+    if not await check_permission_unified(ctx):
+        return
+
+    import uuid
+
+    from core.state_store import get_latest_session_id
+    from user_context import SESSION_ID_KEY
+
+    platform = get_effective_platform(ctx)
+    user_id = get_effective_user_id(ctx)
+    current_session_id = str(ctx.user_data.get(SESSION_ID_KEY) or "").strip()
+    return_session_id = str(
+        ctx.user_data.pop(SCHEDULER_SESSION_RETURN_KEY, "") or ""
+    ).strip()
+    if not return_session_id or _is_scheduler_session_id(return_session_id):
+        return_session_id = await get_latest_session_id(user_id)
+    if not return_session_id or _is_scheduler_session_id(return_session_id):
+        return_session_id = str(uuid.uuid4())
+
+    _set_visible_session(
+        ctx,
+        session_id=return_session_id,
+        user_id=user_id,
+        platform=platform,
+        scheduler_session=False,
+    )
+    await _remember_visible_session_target(
+        ctx,
+        user_id=user_id,
+        platform=platform,
+        session_id=return_session_id,
+    )
+    if _is_scheduler_session_id(current_session_id):
+        await ctx.reply("已回到主会话。")
+    else:
+        await ctx.reply("当前已经在主会话。")
 
 
 async def help_command(ctx: UnifiedContext) -> None:
@@ -672,7 +832,13 @@ async def button_callback(ctx: UnifiedContext) -> int:
                 )
                 await heartbeat_store.release_lock(hb_user_id)
                 await heartbeat_store.append_session_event(
-                        hb_user_id, f"user_confirm_stop:{task_id}"
+                    hb_user_id, f"user_confirm_stop:{task_id}"
+                )
+                close_runtime_v2_waiting_task(
+                    active_task=active_task,
+                    status="cancelled",
+                    reason="Cancelled during confirmation stage.",
+                    event_type="task.user_confirm_stop",
                 )
                 if task_inbox_id:
                     await task_inbox.update_status(
