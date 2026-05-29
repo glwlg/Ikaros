@@ -51,6 +51,32 @@ async def test_heartbeat_store_shares_state_across_runtime_user_ids(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_store_preserves_runtime_v2_active_task_ids(tmp_path):
+    store = HeartbeatStore()
+    store.root = (tmp_path / "runtime_tasks").resolve()
+    store.root.mkdir(parents=True, exist_ok=True)
+    store._locks.clear()
+
+    await store.set_session_active_task(
+        "u1",
+        {
+            "id": "legacy-active",
+            "status": "waiting_user",
+            "runtime_v2_session_id": "telegram:u1:main",
+            "runtime_v2_turn_id": "turn-runtime",
+            "runtime_v2_task_id": "task-runtime",
+        },
+    )
+    await store.update_session_active_task("u1", result_summary="still waiting")
+
+    active = await store.get_session_active_task("u1")
+
+    assert active["runtime_v2_session_id"] == "telegram:u1:main"
+    assert active["runtime_v2_turn_id"] == "turn-runtime"
+    assert active["runtime_v2_task_id"] == "task-runtime"
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_store_normalizes_and_cleans_legacy_layout(tmp_path):
     store = HeartbeatStore()
     store.root = (tmp_path / "runtime_tasks").resolve()

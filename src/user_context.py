@@ -334,6 +334,12 @@ def clear_context(context: TelegramContext | UnifiedContext) -> None:
         setattr(context, "user_data", {})
         store = getattr(context, "user_data", {})
     store[SESSION_ID_KEY] = new_session_id
+    for key in (
+        "runtime_v2_session_id",
+        "runtime_v2_turn_id",
+        "runtime_v2_task_id",
+    ):
+        store.pop(key, None)
     message = getattr(context, "message", None)
     platform = str(getattr(message, "platform", "") or "").strip().lower()
     user = getattr(message, "user", None)

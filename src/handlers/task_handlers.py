@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from core.heartbeat_store import heartbeat_store
 from core.platform.models import UnifiedContext
 from core.platform.registry import adapter_manager
 from core.runtime_quality_report import build_task_quality_report
+from core.runtime_v2 import TERMINAL_STATUSES, runtime_v2
 from core.skill_menu import (
     cache_items,
     get_cached_item,
@@ -63,6 +65,73 @@ def _should_show_task(item: Any) -> bool:
         return True
     status = str(getattr(item, "status", "") or "").strip().lower()
     return status == "waiting_external"
+
+
+def _runtime_v2_task_to_item(row: dict[str, Any]) -> Any:
+    metadata = dict(row.get("metadata") or {})
+    source = (
+        str(metadata.get("source") or "").strip()
+        or str(row.get("turn_source") or "").strip()
+        or str(row.get("session_kind") or "").strip()
+        or "runtime_v2"
+    )
+    metadata.update(
+        {
+            "runtime_v2": True,
+            "runtime_v2_session_id": str(row.get("session_id") or "").strip(),
+            "runtime_v2_turn_id": str(row.get("turn_id") or "").strip(),
+            "runtime_v2_turn_status": str(row.get("turn_status") or "").strip(),
+            "kernel_provider": str(row.get("kernel_provider") or "").strip()
+            or str(metadata.get("kernel_provider") or "").strip(),
+            "platform": str(row.get("platform") or "").strip(),
+        }
+    )
+    return SimpleNamespace(
+        task_id=str(row.get("id") or "").strip(),
+        source=source,
+        goal=str(row.get("goal") or "").strip()
+        or str(row.get("turn_input_text") or "").strip(),
+        user_id=str(row.get("platform_user_id") or "").strip(),
+        status=str(row.get("status") or "").strip(),
+        updated_at=str(row.get("updated_at") or "").strip(),
+        created_at=str(row.get("created_at") or "").strip(),
+        metadata=metadata,
+        result={},
+        output={},
+        final_output="",
+        events=[],
+    )
+
+
+def _runtime_v2_task_items(user_id: str, *, open_only: bool) -> list[Any]:
+    statuses: list[str] = []
+    if open_only:
+        statuses = [
+            status
+            for status in (
+                "queued",
+                "running",
+                "waiting_user",
+                "waiting_external",
+            )
+            if status not in TERMINAL_STATUSES
+        ]
+    rows = runtime_v2.list_tasks_for_user(
+        platform_user_id=user_id,
+        statuses=statuses,
+        limit=30,
+    )
+    return [_runtime_v2_task_to_item(row) for row in rows]
+
+
+def _runtime_v2_legacy_task_ids(items: list[Any]) -> set[str]:
+    ids: set[str] = set()
+    for item in items:
+        metadata = dict(getattr(item, "metadata", {}) or {})
+        legacy_id = str(metadata.get("task_inbox_id") or "").strip()
+        if legacy_id:
+            ids.add(legacy_id)
+    return ids
 
 
 def _task_usage_text() -> str:
@@ -201,12 +270,25 @@ async def _build_task_list_payload(
 ) -> tuple[str, dict]:
     user_id = get_effective_user_id(ctx)
     normalized_view = "open" if str(view or "").strip().lower() == "open" else "recent"
+    runtime_rows = _runtime_v2_task_items(
+        user_id,
+        open_only=normalized_view == "open",
+    )
+    legacy_ids = _runtime_v2_legacy_task_ids(runtime_rows)
     if normalized_view == "open":
         rows = await task_inbox.list_open(user_id=user_id, limit=30)
         title = "🧾 未完成任务"
     else:
         rows = await task_inbox.list_recent(user_id=user_id, limit=30)
         title = "🧾 最近 10 个任务"
+    rows = [
+        *runtime_rows,
+        *[
+            row
+            for row in rows
+            if str(getattr(row, "task_id", "") or "").strip() not in legacy_ids
+        ],
+    ]
     rows = [row for row in rows if _should_show_task(row)]
     cache_items(ctx, TASK_MENU_NS, normalized_view, rows)
 
@@ -302,6 +384,15 @@ async def _build_task_diag_payload(ctx: UnifiedContext) -> str:
     last_error = str(status.get("last_error") or "").strip()
     open_rows = await task_inbox.list_open(user_id=user_id, limit=0)
     recent_rows = await task_inbox.list_recent(user_id=user_id, limit=30)
+    runtime_task_rows = runtime_v2.list_tasks_for_user(
+        platform_user_id=user_id,
+        limit=200,
+    )
+    runtime_open_count = sum(
+        1
+        for row in runtime_task_rows
+        if str(row.get("status") or "").strip() not in TERMINAL_STATUSES
+    )
     quality = build_task_quality_report(recent_rows)
 
     codex_row: dict[str, Any] = {}
@@ -333,6 +424,7 @@ async def _build_task_diag_payload(ctx: UnifiedContext) -> str:
         _active_line("channel", channel_active),
         _active_line("heartbeat", heartbeat_active),
         f"- TaskInbox：open={len(open_rows)}; recent={len(recent_rows)}",
+        f"- Runtime v2 tasks：open={runtime_open_count}; recent={len(runtime_task_rows)}",
         f"- Artifact ledger：{_artifact_ledger_summary(getattr(ctx, 'user_data', None))}",
         f"- 近期质量：failed={quality['status_counts'].get('failed', 0)}; "
         f"artifact_failed={quality['artifact_failed']}",
@@ -428,6 +520,15 @@ async def _build_task_delete_confirm_payload(
     item = get_cached_item(ctx, TASK_MENU_NS, view, index)
     if item is None and str(task_id or "").strip():
         item = await task_inbox.get(str(task_id or "").strip())
+    if item is None and str(task_id or "").strip():
+        runtime_task = runtime_v2.get_task(str(task_id or "").strip())
+        if runtime_task:
+            session = runtime_v2.get_session(str(runtime_task.get("session_id") or ""))
+            runtime_task = dict(runtime_task)
+            runtime_task["platform_user_id"] = str(session.get("platform_user_id") or "")
+            runtime_task["platform"] = str(session.get("platform") or "")
+            runtime_task["session_kind"] = str(session.get("kind") or "")
+            item = _runtime_v2_task_to_item(runtime_task)
     if item is None:
         return await _build_task_list_payload(
             ctx,
@@ -485,7 +586,14 @@ async def _delete_task_from_menu(
 
     user_id = get_effective_user_id(ctx)
     item = await task_inbox.get(safe_task_id)
-    if item is None or str(item.user_id or "").strip() != user_id:
+    runtime_item = runtime_v2.get_task(safe_task_id)
+    if item is None:
+        if not runtime_item:
+            return False, "❌ 任务不存在或已删除。"
+        session = runtime_v2.get_session(str(runtime_item.get("session_id") or ""))
+        if str(session.get("platform_user_id") or "").strip() != user_id:
+            return False, "❌ 任务不存在或已删除。"
+    elif str(item.user_id or "").strip() != user_id:
         return False, "❌ 任务不存在或已删除。"
 
     cleared_active = False
@@ -553,7 +661,16 @@ async def _delete_task_from_menu(
     if isinstance(user_data, dict) and str(user_data.get("task_inbox_id") or "").strip() == safe_task_id:
         user_data.pop("task_inbox_id", None)
 
-    deleted = await task_inbox.delete(safe_task_id)
+    deleted = False
+    if item is not None:
+        deleted = await task_inbox.delete(safe_task_id)
+    else:
+        deleted = bool(
+            runtime_v2.mark_task_deleted(
+                safe_task_id,
+                reason="Deleted from /task menu.",
+            )
+        )
     if not deleted:
         return False, "❌ 任务不存在或已删除。"
 

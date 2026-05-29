@@ -328,7 +328,8 @@ def test_build_ikaros_progress_text_does_not_render_codex_command_output():
 
 
 @pytest.mark.asyncio
-async def test_send_result_files_returns_only_delivered_rows(tmp_path):
+async def test_send_result_files_returns_only_delivered_rows(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     image_path = tmp_path / "ok.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nok")
     missing_path = tmp_path / "missing.mp4"
@@ -337,7 +338,10 @@ async def test_send_result_files_returns_only_delivered_rows(tmp_path):
 
     class _Ctx:
         def __init__(self):
-            self.user_data = {}
+            self.user_data = {
+                "runtime_v2_session_id": "session-files",
+                "runtime_v2_turn_id": turn["id"],
+            }
             self.message = SimpleNamespace(
                 platform="telegram",
                 chat=SimpleNamespace(id="chat-1"),
@@ -364,6 +368,16 @@ async def test_send_result_files_returns_only_delivered_rows(tmp_path):
             warnings.append(str(text))
             return SimpleNamespace(id="warn-1")
 
+    session = ai_handlers.runtime_v2.ensure_session(
+        session_id="session-files",
+        kind="channel_chat",
+        platform="telegram",
+        platform_user_id="u-files",
+    )
+    turn = ai_handlers.runtime_v2.create_turn(
+        session_id=session["id"],
+        input_text="send files",
+    )
     ctx = _Ctx()
     delivered = await ai_handlers._send_result_files(
         ctx,
@@ -389,6 +403,13 @@ async def test_send_result_files_returns_only_delivered_rows(tmp_path):
     ] == [
         ("photo", "ok.png", "delivered", "telegram:chat-1"),
         ("video", "missing.mp4", "failed", "telegram:chat-1"),
+    ]
+    events = ai_handlers.runtime_v2.list_events(session_id="session-files")
+    assert [event["type"] for event in events] == [
+        "artifact_created",
+        "artifact_created",
+        "artifact_delivered",
+        "delivery_failed",
     ]
 
 
@@ -709,6 +730,102 @@ async def test_try_handle_waiting_confirmation_stops_on_explicit_stop(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_try_handle_waiting_confirmation_stop_closes_runtime_v2_task(
+    monkeypatch, tmp_path
+):
+    from core import task_confirmation as task_confirmation_module
+    from core.runtime_v2 import RuntimeV2Store
+
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(task_confirmation_module, "runtime_v2", runtime_store)
+    session = runtime_store.ensure_session(
+        session_id="telegram:u-1:main",
+        platform="telegram",
+        platform_user_id="u-1",
+    )
+    turn = runtime_store.create_turn(
+        session_id=session["id"],
+        input_text="继续做",
+        status="running",
+    )
+    runtime_store.update_turn_status(turn["id"], "waiting_user")
+    task = runtime_store.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="继续做",
+        status="running",
+    )
+    runtime_store.update_task_status(task["id"], "waiting_user")
+    deadline = (datetime.now().astimezone() + timedelta(minutes=1)).isoformat(
+        timespec="seconds"
+    )
+    active = {
+        "id": "mgr-stop-runtime",
+        "status": "waiting_user",
+        "confirmation_deadline": deadline,
+        "runtime_v2_session_id": session["id"],
+        "runtime_v2_turn_id": turn["id"],
+        "runtime_v2_task_id": task["id"],
+    }
+
+    class _FakeChannelRuntimeStore:
+        def get_active_task(self, **kwargs):
+            _ = kwargs
+            return active
+
+        def update_active_task(self, **kwargs):
+            _ = kwargs
+            return None
+
+    class _FakeHeartbeatStore:
+        async def get_session_active_task(self, user_id: str):
+            _ = user_id
+            return active
+
+        async def update_session_active_task(self, user_id: str, **kwargs):
+            _ = user_id, kwargs
+
+        async def release_lock(self, user_id: str):
+            _ = user_id
+
+        async def append_session_event(self, user_id: str, event: str):
+            _ = user_id, event
+
+    class _FakeClosureService:
+        async def resume_waiting_task(self, **kwargs):
+            _ = kwargs
+            raise AssertionError("stop should not resume the waiting task")
+
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        _FakeChannelRuntimeStore(),
+    )
+    monkeypatch.setattr("core.heartbeat_store.heartbeat_store", _FakeHeartbeatStore())
+    monkeypatch.setattr(
+        "ikaros.relay.closure_service.ikaros_closure_service",
+        _FakeClosureService(),
+    )
+
+    class _Ctx:
+        message = SimpleNamespace(
+            user=SimpleNamespace(id="u-1"),
+            platform="telegram",
+        )
+
+        async def reply(self, text, **kwargs):
+            _ = text, kwargs
+            return SimpleNamespace(id="reply")
+
+    handled = await ai_handlers._try_handle_waiting_confirmation(_Ctx(), "停止")
+
+    assert handled is True
+    assert runtime_store.get_turn(turn["id"])["status"] == "cancelled"
+    assert runtime_store.get_task(task["id"])["status"] == "cancelled"
+    events = runtime_store.list_events(session_id=session["id"])
+    assert events[-1]["type"] == "task.user_confirm_stop"
+
+
+@pytest.mark.asyncio
 async def test_try_handle_waiting_confirmation_expires_stale_confirmation(monkeypatch):
     expired = (datetime.now().astimezone() - timedelta(minutes=5)).isoformat(
         timespec="seconds"
@@ -792,6 +909,106 @@ async def test_try_handle_waiting_confirmation_expires_stale_confirmation(monkey
         ("u-1", "confirmation_expired:mgr-expired")
     ]
     assert "已超过 3 分钟" in replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_try_handle_waiting_confirmation_expiry_closes_runtime_v2_task(
+    monkeypatch, tmp_path
+):
+    from core import task_confirmation as task_confirmation_module
+    from core.runtime_v2 import RuntimeV2Store
+
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(task_confirmation_module, "runtime_v2", runtime_store)
+    session = runtime_store.ensure_session(
+        session_id="telegram:u-1:main",
+        platform="telegram",
+        platform_user_id="u-1",
+    )
+    turn = runtime_store.create_turn(
+        session_id=session["id"],
+        input_text="等待确认",
+        status="running",
+    )
+    runtime_store.update_turn_status(turn["id"], "waiting_user")
+    task = runtime_store.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="等待确认",
+        status="running",
+    )
+    runtime_store.update_task_status(task["id"], "waiting_user")
+    expired = (datetime.now().astimezone() - timedelta(minutes=5)).isoformat(
+        timespec="seconds"
+    )
+    active = {
+        "id": "mgr-expired-runtime",
+        "status": "waiting_user",
+        "confirmation_deadline": expired,
+        "runtime_v2_session_id": session["id"],
+        "runtime_v2_turn_id": turn["id"],
+        "runtime_v2_task_id": task["id"],
+    }
+
+    class _FakeChannelRuntimeStore:
+        def get_active_task(self, **kwargs):
+            _ = kwargs
+            return active
+
+        def update_active_task(self, **kwargs):
+            _ = kwargs
+            return None
+
+    class _FakeHeartbeatStore:
+        async def get_session_active_task(self, user_id: str):
+            _ = user_id
+            return active
+
+        async def update_session_active_task(self, user_id: str, **kwargs):
+            _ = user_id, kwargs
+
+        async def release_lock(self, user_id: str):
+            _ = user_id
+
+        async def append_session_event(self, user_id: str, event: str):
+            _ = user_id, event
+
+    class _FakeClosureService:
+        async def resume_waiting_task(self, **kwargs):
+            _ = kwargs
+            raise AssertionError("expired confirmation should not resume")
+
+    monkeypatch.setattr(
+        "core.channel_runtime_store.channel_runtime_store",
+        _FakeChannelRuntimeStore(),
+    )
+    monkeypatch.setattr("core.heartbeat_store.heartbeat_store", _FakeHeartbeatStore())
+    monkeypatch.setattr(
+        "ikaros.relay.closure_service.ikaros_closure_service",
+        _FakeClosureService(),
+    )
+
+    replies: list[str] = []
+
+    class _Ctx:
+        message = SimpleNamespace(
+            user=SimpleNamespace(id="u-1"),
+            platform="telegram",
+        )
+
+        async def reply(self, text, **kwargs):
+            _ = kwargs
+            replies.append(str(text))
+            return SimpleNamespace(id="reply")
+
+    handled = await ai_handlers._try_handle_waiting_confirmation(_Ctx(), "继续")
+
+    assert handled is True
+    assert "已超过 3 分钟" in replies[-1]
+    assert runtime_store.get_turn(turn["id"])["status"] == "expired"
+    assert runtime_store.get_task(task["id"])["status"] == "expired"
+    events = runtime_store.list_events(session_id=session["id"])
+    assert events[-1]["type"] == "task.confirmation_expired"
 
 
 @pytest.mark.asyncio
@@ -888,6 +1105,74 @@ def test_build_runtime_phrase_pools_uses_natural_fallbacks():
 
     assert received == ["我看一下。"]
     assert loading == ["我还在看。"]
+
+
+def test_update_runtime_v2_turn_for_ctx_syncs_task_status(tmp_path, monkeypatch):
+    from core.runtime_v2 import RuntimeV2Store
+
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(ai_handlers, "runtime_v2", runtime_store)
+    session = runtime_store.ensure_session(session_id="telegram:u-1:main")
+    turn = runtime_store.create_turn(session_id=session["id"], input_text="做任务")
+    task = runtime_store.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="做任务",
+        status="running",
+    )
+    ctx = SimpleNamespace(
+        user_data={
+            "runtime_v2_session_id": session["id"],
+            "runtime_v2_turn_id": turn["id"],
+            "runtime_v2_task_id": task["id"],
+        },
+        message=SimpleNamespace(
+            platform="telegram",
+            user=SimpleNamespace(id="u-1"),
+            raw_data={},
+        ),
+    )
+
+    ai_handlers._update_runtime_v2_turn_for_ctx(ctx, "succeeded")
+
+    assert runtime_store.get_turn(turn["id"])["status"] == "succeeded"
+    assert runtime_store.get_task(task["id"])["status"] == "succeeded"
+
+
+def test_update_runtime_v2_turn_for_ctx_preserves_waiting_task_status(
+    tmp_path, monkeypatch
+):
+    from core.runtime_v2 import RuntimeV2Store
+
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(ai_handlers, "runtime_v2", runtime_store)
+    session = runtime_store.ensure_session(session_id="telegram:u-1:main")
+    turn = runtime_store.create_turn(session_id=session["id"], input_text="做任务")
+    runtime_store.update_turn_status(turn["id"], "running")
+    runtime_store.update_turn_status(turn["id"], "waiting_user")
+    task = runtime_store.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="做任务",
+        status="running",
+    )
+    ctx = SimpleNamespace(
+        user_data={
+            "runtime_v2_session_id": session["id"],
+            "runtime_v2_turn_id": turn["id"],
+            "runtime_v2_task_id": task["id"],
+        },
+        message=SimpleNamespace(
+            platform="telegram",
+            user=SimpleNamespace(id="u-1"),
+            raw_data={},
+        ),
+    )
+
+    ai_handlers._update_runtime_v2_turn_for_ctx(ctx, "succeeded")
+
+    assert runtime_store.get_turn(turn["id"])["status"] == "waiting_user"
+    assert runtime_store.get_task(task["id"])["status"] == "waiting_user"
 
 
 class _DummyOutgoingMessage:
@@ -1051,6 +1336,7 @@ async def test_handle_ai_chat_does_not_attach_plain_path_from_final_text(
     monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
     monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
     monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(ai_handlers, "ikaros_kernel_provider", lambda: "codex")
     monkeypatch.setattr(
         ai_handlers, "process_and_send_code_files", _identity_process_code_files
     )
@@ -1218,6 +1504,203 @@ async def test_handle_ai_chat_reacts_and_skips_immediate_placeholder(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_handle_ai_chat_creates_runtime_v2_channel_turn(monkeypatch, tmp_path):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+    from core.runtime_v2 import RuntimeV2Store
+    from handlers import message_utils
+
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    session_updates: list[tuple[str, str, str]] = []
+
+    class _RuntimeSessionStore:
+        def get_session_id(self, *, platform="", platform_user_id="", runtime_key=""):
+            _ = (platform, platform_user_id, runtime_key)
+            return ""
+
+        def set_session_id(
+            self, *, session_id, platform="", platform_user_id="", runtime_key=""
+        ):
+            _ = runtime_key
+            session_updates.append((session_id, platform, platform_user_id))
+            return session_id
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _fake_process_reply_message(_ctx):
+        return message_utils.ReplyMessageResolution()
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    async def _fake_handle_message(_ctx, _message_history):
+        yield "频道消息已进入 Runtime v2。"
+
+    monkeypatch.setattr(ai_handlers, "runtime_v2", runtime_store)
+    monkeypatch.setattr(ai_handlers, "channel_runtime_store", _RuntimeSessionStore())
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(heartbeat_module.heartbeat_store, "set_delivery_target", _noop)
+    monkeypatch.setattr(ai_handlers, "add_message", _noop)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(ai_handlers, "ikaros_kernel_provider", lambda: "native")
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(
+        message_utils, "process_reply_message", _fake_process_reply_message
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager,
+        "is_cancelled",
+        lambda _uid: False,
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager,
+        "unregister_task",
+        lambda _uid: None,
+    )
+
+    ctx = _DummyChatContext()
+    ctx.message.text = "普通 Telegram 消息"
+
+    await ai_handlers.handle_ai_chat(ctx)
+
+    assert ctx.user_data["runtime_v2_session_id"] == "telegram:u-1:main"
+    assert ctx.user_data["current_session_id"] == "telegram:u-1:main"
+    assert session_updates == [("telegram:u-1:main", "telegram", "u-1")]
+    turns = runtime_store.list_turns("telegram:u-1:main")
+    assert len(turns) == 1
+    assert turns[0]["input_text"] == "普通 Telegram 消息"
+    assert turns[0]["status"] == "succeeded"
+    events = runtime_store.list_events(session_id="telegram:u-1:main")
+    assert [event["type"] for event in events] == [
+        "user_message",
+        "assistant_message_final",
+    ]
+    assert events[0]["payload"]["text"] == "普通 Telegram 消息"
+    assert events[1]["payload"]["text"] == "频道消息已进入 Runtime v2。"
+
+
+@pytest.mark.asyncio
+async def test_handle_ai_chat_creates_new_runtime_turn_for_each_channel_message(
+    monkeypatch,
+    tmp_path,
+):
+    import core.config as config_module
+    import core.heartbeat_store as heartbeat_module
+    import core.task_manager as task_manager_module
+    from core.agent_orchestrator import agent_orchestrator
+    from core.runtime_v2 import RuntimeV2Store
+    from handlers import message_utils
+
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+
+    class _RuntimeSessionStore:
+        current_session_id = ""
+
+        def get_session_id(self, *, platform="", platform_user_id="", runtime_key=""):
+            _ = (platform, platform_user_id, runtime_key)
+            return self.current_session_id
+
+        def set_session_id(
+            self, *, session_id, platform="", platform_user_id="", runtime_key=""
+        ):
+            _ = (platform, platform_user_id, runtime_key)
+            self.current_session_id = str(session_id)
+            return session_id
+
+    async def _allow_user(_user_id):
+        return True
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _false(*_args, **_kwargs):
+        return False
+
+    async def _empty_history(*_args, **_kwargs):
+        return []
+
+    async def _fake_process_reply_message(_ctx):
+        return message_utils.ReplyMessageResolution()
+
+    async def _identity_process_code_files(_ctx, text):
+        return text
+
+    async def _fake_handle_message(_ctx, message_history):
+        latest = str(message_history[-1]["parts"][0]["text"])
+        yield f"回复：{latest}"
+
+    monkeypatch.setattr(ai_handlers, "runtime_v2", runtime_store)
+    monkeypatch.setattr(ai_handlers, "channel_runtime_store", _RuntimeSessionStore())
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(heartbeat_module.heartbeat_store, "set_delivery_target", _noop)
+    monkeypatch.setattr(ai_handlers, "add_message", _noop)
+    monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+    monkeypatch.setattr(ai_handlers, "_try_handle_waiting_confirmation", _false)
+    monkeypatch.setattr(ai_handlers, "_try_handle_memory_commands", _false)
+    monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
+    monkeypatch.setattr(ai_handlers, "ikaros_kernel_provider", lambda: "native")
+    monkeypatch.setattr(
+        ai_handlers, "process_and_send_code_files", _identity_process_code_files
+    )
+    monkeypatch.setattr(
+        message_utils, "process_reply_message", _fake_process_reply_message
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(task_manager_module.task_manager, "register_task", _noop)
+    monkeypatch.setattr(
+        task_manager_module.task_manager,
+        "is_cancelled",
+        lambda _uid: False,
+    )
+    monkeypatch.setattr(
+        task_manager_module.task_manager,
+        "unregister_task",
+        lambda _uid: None,
+    )
+
+    ctx = _DummyChatContext()
+    ctx.message.text = "你好"
+    ctx.message.id = "msg-1"
+    await ai_handlers.handle_ai_chat(ctx)
+
+    first_turn_id = ctx.user_data["runtime_v2_turn_id"]
+    ctx.message.text = "你是谁"
+    ctx.message.id = "msg-2"
+    await ai_handlers.handle_ai_chat(ctx)
+
+    second_turn_id = ctx.user_data["runtime_v2_turn_id"]
+    assert second_turn_id != first_turn_id
+    turns = runtime_store.list_turns("telegram:u-1:main")
+    assert [turn["input_text"] for turn in turns] == ["你好", "你是谁"]
+    assert [turn["status"] for turn in turns] == ["succeeded", "succeeded"]
+    user_events = [
+        event["payload"]["text"]
+        for event in runtime_store.list_events(session_id="telegram:u-1:main")
+        if event["type"] == "user_message"
+    ]
+    assert user_events == ["你好", "你是谁"]
+
+
+@pytest.mark.asyncio
 async def test_handle_ai_chat_falls_back_to_reply_when_edit_fails(monkeypatch):
     import core.config as config_module
     import core.heartbeat_store as heartbeat_module
@@ -1361,6 +1844,13 @@ async def test_handle_ai_chat_codex_progress_edits_message_instead_of_draft(
 
     assert ctx.drafts == []
     assert any("正在抓取新闻详情" in str(text) for _msg_id, text, _kwargs in ctx.edits)
+    assert all(
+        "Ikaros 正在处理请求" not in str(text)
+        for _msg_id, text, _kwargs in ctx.edits
+    )
+    assert all(
+        "回合：" not in str(text) for _msg_id, text, _kwargs in ctx.edits
+    )
 
 
 @pytest.mark.asyncio

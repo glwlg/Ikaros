@@ -51,10 +51,12 @@ _PATH_EXTENSIONS = tuple(
         | _DOCUMENT_EXTENSIONS
     )
 )
-_SAVED_FILE_RE = re.compile(r"(?im)^\s*saved_file=(?P<path>.+?)\s*$")
+_SAVED_FILE_RE = re.compile(
+    r"(?im)^\s*(?:saved_file|saved_path|file_path|output_path)=(?P<path>.+?)\s*$"
+)
 _TOOL_RESULT_RE = re.compile(r"(?im)^\s*tool_result=(?P<payload>.+?)\s*$")
 _LABELED_PATH_RE = re.compile(
-    r"(?im)^\s*(?:保存路径|文件路径|图片路径|输出路径|附件路径|图片已保存至|save(?:d)?[_ ]file|saved to|output file|file path)\s*[:：=]?\s*`?(?P<path>(?:/|\.{1,2}/)?[^`\n]+?(?:"
+    r"(?im)^\s*(?:保存路径|文件路径|图片路径|输出路径|附件路径|图片已保存至|save(?:d)?[_ ](?:file|path)|saved to|output file|output path|file path)\s*[:：=]?\s*`?(?P<path>(?:/|\.{1,2}/)?[^`\n]+?(?:"
     + "|".join(re.escape(ext) for ext in _PATH_EXTENSIONS)
     + r"))`?\s*$"
 )

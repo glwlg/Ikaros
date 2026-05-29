@@ -4,10 +4,13 @@ from types import SimpleNamespace
 import pytest
 
 import core.agent_orchestrator as orchestrator_module
+import core.orchestrator_context as context_module
+import core.orchestrator_event_handler as event_handler_module
 from core.agent_orchestrator import AgentOrchestrator
 from core.heartbeat_store import heartbeat_store
 from core.orchestrator_event_handler import OrchestratorEventHandler
 from core.platform.models import Chat, MessageType, UnifiedMessage, User
+from core.runtime_v2 import RuntimeEventBus, RuntimeV2Store
 from core.task_inbox import task_inbox
 from extension.skills.builtin.task_tracker.scripts.service import task_tracker_service
 from services.intent_router import RoutingDecision
@@ -588,6 +591,132 @@ async def test_ikaros_progress_callback_receives_tool_events(monkeypatch, tmp_pa
         event.get("event") == "final_response"
         and event.get("text_preview") == "已停止 uptime-kuma。"
         for event in ikaros_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_records_native_kernel_events_in_runtime_v2(
+    monkeypatch, tmp_path
+):
+    orchestrator = AgentOrchestrator()
+    user_id = "u_runtime_native_trace"
+
+    _reset_task_inbox(tmp_path)
+    runtime_root = (tmp_path / "runtime_tasks").resolve()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(heartbeat_store, "root", runtime_root)
+    heartbeat_store._locks.clear()
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(context_module, "runtime_v2", runtime_store)
+    monkeypatch.setattr(event_handler_module, "runtime_v2", runtime_store)
+    monkeypatch.setattr(
+        event_handler_module,
+        "runtime_event_bus",
+        RuntimeEventBus(runtime_store),
+    )
+
+    async def fake_stream(
+        message_history,
+        tools=None,
+        tool_executor=None,
+        system_instruction=None,
+        event_callback=None,
+    ):
+        del message_history, tools, tool_executor, system_instruction
+        if event_callback:
+            await event_callback("turn_start", {"turn": 1})
+            await event_callback(
+                "tool_call_started",
+                {"turn": 1, "name": "bash", "args": {"command": "date"}},
+            )
+            await event_callback(
+                "tool_call_finished",
+                {"turn": 1, "name": "bash", "ok": True, "summary": "ok"},
+            )
+            await event_callback(
+                "final_response",
+                {
+                    "turn": 1,
+                    "text_preview": "完成。",
+                    "completion_signal": {"explicit": True, "status": "done"},
+                },
+            )
+        yield "完成。"
+
+    monkeypatch.setattr(
+        orchestrator.ai_service, "generate_response_stream", fake_stream
+    )
+    monkeypatch.setattr(
+        orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
+    )
+
+    ctx = DummyContext(user_id=user_id)
+    message_history = [{"role": "user", "parts": [{"text": "运行 date"}]}]
+
+    chunks = [
+        chunk async for chunk in orchestrator.handle_message(ctx, message_history)
+    ]
+
+    assert chunks == ["完成。"]
+    session_id = ctx.user_data["runtime_v2_session_id"]
+    event_types = [
+        event["type"] for event in runtime_store.list_events(session_id=session_id)
+    ]
+    assert event_types == [
+        "kernel_turn_start",
+        "kernel_tool_call_started",
+        "kernel_tool_call_finished",
+        "kernel_final_response",
+    ]
+    task = runtime_store.get_task(ctx.user_data["runtime_v2_task_id"])
+    assert task["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_event_handler_closes_runtime_v2_waiting_work_on_final_response(
+    monkeypatch, tmp_path
+):
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(event_handler_module, "runtime_v2", runtime_store)
+    monkeypatch.setattr(
+        event_handler_module,
+        "runtime_event_bus",
+        RuntimeEventBus(runtime_store),
+    )
+    session = runtime_store.ensure_session(session_id="telegram:u-wait:main")
+    turn = runtime_store.create_turn(
+        session_id=session["id"],
+        input_text="继续",
+        status="running",
+    )
+    runtime_store.update_turn_status(turn["id"], "waiting_user")
+    task = runtime_store.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="继续",
+        status="running",
+    )
+    runtime_store.update_task_status(task["id"], "waiting_user")
+    handler, _events, _session_updates, _inbox_updates, _todo_failures = (
+        _build_event_handler("继续")
+    )
+    handler.runtime_session_id = session["id"]
+    handler.runtime_turn_id = turn["id"]
+    handler.ctx.user_data["runtime_v2_task_id"] = task["id"]
+
+    await handler.handle(
+        "final_response",
+        {
+            "turn": 2,
+            "text_preview": "继续后完成。",
+            "completion_signal": {"explicit": True, "status": "done"},
+        },
+    )
+
+    assert runtime_store.get_turn(turn["id"])["status"] == "succeeded"
+    assert runtime_store.get_task(task["id"])["status"] == "succeeded"
+    assert runtime_store.list_events(session_id=session["id"])[-1]["type"] == (
+        "kernel_final_response"
     )
 
 

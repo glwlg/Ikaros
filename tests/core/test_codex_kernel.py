@@ -13,6 +13,7 @@ from core.channel_runtime_store import channel_runtime_store
 from core.codex_kernel import codex_kernel_provider
 from core.codex_kernel_sessions import codex_kernel_sessions
 from core.extension_router import ExtensionCandidate
+from core.kernel_provider import KernelTurnInput
 from core.heartbeat_store import heartbeat_store
 from core.platform.models import Chat, MessageType, UnifiedMessage, User
 from core.task_inbox import task_inbox
@@ -312,11 +313,7 @@ def test_codex_session_image_rows_extracts_image_generation_event(
     )
 
     image_path = (
-        tmp_path
-        / ".codex"
-        / "generated_images"
-        / "thread-session"
-        / "ig_session.png"
+        tmp_path / ".codex" / "generated_images" / "thread-session" / "ig_session.png"
     )
     assert image_path.read_bytes() == png_bytes
     assert rows == [
@@ -354,7 +351,9 @@ def test_kernel_prompt_deduplicates_current_user_request_from_history(monkeypatc
         "compose_base",
         lambda **_kwargs: "【SOUL】\n# Test SOUL",
     )
-    monkeypatch.setattr(codex_kernel_module, "_codex_skill_catalog", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        codex_kernel_module, "_codex_skill_catalog", lambda **_kwargs: ""
+    )
 
     text = codex_kernel_module._kernel_prompt(
         user_request="今天天气怎么样",
@@ -381,6 +380,69 @@ def test_existing_thread_instruction_is_only_latest_user_message():
     assert text == "继续聊"
     assert "Codex kernel execution context" not in text
     assert "Recent Ikaros conversation context" not in text
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_provider_protocol_streams_runtime_events(monkeypatch):
+    captured = {}
+
+    async def fake_run_turn(**kwargs):
+        captured.update(kwargs)
+        await kwargs["event_callback"](
+            "codex_agent_message",
+            {
+                "text_preview": "正在执行",
+                "kernel_provider": "codex",
+            },
+        )
+        return {
+            "ok": True,
+            "stdout": "完成。",
+            "summary": "完成。",
+            "thread_id": "thread-protocol",
+            "turn_id": "turn-protocol",
+            "transport": "app-server",
+            "stop_reason": "completed",
+        }
+
+    monkeypatch.setattr(codex_kernel_provider, "_run_turn", fake_run_turn)
+
+    session = codex_kernel_module.runtime_v2.ensure_session(
+        session_id="telegram:u-protocol:main",
+        kind="channel_chat",
+        platform="telegram",
+        platform_user_id="u-protocol",
+    )
+    turn = codex_kernel_module.runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="协议测试",
+        kernel_provider="codex",
+    )
+
+    events = [
+        event
+        async for event in codex_kernel_provider.start_turn(
+            session,
+            turn,
+            KernelTurnInput(text="协议测试", metadata={"request_mode": "chat"}),
+        )
+    ]
+
+    assert events[0]["type"] == "codex_agent_message"
+    assert events[-1]["type"] == "turn_completed"
+    assert captured["runtime_session_id"] == session["id"]
+    assert captured["runtime_turn_id"] == turn["id"]
+    assert captured["existing_thread_id"] == ""
+    stored_turn = codex_kernel_module.runtime_v2.get_turn(turn["id"])
+    assert stored_turn["status"] == "succeeded"
+    kernel_session = codex_kernel_module.runtime_v2.get_kernel_session(
+        session_id=session["id"],
+        provider="codex",
+    )
+    assert kernel_session["external_thread_id"] == "thread-protocol"
+    runtime_events = codex_kernel_module.runtime_v2.list_events(session_id=session["id"])
+    assert runtime_events[-1]["type"] == "assistant_message_final"
 
 
 @pytest.mark.asyncio
@@ -575,6 +637,125 @@ async def test_codex_kernel_reuses_thread_for_same_ikaros_session(monkeypatch):
     )
     assert row["codex_thread_id"] == "thread-session-1"
     assert row["codex_turn_id"] == "turn-2"
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_ignores_stale_terminal_runtime_turn(monkeypatch):
+    calls = []
+
+    async def fake_run_turn(**kwargs):
+        calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "stdout": "新 turn 完成",
+            "summary": "新 turn 完成",
+            "thread_id": "thread-stale-turn",
+            "turn_id": "codex-turn-new",
+            "transport": "app-server",
+            "stop_reason": "completed",
+        }
+
+    monkeypatch.setattr(codex_kernel_provider, "_run_turn", fake_run_turn)
+
+    session = codex_kernel_module.runtime_v2.ensure_session(
+        session_id="sess-stale-turn",
+        platform="telegram",
+        platform_user_id="u-codex-stale-turn",
+    )
+    stale_turn = codex_kernel_module.runtime_v2.create_turn(
+        session_id=session["id"],
+        status="running",
+        input_text="旧消息",
+    )
+    codex_kernel_module.runtime_v2.update_turn_status(stale_turn["id"], "succeeded")
+
+    orchestrator = AgentOrchestrator()
+    monkeypatch.setattr(orchestrator.extension_router, "route", lambda *_a, **_k: [])
+
+    ctx = DummyContext(user_id="u-codex-stale-turn")
+    ctx.user_data["current_session_id"] = session["id"]
+    ctx.user_data["runtime_v2_session_id"] = session["id"]
+    ctx.user_data["runtime_v2_turn_id"] = stale_turn["id"]
+
+    chunks = [
+        chunk
+        async for chunk in orchestrator.handle_message(
+            ctx,
+            [{"role": "user", "parts": [{"text": "新消息"}]}],
+        )
+    ]
+
+    assert chunks == ["新 turn 完成"]
+    assert calls[0]["runtime_turn_id"] != stale_turn["id"]
+    turns = codex_kernel_module.runtime_v2.list_turns(session["id"])
+    assert len(turns) == 2
+    assert turns[-1]["input_text"] == "新消息"
+    assert turns[-1]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_can_store_scheduler_sessions_under_scheduler_platform(
+    monkeypatch,
+):
+    calls = []
+
+    async def fake_run_turn(**kwargs):
+        calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "stdout": "done",
+            "summary": "done",
+            "thread_id": "thread-scheduler",
+            "turn_id": f"turn-{len(calls)}",
+            "transport": "app-server",
+            "stop_reason": "completed",
+        }
+
+    monkeypatch.setattr(codex_kernel_provider, "_run_turn", fake_run_turn)
+
+    orchestrator = AgentOrchestrator()
+    monkeypatch.setattr(orchestrator.extension_router, "route", lambda *_a, **_k: [])
+
+    for text in ("第一次", "第二次"):
+        ctx = DummyContext(user_id="web-1")
+        ctx.user_data["current_session_id"] = "scheduler-task-7"
+        ctx.user_data["codex_kernel_session_platform"] = "scheduler"
+        ctx.user_data["codex_kernel_session_user_id"] = "user"
+        _ = [
+            chunk
+            async for chunk in orchestrator.handle_message(
+                ctx,
+                [{"role": "user", "parts": [{"text": text}]}],
+            )
+        ]
+
+    assert calls[0]["existing_thread_id"] == ""
+    assert calls[1]["existing_thread_id"] == "thread-scheduler"
+    assert calls[1]["thread_key"] == "scheduler:user:scheduler-task-7"
+    assert (
+        codex_kernel_sessions.get(
+            user_id="user",
+            platform="scheduler",
+            session_id="scheduler-task-7",
+        )["codex_thread_id"]
+        == "thread-scheduler"
+    )
+    assert (
+        codex_kernel_sessions.get(
+            user_id="web-1",
+            platform="scheduler",
+            session_id="scheduler-task-7",
+        )["codex_thread_id"]
+        == ""
+    )
+    assert (
+        codex_kernel_sessions.get(
+            user_id="web-1",
+            platform="telegram",
+            session_id="scheduler-task-7",
+        )["codex_thread_id"]
+        == ""
+    )
 
 
 @pytest.mark.asyncio
@@ -793,6 +974,160 @@ async def test_codex_kernel_keeps_app_server_client_resident(monkeypatch):
 
     await codex_kernel_module.close_persistent_codex_kernel_client()
     assert instances[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_interrupt_publishes_runtime_events(monkeypatch):
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+    instances = []
+
+    class FakeCodexClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            self.event_callback = None
+            self.stderr_text = ""
+            self.interrupt_calls = []
+            self.interrupted = asyncio.Event()
+            instances.append(self)
+
+        def is_running(self):
+            return not self.closed
+
+        def reset_turn_state(self):
+            return None
+
+        def set_event_callback(self, callback):
+            self.event_callback = callback
+
+        async def start(self):
+            return None
+
+        async def initialize(self):
+            return {}
+
+        async def open_thread(self, *, existing_thread_id=""):
+            return existing_thread_id or "thread-interrupt", bool(existing_thread_id)
+
+        async def start_turn(self, *, thread_id, instruction):
+            del thread_id, instruction
+            return "turn-interrupt"
+
+        async def wait_for_turn_completed(self, *, turn_id):
+            await self.interrupted.wait()
+            return {"id": turn_id, "status": "interrupted"}
+
+        async def interrupt_turn(self, *, thread_id, turn_id):
+            self.interrupt_calls.append({"thread_id": thread_id, "turn_id": turn_id})
+            self.interrupted.set()
+
+        def build_result(
+            self,
+            *,
+            thread_id,
+            turn_id,
+            turn,
+            loaded_existing_thread,
+        ):
+            status = str(turn.get("status") or "")
+            return {
+                "ok": status == "completed",
+                "stdout": "",
+                "summary": status,
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "turn": dict(turn),
+                "transport": "app-server",
+                "stop_reason": status,
+                "loaded_existing_session": loaded_existing_thread,
+            }
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(codex_kernel_module, "CodexAppServerClient", FakeCodexClient)
+
+    session = codex_kernel_module.runtime_v2.ensure_session(
+        session_id="telegram:u-interrupt:main",
+        platform="telegram",
+        platform_user_id="u-interrupt",
+    )
+    runtime_turn = codex_kernel_module.runtime_v2.create_turn(
+        session_id=session["id"],
+        input_text="长任务",
+        kernel_provider="codex",
+    )
+
+    run_task = asyncio.create_task(
+        codex_kernel_provider._run_turn(
+            user_id="u-interrupt",
+            task_id="task-interrupt",
+            task_inbox_id="",
+            instruction="长任务",
+            platform="telegram",
+            runtime_session_id=session["id"],
+            runtime_turn_id=runtime_turn["id"],
+        )
+    )
+    for _ in range(50):
+        if codex_kernel_module._ACTIVE_TURNS.get("u-interrupt"):
+            break
+        await asyncio.sleep(0.01)
+
+    assert await codex_kernel_module.interrupt_codex_kernel_task(
+        user_id="u-interrupt"
+    )
+    result = await run_task
+
+    assert result["ok"] is False
+    assert result["stop_reason"] == "interrupted"
+    assert instances[0].interrupt_calls == [
+        {"thread_id": "thread-interrupt", "turn_id": "turn-interrupt"}
+    ]
+    events = codex_kernel_module.runtime_v2.list_events(session_id=session["id"])
+    event_types = [item["type"] for item in events]
+    assert "kernel_interrupt_requested" in event_types
+    assert "kernel_interrupted" in event_types
+    stored_turn = codex_kernel_module.runtime_v2.get_turn(runtime_turn["id"])
+    assert stored_turn["metadata"]["cancel_requested_by"] == "u-interrupt"
+
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_interrupted_result_marks_runtime_turn_cancelled(monkeypatch):
+    async def fake_run_turn(**_kwargs):
+        return {
+            "ok": False,
+            "stdout": "已中断。",
+            "summary": "已中断。",
+            "thread_id": "thread-cancelled",
+            "turn_id": "turn-cancelled",
+            "transport": "app-server",
+            "stop_reason": "interrupted",
+        }
+
+    async def event_callback(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(codex_kernel_provider, "_run_turn", fake_run_turn)
+
+    output = await codex_kernel_provider.run_for_orchestrator(
+        ctx=None,
+        runtime_ctx=SimpleNamespace(
+            user_id="u-cancelled",
+            task_id="task-cancelled",
+            task_inbox_id="",
+            platform_name="telegram",
+        ),
+        message_history=[],
+        task_goal="停止测试",
+        request_mode="task",
+        event_callback=event_callback,
+    )
+
+    turns = codex_kernel_module.runtime_v2.list_turns("telegram:u-cancelled:main")
+    assert output == "已中断。"
+    assert [turn["status"] for turn in turns] == ["cancelled"]
 
 
 @pytest.mark.asyncio
@@ -1068,7 +1403,7 @@ async def test_codex_kernel_retries_setup_after_request_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_codex_kernel_does_not_rotate_thread_after_resume_timeout(monkeypatch):
+async def test_codex_kernel_rotates_thread_after_resume_timeout(monkeypatch):
     await codex_kernel_module.close_persistent_codex_kernel_client()
     instances = []
     turn_inputs = []
@@ -1142,13 +1477,20 @@ async def test_codex_kernel_does_not_rotate_thread_after_resume_timeout(monkeypa
         new_thread_instruction="完整新 thread 上下文 + 最新用户消息",
     )
 
-    assert result["ok"] is False
-    assert result["error_code"] == "timeout"
-    assert result["thread_id"] == ""
-    assert result["turn_id"] == ""
+    assert result["ok"] is True
+    assert result["thread_id"] == "thread-fresh"
+    assert result["turn_id"] == "turn-fresh"
+    assert result["loaded_existing_session"] is False
+    assert result["codex_thread_replaced_from"] == "thread-stuck"
     assert len(instances) == 2
     assert instances[0].closed is True
-    assert turn_inputs == []
+    assert instances[1].closed is False
+    assert turn_inputs == [
+        {
+            "thread_id": "thread-fresh",
+            "instruction": "完整新 thread 上下文 + 最新用户消息",
+        }
+    ]
 
     await codex_kernel_module.close_persistent_codex_kernel_client()
 
@@ -1365,5 +1707,114 @@ async def test_codex_kernel_streams_app_server_agent_deltas(monkeypatch):
     assert events[0][1]["text_preview"] == "处理中"
     assert events[1][1]["text_preview"] == "搜索：今天 科技新闻"
     assert events[1][1]["item_type"] == "web_search_call"
+
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+
+
+@pytest.mark.asyncio
+async def test_codex_kernel_emits_files_from_command_output_saved_path(
+    monkeypatch, tmp_path
+):
+    await codex_kernel_module.close_persistent_codex_kernel_client()
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"mp4")
+
+    class FakeCodexClient:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            self.event_callback = None
+            self.stderr_text = ""
+
+        def is_running(self):
+            return not self.closed
+
+        def reset_turn_state(self):
+            return None
+
+        def set_event_callback(self, callback):
+            self.event_callback = callback
+
+        async def start(self):
+            return None
+
+        async def initialize(self):
+            return {}
+
+        async def open_thread(self, *, existing_thread_id=""):
+            return existing_thread_id or "thread-files", bool(existing_thread_id)
+
+        async def start_turn(self, *, thread_id, instruction):
+            del thread_id, instruction
+            return "turn-files"
+
+        async def wait_for_turn_completed(self, *, turn_id):
+            if self.event_callback is not None:
+                await self.event_callback(
+                    "command_output_delta",
+                    {
+                        "turn_id": turn_id,
+                        "item_id": "cmd-download",
+                        "delta": f"saved_path={video_path}\n",
+                        "text": f"download_dir={tmp_path}\nsaved_path={video_path}\n",
+                    },
+                )
+            return {"id": turn_id, "status": "completed"}
+
+        def build_result(
+            self,
+            *,
+            thread_id,
+            turn_id,
+            turn,
+            loaded_existing_thread,
+        ):
+            return {
+                "ok": True,
+                "stdout": "完成",
+                "summary": "完成",
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "turn": dict(turn),
+                "transport": "app-server",
+                "stop_reason": "completed",
+                "loaded_existing_session": loaded_existing_thread,
+            }
+
+        async def close(self):
+            self.closed = True
+
+    events = []
+
+    async def event_callback(event, payload):
+        events.append((event, dict(payload)))
+        return None
+
+    monkeypatch.setattr(codex_kernel_module, "CodexAppServerClient", FakeCodexClient)
+    monkeypatch.setattr(
+        codex_kernel_module,
+        "ikaros_codex_command",
+        lambda: ["codex", "app-server", "--listen", "stdio://"],
+    )
+
+    result = await codex_kernel_provider._run_turn(
+        user_id="u-files",
+        task_id="task-files",
+        task_inbox_id="",
+        instruction="下载视频",
+        platform="telegram",
+        event_callback=event_callback,
+    )
+
+    assert result["ok"] is True
+    file_events = [payload for event, payload in events if event == "codex_result_files"]
+    assert file_events
+    assert file_events[0]["files"] == [
+        {
+            "kind": "video",
+            "path": str(video_path.resolve()),
+            "filename": "clip.mp4",
+            "caption": "",
+        }
+    ]
 
     await codex_kernel_module.close_persistent_codex_kernel_client()

@@ -12,12 +12,14 @@ from handlers import (
     handle_feature_input,
     handle_heartbeat_callback,
     handle_home_callback,
+    handle_scheduler_session_callback,
     handle_model_callback,
     handle_new_command,
     handle_task_callback,
     handle_usage_callback,
     heartbeat_command,
     help_command,
+    main_session_command,
     model_command,
     restart_command,
     save_feature_command,
@@ -37,6 +39,7 @@ class CoreCommandsPlugin(PluginExtension):
     def register(self, runtime) -> None:
         runtime.register_command("start", start, description="显示主菜单")
         runtime.register_command("new", handle_new_command, description="开启新对话")
+        runtime.register_command("main", main_session_command, description="回到主会话")
         runtime.register_command("help", help_command, description="使用帮助")
         runtime.register_command("chatlog", chatlog_command, description="检索对话记录")
         runtime.register_command("compact", compact_command, description="压缩当前对话")
@@ -50,6 +53,7 @@ class CoreCommandsPlugin(PluginExtension):
         runtime.register_callback("^home_", handle_home_callback)
         runtime.register_callback("^helpm_", handle_home_callback)
         runtime.register_callback("^hbm_", handle_heartbeat_callback)
+        runtime.register_callback("^schsess_", handle_scheduler_session_callback)
         runtime.register_callback("^taskm_", handle_task_callback)
         runtime.register_callback("^model_", handle_model_callback)
         runtime.register_callback("^usagem_", handle_usage_callback)

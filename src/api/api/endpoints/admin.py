@@ -34,6 +34,7 @@ from api.services.env_config import read_managed_env
 from core.app_paths import env_path, memory_config_path
 from core.memory_config import get_memory_provider_name, load_memory_config
 from core.runtime_config_store import runtime_config_store
+from core.runtime_quality_report import build_runtime_v2_quality_report
 
 router = APIRouter()
 
@@ -137,6 +138,7 @@ def _diagnostics_snapshot() -> dict[str, Any]:
             "providers": sorted(memory.providers.keys()),
             "active_settings": _redact_settings(memory.get_provider_settings()),
         },
+        "runtime_v2_quality": build_runtime_v2_quality_report(),
     }
 
 
@@ -311,6 +313,7 @@ async def diagnostics(
         "config_files": snapshot.get("config_files") or {},
         "version": snapshot.get("version") or {},
         "memory": snapshot.get("memory") or {},
+        "runtime_v2_quality": snapshot.get("runtime_v2_quality") or {},
     }
 
 

@@ -2,8 +2,10 @@ from .start_handlers import (
     start,
     button_callback,
     handle_home_callback,
+    handle_scheduler_session_callback,
     handle_new_command,
     help_command,
+    main_session_command,
     stop_command,
 )
 from .base_handlers import check_permission_unified, cancel

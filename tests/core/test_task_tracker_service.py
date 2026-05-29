@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from core.heartbeat_store import heartbeat_store
+from core.runtime_v2 import runtime_v2
 from core.task_inbox import task_inbox
 from extension.skills.builtin.task_tracker.scripts.service import task_tracker_service
 
@@ -34,7 +35,8 @@ def _reset_heartbeat_store(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def _isolated_state(tmp_path: Path):
+def _isolated_state(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("IKAROS_RUNTIME_DB_PATH", str(tmp_path / "runtime.db"))
     _reset_task_inbox(tmp_path)
     _reset_heartbeat_store(tmp_path)
     return tmp_path
@@ -476,3 +478,107 @@ async def test_task_tracker_list_open_excludes_heartbeat_tasks_by_default(
     task_ids = [row["task_id"] for row in result["data"]["tasks"]]
     assert user_task.task_id in task_ids
     assert heartbeat_task.task_id not in task_ids
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_lists_runtime_v2_tasks_and_dedupes_legacy(
+    _isolated_state,
+):
+    legacy_task = await task_inbox.submit(
+        source="user_chat",
+        goal="旧任务副本",
+        user_id="u-rv2",
+    )
+    await task_inbox.update_status(
+        legacy_task.task_id,
+        "waiting_external",
+        event="followup_waiting",
+    )
+    session = runtime_v2.ensure_session(
+        session_id="telegram:u-rv2:main",
+        kind="channel_chat",
+        platform="telegram",
+        platform_user_id="u-rv2",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="Runtime v2 task tracker",
+        status="running",
+        kernel_provider="codex",
+    )
+    runtime_task = runtime_v2.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="Runtime v2 task tracker",
+        status="waiting_external",
+        metadata={
+            "source": "user_chat",
+            "task_inbox_id": legacy_task.task_id,
+            "followup": {
+                "done_when": "external check passes",
+                "next_review_after": "2026-03-13T00:00:00+08:00",
+            },
+        },
+    )
+
+    result = await task_tracker_service.list_open(
+        user_id="u-rv2",
+        due_only=True,
+        limit=10,
+    )
+
+    assert result["ok"] is True
+    tasks = result["data"]["tasks"]
+    assert [row["task_id"] for row in tasks] == [runtime_task["id"]]
+    assert tasks[0]["source"] == "user_chat"
+    assert tasks[0]["metadata"]["task_inbox_id"] == legacy_task.task_id
+
+
+@pytest.mark.asyncio
+async def test_task_tracker_updates_runtime_v2_task_and_get_reads_events(
+    _isolated_state,
+):
+    session = runtime_v2.ensure_session(
+        session_id="telegram:u-rv2-update:main",
+        kind="channel_chat",
+        platform="telegram",
+        platform_user_id="u-rv2-update",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="Runtime v2 update",
+        status="running",
+    )
+    runtime_task = runtime_v2.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="Runtime v2 update",
+        status="running",
+        metadata={"source": "user_chat"},
+    )
+
+    updated = await task_tracker_service.update(
+        user_id="u-rv2-update",
+        task_id=runtime_task["id"],
+        status="completed",
+        result_summary="已经完成。",
+        done_when="验证通过",
+        refs={"trace": "runtime-v2"},
+    )
+
+    assert updated["ok"] is True
+    payload = updated["data"]["task"]
+    assert payload["status"] == "succeeded"
+    assert payload["metadata"]["followup"]["done_when"] == "验证通过"
+    assert payload["metadata"]["result_summary"] == "已经完成。"
+
+    fetched = await task_tracker_service.get(
+        user_id="u-rv2-update",
+        task_id=runtime_task["id"],
+        event_limit=5,
+    )
+
+    assert fetched["ok"] is True
+    assert fetched["data"]["task"]["events"][-1]["event"] == "task_tracker.updated"

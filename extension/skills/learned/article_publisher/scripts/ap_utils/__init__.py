@@ -340,14 +340,19 @@ def _infographic_article_context(
         limit=1800,
     )
     focus_lines: list[str] = []
-    if title:
-        focus_lines.append(f"标题：{title}")
-    if digest:
-        focus_lines.append(f"摘要：{digest}")
     if focus_block:
         focus_lines.append(f"本节要点：\n{focus_block}")
-    elif full_context:
-        focus_lines.append(full_context)
+        if title:
+            focus_lines.append(f"文章标题仅供背景参考，不要作为本图主标题：{title}")
+        if digest:
+            focus_lines.append(f"文章摘要仅供背景参考：{digest}")
+    else:
+        if title:
+            focus_lines.append(f"标题：{title}")
+        if digest:
+            focus_lines.append(f"摘要：{digest}")
+        if full_context:
+            focus_lines.append(full_context)
 
     focus_context = _compact_for_prompt(
         "\n".join(focus_lines),
@@ -381,6 +386,7 @@ def augment_image_prompt(
             "构图要求：主视觉元素居中或偏左，右侧预留标题区域；添加 1-2 个简洁的卡通形象、图标或知名人物剪影来增强记忆点；若涉及敏感或版权人物，用风格相似的替代形象；大量留白，突出核心信息，避免画面拥挤。",
             "文字处理：默认使用中文；标题文字大而醒目，控制在 8 个汉字以内；可添加 1 行副标题或关键词标签；字体风格与手绘插画协调统一。",
             "吸引力法则：使用悬念、数字、痛点等钩子元素激发点击欲望；视觉元素可以夸张、有反差；色彩搭配参考橙黄、蓝紫、红黑等高对比组合。",
+            "必须生成栅格图片成品；禁止 SVG、矢量代码、HTML/CSS、Canvas、图表脚本或任何代码绘图输出。",
             "不要水印，不要签名，不要版权标记，不要政治内容，不要成人内容。",
         ]
         if base_prompt:
@@ -391,10 +397,13 @@ def augment_image_prompt(
 
     target = "当前段落信息图"
     parts = [
-        "生成一张适合微信公众号文章和社媒传播的中文信息图，风格参考科技博主刷完资料后随手整理的长图。",
-        "不要 PPT 风格，不要官方报告腔，不要泛插画，不要只画抽象背景或无信息装饰。",
+        "生成一张适合微信公众号正文插入的成品中文信息图，不是封面图，不是配文背景图。",
+        "图内必须直接承载信息：中文主标题、关键数字、标签、流程箭头、分组卡片或四象限关系，图片单独拿出来也要能读懂。",
+        "必须生成栅格图片成品；禁止 SVG、矢量代码、HTML/CSS、Canvas、图表脚本或任何代码绘图输出。",
+        "不要 PPT 模板感，不要官方报告腔，不要泛插画，不要只画抽象背景或无信息装饰，不要线框/简笔画/手写草稿风。",
         "浅色底，蓝绿橙作为点缀；信息密度高但排版清楚；使用连接线、节点、迷你图标、代码框、芯片、服务器、机器人、股票折线等装饰元素。",
         "必须使用简体中文排版，文字要清楚可读；优先保留标题、小标题、关键事实和要点；可以压缩句子但不要改变事实。",
+        "这是正文配图：主标题必须来自原始配图意图或本节主题，禁止把文章总标题、日期快讯标题当作本图主标题重复使用。",
         "不要人物，不要水印，不要签名，不要版权标记，不要政治内容，不要成人内容。",
         f"图片用途：{target}。",
     ]

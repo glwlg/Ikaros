@@ -226,6 +226,7 @@ class AgentOrchestrator:
             await runtime_ctx.ensure_task_inbox(task_goal=task_goal)
             task_inbox_id = runtime_ctx.task_inbox_id
             await runtime_ctx.mark_ikaros_loop_started(task_goal)
+            await runtime_ctx.ensure_runtime_v2_task(task_goal=task_goal)
         logger.info(
             "Task tracking decision: enabled=%s mode=%s requested=%s task_inbox_id=%s",
             task_tracking_enabled,
@@ -348,6 +349,8 @@ class AgentOrchestrator:
             append_session_event=append_session_event,
             update_session_task=update_session_task,
             update_task_inbox_status=update_task_inbox_status,
+            runtime_session_id=str(user_data.get("runtime_v2_session_id") or ""),
+            runtime_turn_id=str(user_data.get("runtime_v2_turn_id") or ""),
         )
 
         subagent_progress_hook = get_runtime_callback(ctx, "subagent_progress_callback")

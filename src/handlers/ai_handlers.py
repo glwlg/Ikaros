@@ -21,8 +21,8 @@ from core.document_artifacts import (
     build_document_forward_text,
     pop_pending_document_artifacts,
 )
-from core.artifact_ledger import record_artifact_receipts
 from core.app_paths import project_root
+from core.channel_runtime_store import channel_runtime_store
 from core.file_artifacts import (
     extract_file_rows_from_text,
     extract_markdown_file_link_rows,
@@ -33,8 +33,11 @@ from core.file_artifacts import (
 from core.model_config import select_model_for_role
 from core.platform.exceptions import MediaProcessingError, MessageSendError
 from core.runtime_callbacks import pop_runtime_callback, set_runtime_callback
+from core.runtime_delivery import deliver_result_files, deliver_text_message
+from core.runtime_v2 import TERMINAL_STATUSES, runtime_v2
 from core.task_confirmation import (
     clear_expired_waiting_confirmation,
+    close_runtime_v2_waiting_task,
     is_confirmation_expired,
 )
 from services.openai_adapter import generate_text
@@ -524,139 +527,295 @@ def _pop_pending_ui_payload(user_data: dict[str, Any]) -> dict[str, Any] | None:
     return {"actions": merged_actions}
 
 
-def _ctx_supports_result_kind(ctx: UnifiedContext, kind: str) -> bool:
-    adapter = getattr(ctx, "_adapter", None)
-    capabilities = getattr(adapter, "capabilities", None)
-    supports = getattr(capabilities, "supports_reply_kind", None)
-    if callable(supports):
-        return bool(supports(kind))
-    return True
+def _runtime_v2_session_for_ctx(ctx: UnifiedContext) -> tuple[str, str]:
+    def _usable_turn_id(turn_id: str) -> str:
+        safe_turn_id = str(turn_id or "").strip()
+        if not safe_turn_id:
+            return ""
+        with contextlib.suppress(Exception):
+            turn = runtime_v2.get_turn(safe_turn_id)
+            if not turn:
+                return ""
+            if str(turn.get("status") or "").strip() in TERMINAL_STATUSES:
+                return ""
+            return safe_turn_id
+        return safe_turn_id
+
+    def _existing_or_create_session(session_id: str) -> str:
+        safe_session_id = str(session_id or "").strip()
+        if not safe_session_id:
+            return ""
+        with contextlib.suppress(Exception):
+            if runtime_v2.get_session(safe_session_id):
+                return safe_session_id
+        platform = str(getattr(getattr(ctx, "message", None), "platform", "") or "").strip()
+        user_id = str(
+            getattr(getattr(getattr(ctx, "message", None), "user", None), "id", "") or ""
+        ).strip()
+        with contextlib.suppress(Exception):
+            runtime_v2.ensure_session(
+                session_id=safe_session_id,
+                kind="web_workspace" if platform == "web" else "channel_chat",
+                platform=platform,
+                platform_user_id=user_id,
+                title=f"{platform}:{user_id}".strip(":"),
+            )
+            return safe_session_id
+        return ""
+
+    user_data = getattr(ctx, "user_data", None)
+    if isinstance(user_data, dict):
+        session_id = str(user_data.get("runtime_v2_session_id") or "").strip()
+        turn_id = _usable_turn_id(str(user_data.get("runtime_v2_turn_id") or ""))
+        session_id = _existing_or_create_session(session_id)
+        if session_id:
+            return session_id, turn_id
+
+    raw_data = getattr(getattr(ctx, "message", None), "raw_data", {}) or {}
+    if isinstance(raw_data, dict):
+        session_id = str(raw_data.get("session_id") or "").strip()
+        session_id = _existing_or_create_session(session_id)
+        if session_id:
+            return session_id, ""
+
+    platform = str(getattr(getattr(ctx, "message", None), "platform", "") or "").strip()
+    user_id = str(
+        getattr(getattr(getattr(ctx, "message", None), "user", None), "id", "") or ""
+    ).strip()
+    if platform and user_id:
+        with contextlib.suppress(Exception):
+            session_id = channel_runtime_store.get_session_id(
+                platform=platform,
+                platform_user_id=user_id,
+            )
+            session_id = _existing_or_create_session(str(session_id or ""))
+            if session_id:
+                return str(session_id), ""
+    return "", ""
+
+
+def _runtime_v2_session_kind_for_ctx(ctx: UnifiedContext, session_id: str) -> str:
+    platform = str(getattr(getattr(ctx, "message", None), "platform", "") or "").strip()
+    if platform == "scheduler" or str(session_id or "").startswith("scheduler-task-"):
+        return "scheduled_task"
+    if platform == "web":
+        return "web_workspace"
+    return "channel_chat"
+
+
+def _ensure_runtime_v2_user_turn_for_ctx(
+    ctx: UnifiedContext,
+    user_message: str,
+) -> tuple[str, str]:
+    message = getattr(ctx, "message", None)
+    platform = str(getattr(message, "platform", "") or "").strip()
+    user_id = str(getattr(getattr(message, "user", None), "id", "") or "").strip()
+    chat_id = str(getattr(getattr(message, "chat", None), "id", "") or "").strip()
+    raw_data = getattr(message, "raw_data", {}) or {}
+    raw_data = dict(raw_data) if isinstance(raw_data, dict) else {}
+    user_data = getattr(ctx, "user_data", None)
+    if not isinstance(user_data, dict):
+        user_data = {}
+        with contextlib.suppress(Exception):
+            setattr(ctx, "user_data", user_data)
+
+    raw_runtime_session_id = str(raw_data.get("runtime_v2_session_id") or "").strip()
+    raw_runtime_turn_id = str(raw_data.get("runtime_v2_turn_id") or "").strip()
+    if raw_runtime_session_id and raw_runtime_turn_id:
+        with contextlib.suppress(Exception):
+            turn = runtime_v2.get_turn(raw_runtime_turn_id)
+            if (
+                turn
+                and str(turn.get("session_id") or "").strip() == raw_runtime_session_id
+            ):
+                user_data["runtime_v2_session_id"] = raw_runtime_session_id
+                user_data["runtime_v2_turn_id"] = raw_runtime_turn_id
+                user_data.setdefault("current_session_id", raw_runtime_session_id)
+                return raw_runtime_session_id, raw_runtime_turn_id
+
+    existing_session_id, _existing_turn_id = _runtime_v2_session_for_ctx(ctx)
+
+    session_id = existing_session_id or str(
+        user_data.get("runtime_v2_session_id") or raw_data.get("session_id") or ""
+    ).strip()
+    if not session_id and platform and user_id:
+        with contextlib.suppress(Exception):
+            session_id = str(
+                channel_runtime_store.get_session_id(
+                    platform=platform,
+                    platform_user_id=user_id,
+                )
+                or ""
+            ).strip()
+    if not session_id and platform and user_id:
+        session_id = f"{platform}:{user_id}:main"
+    if not session_id:
+        return "", ""
+
+    with contextlib.suppress(Exception):
+        runtime_v2.ensure_session(
+            session_id=session_id,
+            kind=_runtime_v2_session_kind_for_ctx(ctx, session_id),
+            platform=platform,
+            platform_user_id=user_id,
+            title=f"{platform}:{user_id}".strip(":"),
+            metadata={"chat_id": chat_id},
+        )
+        channel_runtime_store.set_session_id(
+            session_id=session_id,
+            platform=platform,
+            platform_user_id=user_id,
+        )
+        user_data["runtime_v2_session_id"] = session_id
+        user_data.setdefault("current_session_id", session_id)
+
+        turn = runtime_v2.create_turn(
+            session_id=session_id,
+            source="user",
+            input_text=str(user_message or ""),
+            metadata={
+                "platform": platform,
+                "chat_id": chat_id,
+                "message_id": str(getattr(message, "id", "") or ""),
+            },
+        )
+        turn_id = str(turn.get("id") or "").strip()
+        if turn_id:
+            user_data["runtime_v2_turn_id"] = turn_id
+            runtime_v2.append_event(
+                session_id=session_id,
+                turn_id=turn_id,
+                event_type="user_message",
+                payload={
+                    "text": str(user_message or ""),
+                    "platform": platform,
+                    "chat_id": chat_id,
+                    "message_id": str(getattr(message, "id", "") or ""),
+                },
+            )
+        return session_id, turn_id
+    return "", ""
+
+
+def _update_runtime_v2_turn_for_ctx(
+    ctx: UnifiedContext,
+    status: str,
+    *,
+    error: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    _session_id, turn_id = _runtime_v2_session_for_ctx(ctx)
+    if not turn_id:
+        return
+    with contextlib.suppress(Exception):
+        current = runtime_v2.get_turn(turn_id)
+        if not current:
+            return
+        current_status = str(current.get("status") or "").strip()
+        target_status = str(status or "").strip()
+        if (
+            current_status in {"waiting_user", "waiting_external"}
+            and target_status == "succeeded"
+        ):
+            target_status = current_status
+
+        def _sync_runtime_task_status() -> None:
+            user_data = getattr(ctx, "user_data", None)
+            task_id = ""
+            if isinstance(user_data, dict):
+                task_id = str(user_data.get("runtime_v2_task_id") or "").strip()
+            if not task_id:
+                return
+            task = runtime_v2.get_task(task_id)
+            if not task:
+                return
+            task_status = str(task.get("status") or "").strip()
+            if task_status == target_status:
+                return
+            if target_status in {"succeeded", "failed", "cancelled", "expired"}:
+                if task_status == "queued":
+                    runtime_v2.update_task_status(task_id, "running")
+            runtime_v2.update_task_status(task_id, target_status)
+
+        if current_status == target_status:
+            if metadata:
+                runtime_v2.update_turn_status(turn_id, target_status, metadata=metadata)
+            _sync_runtime_task_status()
+            return
+        if target_status in {"succeeded", "failed", "cancelled", "expired"}:
+            if current_status == "queued":
+                runtime_v2.update_turn_status(
+                    turn_id,
+                    "running",
+                    metadata={"entered_runtime_handler": True},
+                )
+        runtime_v2.update_turn_status(
+            turn_id,
+            target_status,
+            error=error,
+            metadata=metadata,
+        )
+        _sync_runtime_task_status()
 
 
 async def _send_result_files(
     ctx: UnifiedContext,
     file_rows: list[dict[str, str]],
 ) -> list[dict[str, str]]:
-    prepared_rows: list[dict[str, str]] = []
-    for item in list(file_rows or []):
-        if not isinstance(item, dict):
-            continue
-        path_text = str(item.get("path") or "").strip()
-        if not path_text:
-            continue
-        try:
-            resolved_path = str(Path(path_text).expanduser().resolve())
-        except Exception:
-            continue
-        kind = str(item.get("kind") or "document").strip().lower() or "document"
-        filename = str(item.get("filename") or "").strip() or Path(resolved_path).name
-        prepared_rows.append(
-            {
-                "path": resolved_path,
-                "kind": kind,
-                "filename": filename,
-                "caption": str(item.get("caption") or "").strip()[:500],
-            }
-        )
-
-    delivered_rows: list[dict[str, str]] = []
-    failed_names: list[str] = []
-    failed_rows: list[dict[str, str]] = []
-    for item in merge_file_rows(prepared_rows):
-        path_text = str(item.get("path") or "").strip()
-        if not path_text:
-            continue
-        path_obj = Path(path_text).expanduser().resolve()
-        if not path_obj.exists() or not path_obj.is_file():
-            failed_names.append(str(item.get("filename") or path_obj.name))
-            failed_rows.append(dict(item))
-            continue
-        caption = str(item.get("caption") or "").strip() or None
-        filename = str(item.get("filename") or path_obj.name).strip() or path_obj.name
-        kind = str(item.get("kind") or "document").strip().lower() or "document"
-        if not _ctx_supports_result_kind(ctx, kind):
-            failed_names.append(filename)
-            failed_rows.append(dict(item))
-            continue
-
-        try:
-            if kind == "photo":
-                await ctx.reply_photo(str(path_obj), caption=caption)
-            elif kind == "video":
-                await ctx.reply_video(str(path_obj), caption=caption)
-            elif kind == "audio":
-                await ctx.reply_audio(str(path_obj), caption=caption)
-            else:
-                document: str | bytes = str(path_obj)
-                output_name = filename
-                if filename.lower().endswith(".md"):
-                    try:
-                        from services.md_converter import adapt_md_file_for_platform
-
-                        adapted_bytes, adapted_name = adapt_md_file_for_platform(
-                            file_bytes=path_obj.read_bytes(),
-                            filename=filename,
-                            platform=str(getattr(ctx.message, "platform", "") or ""),
-                        )
-                        document = adapted_bytes
-                        output_name = adapted_name
-                    except Exception:
-                        logger.debug(
-                            "Markdown attachment adaptation failed.", exc_info=True
-                        )
-                await ctx.reply_document(
-                    document=document,
-                    filename=output_name,
-                    caption=caption,
-                )
-            delivered_rows.append(dict(item))
-        except Exception:
-            failed_names.append(filename)
-            failed_rows.append(dict(item))
-            logger.warning(
-                "Failed to send result attachment: %s", path_obj, exc_info=True
-            )
-    platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
-    chat_id = str(getattr(getattr(ctx.message, "chat", None), "id", "") or "").strip()
-    target = f"{platform}:{chat_id}" if platform or chat_id else ""
-    record_artifact_receipts(
-        getattr(ctx, "user_data", None),
-        delivered_rows,
-        status="delivered",
-        source="result_files",
-        target=target,
-    )
-    record_artifact_receipts(
-        getattr(ctx, "user_data", None),
-        failed_rows,
-        status="failed",
-        source="result_files",
-        target=target,
-        error="attachment delivery failed",
+    runtime_session_id, runtime_turn_id = _runtime_v2_session_for_ctx(ctx)
+    result = await deliver_result_files(
+        ctx=ctx,
+        file_rows=file_rows,
+        runtime_session_id=runtime_session_id,
+        runtime_turn_id=runtime_turn_id,
+        runtime_store=runtime_v2,
     )
     task_inbox_id = str(
         (getattr(ctx, "user_data", {}) or {}).get("task_inbox_id") or ""
     ).strip()
-    if task_inbox_id and (delivered_rows or failed_rows):
+    if task_inbox_id and (result.delivered_rows or result.failed_rows):
         with contextlib.suppress(Exception):
             from core.task_inbox import task_inbox
 
             await task_inbox.append_event(
                 task_inbox_id,
                 "artifact_delivery",
-                detail=f"delivered={len(delivered_rows)}; failed={len(failed_rows)}",
+                detail=(
+                    f"delivered={len(result.delivered_rows)}; "
+                    f"failed={len(result.failed_rows)}"
+                ),
                 extra={
-                    "delivered": list(delivered_rows),
-                    "failed": list(failed_rows),
-                    "target": target,
+                    "delivered": list(result.delivered_rows),
+                    "failed": list(result.failed_rows),
+                    "target": result.target,
                 },
             )
-    if failed_names:
-        preview = "、".join(failed_names[:3])
-        suffix = " 等" if len(failed_names) > 3 else ""
-        with contextlib.suppress(Exception):
-            await ctx.reply(f"⚠️ 有 {len(failed_names)} 个附件未能发送：{preview}{suffix}")
-    return delivered_rows
+    return result.delivered_rows
+
+
+async def _deliver_final_text(
+    ctx: UnifiedContext,
+    payload: Any,
+    *,
+    edit_message_id: Any = None,
+    edit_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    runtime_session_id, runtime_turn_id = _runtime_v2_session_for_ctx(ctx)
+    result = await deliver_text_message(
+        ctx=ctx,
+        payload=payload,
+        runtime_session_id=runtime_session_id,
+        runtime_turn_id=runtime_turn_id,
+        edit_message_id=edit_message_id,
+        event_type=(
+            "message_update"
+            if edit_message_id is not None
+            else "assistant_message_final"
+        ),
+        edit_kwargs=edit_kwargs,
+        runtime_store=runtime_v2,
+    )
+    return result.message
 
 
 async def _should_include_memory_summary_for_task(
@@ -898,6 +1057,12 @@ async def _try_handle_waiting_confirmation(
             user_id,
             f"user_confirm_stop:{task_id or 'waiting_task'}",
         )
+        close_runtime_v2_waiting_task(
+            active_task=active_task,
+            status="cancelled",
+            reason="Cancelled during text confirmation stage.",
+            event_type="task.user_confirm_stop",
+        )
         if task_inbox_id:
             await task_inbox.update_status(
                 task_inbox_id,
@@ -1046,11 +1211,29 @@ async def handle_ai_chat(
     if not await require_feature_access(ctx, "chat"):
         return
 
+    _ensure_runtime_v2_user_turn_for_ctx(ctx, user_message)
+
     if await _try_handle_waiting_confirmation(ctx, user_message):
+        _update_runtime_v2_turn_for_ctx(
+            ctx,
+            "succeeded",
+            metadata={"handled_by": "waiting_confirmation"},
+        )
         return
 
     if await _try_handle_memory_commands(ctx, user_message):
+        _update_runtime_v2_turn_for_ctx(
+            ctx,
+            "succeeded",
+            metadata={"handled_by": "memory_command"},
+        )
         return
+
+    _update_runtime_v2_turn_for_ctx(
+        ctx,
+        "running",
+        metadata={"handler": "handle_ai_chat"},
+    )
 
     from utils import extract_pure_video_url
 
@@ -1074,6 +1257,11 @@ async def handle_ai_chat(
                     ]
                 },
             }
+        )
+        _update_runtime_v2_turn_for_ctx(
+            ctx,
+            "succeeded",
+            metadata={"handled_by": "video_link_options"},
         )
         return
 
@@ -1120,6 +1308,12 @@ async def handle_ai_chat(
         await ctx.reply(
             "❌ 检测到图片链接或本地图片路径，但没有成功加载任何图片。请检查链接或路径后重试。"
         )
+        _update_runtime_v2_turn_for_ctx(
+            ctx,
+            "failed",
+            error="image references detected but no images could be loaded",
+            metadata={"handler": "handle_ai_chat"},
+        )
         return
 
     if truncated_inline_count:
@@ -1140,6 +1334,12 @@ async def handle_ai_chat(
             MessageType.VOICE,
         ]
         if is_media and not has_reply_media:
+            _update_runtime_v2_turn_for_ctx(
+                ctx,
+                "failed",
+                error="reply media could not be loaded",
+                metadata={"handler": "handle_ai_chat"},
+            )
             return
 
     received_phrases, loading_phrases = _build_runtime_phrase_pools(str(user_id))
@@ -1547,6 +1747,7 @@ async def handle_ai_chat(
     set_runtime_callback(ctx, "ikaros_progress_callback", _ikaros_progress_callback)
 
     try:
+        runtime_turn_closed = False
         message_history = []
         current_msg_parts = list(prepared_input.user_parts or [{"text": final_user_message}])
 
@@ -1650,7 +1851,7 @@ async def handle_ai_chat(
                             payload = {"text": preview_text}
                             if ui_payload:
                                 payload["ui"] = ui_payload
-                            sent_msg = await ctx.reply(payload)
+                            sent_msg = await _deliver_final_text(ctx, payload)
                             state["response_visible"] = True
                         await ctx.reply("📝 内容较长，完整结果已转为文本附件发送。")
                         state["response_visible"] = True
@@ -1674,10 +1875,13 @@ async def handle_ai_chat(
                             msg_id = _message_id_of(thinking_msg)
                             if msg_id is not None:
                                 try:
-                                    await ctx.edit_message(
-                                        msg_id,
+                                    await _deliver_final_text(
+                                        ctx,
                                         rendered_response,
-                                        run_after_reply_hooks=True,
+                                        edit_message_id=msg_id,
+                                        edit_kwargs={
+                                            "run_after_reply_hooks": True,
+                                        },
                                     )
                                     sent_msg = thinking_msg
                                 except MessageSendError as edit_err:
@@ -1689,11 +1893,11 @@ async def handle_ai_chat(
                                         edit_err,
                                     )
                                     can_update = False
-                                    sent_msg = await ctx.reply(payload)
+                                    sent_msg = await _deliver_final_text(ctx, payload)
                             else:
-                                sent_msg = await ctx.reply(payload)
+                                sent_msg = await _deliver_final_text(ctx, payload)
                         else:
-                            sent_msg = await ctx.reply(payload)
+                            sent_msg = await _deliver_final_text(ctx, payload)
                         state["response_visible"] = True
                 except MessageSendError as send_err:
                     if not _is_message_too_long_error(send_err):
@@ -1724,6 +1928,15 @@ async def handle_ai_chat(
 
             await add_message(ctx, user_id, "model", final_text_response)
             await increment_stat(user_id, "ai_chats")
+            _update_runtime_v2_turn_for_ctx(
+                ctx,
+                "succeeded",
+                metadata={
+                    "handler": "handle_ai_chat",
+                    "response_chars": len(final_text_response),
+                },
+            )
+            runtime_turn_closed = True
         elif pending_ikaros_files:
             pending_ikaros_files = _unsent_file_rows(pending_ikaros_files)
             delivered = await _send_result_files(ctx, pending_ikaros_files)
@@ -1732,17 +1945,38 @@ async def handle_ai_chat(
                 state["response_visible"] = True
                 await add_message(ctx, user_id, "model", "[attachments]")
                 await increment_stat(user_id, "ai_chats")
+                _update_runtime_v2_turn_for_ctx(
+                    ctx,
+                    "succeeded",
+                    metadata={
+                        "handler": "handle_ai_chat",
+                        "delivered_artifacts": len(delivered),
+                    },
+                )
+                runtime_turn_closed = True
             if can_update and thinking_msg is not None and not thinking_deleted:
                 try:
                     await thinking_msg.delete()
                 except Exception as del_e:
                     logger.warning(f"Failed to delete thinking_msg: {del_e}")
+        if not runtime_turn_closed:
+            _update_runtime_v2_turn_for_ctx(
+                ctx,
+                "failed",
+                error="agent produced no visible output",
+                metadata={"handler": "handle_ai_chat"},
+            )
 
     except asyncio.CancelledError:
         logger.info(f"AI chat task cancelled for user {user_id}")
         state["running"] = False
         if animation_task:
             animation_task.cancel()
+        _update_runtime_v2_turn_for_ctx(
+            ctx,
+            "cancelled",
+            metadata={"handler": "handle_ai_chat"},
+        )
         raise
 
     except Exception as e:
@@ -1750,6 +1984,12 @@ async def handle_ai_chat(
         if animation_task:
             animation_task.cancel()
         logger.error(f"Agent error: {e}", exc_info=True)
+        _update_runtime_v2_turn_for_ctx(
+            ctx,
+            "failed",
+            error=str(e),
+            metadata={"handler": "handle_ai_chat"},
+        )
 
         if str(e) != "Message is not modified":
             error_text = f"❌ Agent 运行出错：{e}\n\n请尝试 /new 重置对话。"

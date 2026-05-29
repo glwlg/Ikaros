@@ -10,6 +10,7 @@ from core.heartbeat_store import heartbeat_store
 from core.heartbeat_worker import HeartbeatWorker
 from core.local_file_delivery import send_local_file
 from core.runtime_callbacks import get_runtime_callback
+from core.runtime_v2 import RuntimeV2Store
 
 
 @pytest.mark.asyncio
@@ -1095,3 +1096,39 @@ async def test_heartbeat_process_once_clears_expired_waiting_user_and_runs(
     assert worker._running == {}
     assert fake_channel_store.updated[-1]["clear_active"] is True
     assert await heartbeat_store.get_session_active_task(user_id) is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_process_once_expires_runtime_v2_waiting_user(
+    monkeypatch,
+    tmp_path,
+):
+    runtime_root = (tmp_path / "runtime_tasks").resolve()
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(heartbeat_store, "root", runtime_root)
+    heartbeat_store._locks.clear()
+
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    session = runtime_store.ensure_session(session_id="rv2-waiting")
+    turn = runtime_store.create_turn(session_id=session["id"], input_text="继续吗")
+    runtime_store.update_turn_status(turn["id"], "running")
+    runtime_store.update_turn_status(turn["id"], "waiting_user")
+
+    class _RuntimeV2:
+        def expire_stale_work(self):
+            return runtime_store.expire_stale_work(
+                waiting_user_ttl_sec=180,
+                now=datetime.now().astimezone() + timedelta(seconds=181),
+            )
+
+    monkeypatch.setattr(heartbeat_worker_module, "runtime_v2", _RuntimeV2())
+
+    worker = HeartbeatWorker()
+    worker.enabled = True
+
+    await worker.process_once()
+
+    assert runtime_store.get_turn(turn["id"])["status"] == "expired"
+    assert runtime_store.list_events(session_id=session["id"])[0]["type"] == (
+        "runtime.expired"
+    )

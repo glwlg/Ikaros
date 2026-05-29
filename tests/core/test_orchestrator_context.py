@@ -4,6 +4,7 @@ import pytest
 
 from core.orchestrator_context import OrchestratorRuntimeContext
 import core.orchestrator_context as context_module
+from core.runtime_v2 import RuntimeV2Store
 
 
 def _runtime_context(**overrides) -> OrchestratorRuntimeContext:
@@ -98,6 +99,26 @@ async def test_ensure_task_inbox_uses_heartbeat_source_when_enabled(monkeypatch)
     assert task_inbox_id == "hb-inbox-1"
     assert captured["source"] == "heartbeat"
     assert captured["goal"] == "检查今日 heartbeat 项"
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_v2_task_creates_session_turn_and_task(tmp_path, monkeypatch):
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(context_module, "runtime_v2", runtime_store)
+
+    runtime_ctx = _runtime_context(session_id="telegram:u-1:main")
+    task_id = await runtime_ctx.ensure_runtime_v2_task(task_goal="整理一份报告")
+
+    assert task_id
+    assert runtime_ctx.user_data["runtime_v2_session_id"] == "telegram:u-1:main"
+    assert runtime_ctx.user_data["runtime_v2_turn_id"]
+    assert runtime_ctx.user_data["runtime_v2_task_id"] == task_id
+    task = runtime_store.get_task(task_id)
+    turn = runtime_store.get_turn(runtime_ctx.user_data["runtime_v2_turn_id"])
+    assert task["status"] == "running"
+    assert task["turn_id"] == turn["id"]
+    assert turn["status"] == "running"
+    assert turn["input_text"] == "整理一份报告"
 
 
 @pytest.mark.asyncio

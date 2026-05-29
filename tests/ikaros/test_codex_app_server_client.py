@@ -319,9 +319,9 @@ async def test_app_server_client_collects_local_image_files_from_completed_items
 
 
 @pytest.mark.asyncio
-async def test_app_server_client_collects_local_document_files_from_completed_items(tmp_path):
-    doc_path = tmp_path / "report.pdf"
-    doc_path.write_bytes(b"%PDF-1.7")
+async def test_app_server_client_ignores_local_document_files_from_completed_items(tmp_path):
+    doc_path = tmp_path / "SKILL.md"
+    doc_path.write_text("# Skill notes\n", encoding="utf-8")
     client = CodexAppServerClient(
         command=["codex", "app-server"],
         cwd=str(tmp_path),
@@ -345,14 +345,7 @@ async def test_app_server_client_collects_local_document_files_from_completed_it
         }
     )
 
-    assert client.files == [
-        {
-            "kind": "document",
-            "path": str(doc_path.resolve()),
-            "filename": "report.pdf",
-            "caption": "",
-        }
-    ]
+    assert client.files == []
 
 
 @pytest.mark.asyncio
@@ -478,11 +471,16 @@ async def test_app_server_client_records_user_input_requests(monkeypatch, tmp_pa
         timeout_sec=30,
     )
     responses = []
+    events = []
+
+    async def on_event(event, payload):
+        events.append((event, dict(payload)))
 
     async def fake_send_response(request_id, *, result=None, error=None):
         responses.append((request_id, result, error))
 
     monkeypatch.setattr(client, "_send_response", fake_send_response)
+    client.set_event_callback(on_event)
 
     await client._handle_request(
         "req-1",
@@ -499,3 +497,13 @@ async def test_app_server_client_records_user_input_requests(monkeypatch, tmp_pa
 
     assert responses == [("req-1", {"answers": {}}, None)]
     assert result["user_input_requests"][0]["params"]["prompt"] == "Need confirmation"
+    assert events == [
+        (
+            "request_user_input",
+            {
+                "at": result["user_input_requests"][0]["at"],
+                "method": "item/tool/requestUserInput",
+                "params": {"prompt": "Need confirmation"},
+            },
+        )
+    ]

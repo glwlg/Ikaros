@@ -10,7 +10,9 @@ from extension.skills.builtin.scheduler_manager.scripts.store import (
     add_scheduled_task,
     get_all_active_tasks,
     get_all_scheduled_tasks,
+    scheduler_task_session_id,
     update_scheduled_task,
+    update_task_delivery_target,
     update_task_status,
 )
 from extension.skills.learned.reminder.scripts.store import (
@@ -46,7 +48,9 @@ async def test_single_user_paths_and_logical_scope_are_canonical(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_state_store_rows_are_shared_across_runtime_user_ids(tmp_path, monkeypatch):
+async def test_state_store_rows_are_shared_across_runtime_user_ids(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
     await create_subscription(
@@ -91,6 +95,35 @@ async def test_paused_scheduled_tasks_remain_listable(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scheduled_tasks_get_stable_per_task_sessions(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    task_id = await add_scheduled_task(
+        "0 8 * * *",
+        "daily brief",
+        user_id="1001",
+        session_id="chat-session-that-created-it",
+    )
+
+    rows = await get_all_scheduled_tasks("2002")
+    assert rows[0]["session_id"] == scheduler_task_session_id(task_id)
+
+    changed = await update_task_delivery_target(
+        task_id,
+        user_id="1001",
+        platform="weixin",
+        chat_id="wx-chat",
+        session_id="another-chat-session",
+    )
+
+    assert changed is True
+    rows = await get_all_scheduled_tasks("2002")
+    assert rows[0]["platform"] == "weixin"
+    assert rows[0]["chat_id"] == "wx-chat"
+    assert rows[0]["session_id"] == scheduler_task_session_id(task_id)
+
+
+@pytest.mark.asyncio
 async def test_feature_delivery_targets_are_shared_across_runtime_user_ids(
     tmp_path, monkeypatch
 ):
@@ -112,7 +145,9 @@ async def test_feature_delivery_targets_are_shared_across_runtime_user_ids(
 
 
 @pytest.mark.asyncio
-async def test_scheduled_tasks_rewrite_to_single_user_schema(tmp_path, monkeypatch):
+async def test_scheduled_tasks_use_runtime_v2_instead_of_legacy_markdown(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
     scheduled_path = shared_user_path("scheduler_manager", "scheduled_tasks.md")
@@ -149,38 +184,22 @@ async def test_scheduled_tasks_rewrite_to_single_user_schema(tmp_path, monkeypat
         ],
     )
 
-    rows = await get_all_active_tasks("1001")
-    assert [(row["id"], row["instruction"]) for row in rows] == [
-        (3, "latest alpha"),
-        (4, "beta task"),
-    ]
+    assert await get_all_active_tasks("1001") == []
 
-    assert await update_scheduled_task(3, "1001", instruction="alpha updated") is True
+    task_id = await add_scheduled_task("0 8 * * *", "runtime task", user_id="1001")
+    assert await update_scheduled_task(
+        task_id, "1001", instruction="runtime updated"
+    ) is True
 
-    persisted = await read_json(scheduled_path, [])
-    assert persisted == [
-        {
-            "id": 3,
-            "crontab": "10 8 * * *",
-            "instruction": "alpha updated",
-            "platform": "telegram",
-            "need_push": True,
-            "is_active": True,
-            "created_at": persisted[0]["created_at"],
-            "updated_at": persisted[0]["updated_at"],
-        },
-        {
-            "id": 4,
-            "crontab": "20 9 * * *",
-            "instruction": "beta task",
-            "platform": "telegram",
-            "need_push": True,
-            "is_active": True,
-            "created_at": persisted[1]["created_at"],
-            "updated_at": persisted[1]["updated_at"],
-        },
+    rows = await get_all_active_tasks("2002")
+    assert [(row["id"], row["instruction"], row["session_id"]) for row in rows] == [
+        (task_id, "runtime updated", scheduler_task_session_id(task_id)),
     ]
-    assert all("user_id" not in row for row in persisted)
+    assert [row["instruction"] for row in await read_json(scheduled_path, [])] == [
+        "legacy blank owner",
+        "latest alpha",
+        "beta task",
+    ]
 
 
 @pytest.mark.asyncio
@@ -193,7 +212,9 @@ async def test_heartbeat_store_uses_single_canonical_files(tmp_path, monkeypatch
     store._locks.clear()
 
     await store.add_checklist_item("1001", "alpha heartbeat")
-    await store.set_delivery_target("1001", "telegram", "chat-1", session_id="sess-1001")
+    await store.set_delivery_target(
+        "1001", "telegram", "chat-1", session_id="sess-1001"
+    )
 
     state = await store.get_state("2002")
 
@@ -259,7 +280,9 @@ paused: true
 
 
 @pytest.mark.asyncio
-async def test_migrate_legacy_user_state_reports_single_user_cleanup(tmp_path, monkeypatch):
+async def test_migrate_legacy_user_state_reports_single_user_cleanup(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
     runtime_root = (tmp_path / "runtime_tasks").resolve()
@@ -272,7 +295,9 @@ async def test_migrate_legacy_user_state_reports_single_user_cleanup(tmp_path, m
     )
 
     report = await migrate_legacy_user_state()
-    persisted = await read_json(system_path("state_migrations", "legacy_user_state.md"), {})
+    persisted = await read_json(
+        system_path("state_migrations", "legacy_user_state.md"), {}
+    )
 
     assert report["report_name"] == "legacy_user_state"
     assert report["summary"]["domains"] == [

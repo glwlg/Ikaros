@@ -16,6 +16,7 @@ from core.heartbeat_store import heartbeat_store
 from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
 from core.platform.registry import adapter_manager
 from core.runtime_callbacks import pop_runtime_callback, set_runtime_callback
+from core.runtime_v2 import runtime_v2
 from core.task_confirmation import (
     clear_expired_waiting_confirmation,
     is_confirmation_expired,
@@ -96,6 +97,9 @@ class HeartbeatWorker:
         except Exception:
             max_chunks = 3
         self.push_max_text_chunks = max(1, max_chunks)
+        self.runtime_v2_janitor_enabled = (
+            os.getenv("IKAROS_RUNTIME_V2_JANITOR_ENABLED", "true").lower() == "true"
+        )
         self._stop_event = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
         self._running: dict[str, asyncio.Task] = {}
@@ -154,6 +158,8 @@ class HeartbeatWorker:
         if not self.enabled:
             return
 
+        self._expire_runtime_v2_stale_work()
+
         users = await heartbeat_store.list_users()
         for user_id in users:
             if task_manager.has_active_task(user_id):
@@ -182,6 +188,22 @@ class HeartbeatWorker:
             )
             self._running[user_id] = task
             task.add_done_callback(lambda _t, uid=user_id: self._running.pop(uid, None))
+
+    def _expire_runtime_v2_stale_work(self) -> dict[str, int]:
+        if not self.runtime_v2_janitor_enabled:
+            return {"turns": 0, "tasks": 0}
+        try:
+            result = runtime_v2.expire_stale_work()
+        except Exception:
+            logger.warning("Runtime v2 stale work cleanup failed.", exc_info=True)
+            return {"turns": 0, "tasks": 0}
+        if result.get("turns") or result.get("tasks"):
+            logger.info(
+                "Runtime v2 expired stale work: turns=%s tasks=%s",
+                result.get("turns", 0),
+                result.get("tasks", 0),
+            )
+        return result
 
     async def run_user_now(self, user_id: str, *, suppress_push: bool = False) -> str:
         """Manual trigger for /heartbeat run."""

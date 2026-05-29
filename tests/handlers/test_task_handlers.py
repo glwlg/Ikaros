@@ -7,6 +7,7 @@ import pytest
 
 import handlers.task_handlers as task_handlers_module
 from core.platform.models import PlatformCapabilities
+from core.runtime_v2 import runtime_v2
 from core.skill_menu import make_callback
 from core.task_inbox import task_inbox
 from handlers import task_command as exported_task_command
@@ -48,6 +49,11 @@ class _FakeContext:
 
     async def answer_callback(self, *args, **kwargs):
         self.callback_answers += 1
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_v2(monkeypatch, tmp_path):
+    monkeypatch.setenv("IKAROS_RUNTIME_DB_PATH", str(tmp_path / "runtime.db"))
 
 
 def _reset_task_inbox(tmp_path: Path) -> None:
@@ -337,6 +343,108 @@ async def test_task_command_open_only_lists_unfinished_tasks(monkeypatch, tmp_pa
     reply = ctx.replies[-1]
     assert open_task.task_id in reply
     assert done_task.task_id not in reply
+
+
+@pytest.mark.asyncio
+async def test_task_command_lists_runtime_v2_tasks_first_and_deduplicates_legacy(
+    monkeypatch, tmp_path
+):
+    _reset_task_inbox(tmp_path)
+
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr("handlers.task_handlers.check_permission_unified", _allow)
+
+    legacy_task = await task_inbox.submit(
+        source="user_chat",
+        goal="旧 inbox 里的同一个任务",
+        user_id="u-task",
+    )
+    await task_inbox.update_status(legacy_task.task_id, "running", event="running")
+    session = runtime_v2.ensure_session(
+        session_id="telegram:u-task:main",
+        kind="channel_chat",
+        platform="telegram",
+        platform_user_id="u-task",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="Runtime v2 任务",
+        status="running",
+        kernel_provider="codex",
+    )
+    runtime_task = runtime_v2.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="Runtime v2 任务",
+        status="running",
+        metadata={
+            "source": "user_chat",
+            "task_inbox_id": legacy_task.task_id,
+        },
+    )
+
+    ctx = _FakeContext("/task open", user_id="u-task")
+    await task_command(ctx)
+
+    reply = ctx.replies[-1]
+    assert runtime_task["id"] in reply
+    assert legacy_task.task_id not in reply
+    assert "kernel:codex" in reply
+
+
+@pytest.mark.asyncio
+async def test_task_menu_can_delete_runtime_v2_task(monkeypatch, tmp_path):
+    _reset_task_inbox(tmp_path)
+
+    async def _allow(_ctx):
+        return True
+
+    monkeypatch.setattr("handlers.task_handlers.check_permission_unified", _allow)
+
+    session = runtime_v2.ensure_session(
+        session_id="telegram:u-task:main",
+        kind="channel_chat",
+        platform="telegram",
+        platform_user_id="u-task",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="Runtime v2 删除测试",
+        status="running",
+    )
+    runtime_task = runtime_v2.create_task(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        goal="Runtime v2 删除测试",
+        status="waiting_external",
+        metadata={"source": "user_chat"},
+    )
+
+    ctx = _FakeContext("/task open", user_id="u-task")
+    await task_command(ctx)
+
+    ctx.callback_data = make_callback(TASK_MENU_NS, "delete", "open", 0, runtime_task["id"])
+    await handle_task_callback(ctx)
+    assert "确认删除任务" in ctx.edits[-1]
+
+    ctx.callback_data = make_callback(
+        TASK_MENU_NS,
+        "deleteconfirm",
+        "open",
+        0,
+        runtime_task["id"],
+    )
+    await handle_task_callback(ctx)
+
+    deleted = runtime_v2.get_task(runtime_task["id"])
+    assert deleted["status"] == "cancelled"
+    assert deleted["metadata"]["deleted"] is True
+    assert runtime_v2.list_tasks_for_user(platform_user_id="u-task") == []
+    assert "已删除任务" in ctx.edits[-1]
 
 
 @pytest.mark.asyncio

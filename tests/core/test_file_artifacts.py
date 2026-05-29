@@ -36,3 +36,19 @@ def test_extract_file_rows_from_text_accepts_relative_labeled_path_with_base_dir
             "caption": "",
         }
     ]
+
+
+def test_extract_file_rows_from_text_accepts_saved_path_machine_output(tmp_path):
+    video = tmp_path / "video_abc.mp4"
+    video.write_bytes(b"mp4")
+
+    rows = extract_file_rows_from_text(f"saved_path={video}")
+
+    assert rows == [
+        {
+            "kind": "video",
+            "path": str(video.resolve()),
+            "filename": "video_abc.mp4",
+            "caption": "",
+        }
+    ]

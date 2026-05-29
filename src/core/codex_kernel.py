@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict
 
 from core.app_paths import data_dir, project_root
 from core.channel_runtime_store import channel_runtime_store
@@ -28,10 +28,16 @@ from core.config import (
     ikaros_codex_command,
     ikaros_codex_writable_roots,
 )
-from core.file_artifacts import merge_file_rows, normalize_file_rows
+from core.file_artifacts import (
+    extract_file_rows_from_text,
+    merge_file_rows,
+    normalize_file_rows,
+)
 from core.heartbeat_store import heartbeat_store
+from core.kernel_provider import KernelProvider, KernelSessionRef, KernelTurnInput
 from core.codex_kernel_sessions import codex_kernel_sessions
 from core.prompt_composer import prompt_composer
+from core.runtime_v2 import TERMINAL_STATUSES, runtime_event_bus, runtime_v2
 from core.task_inbox import task_inbox
 from core.task_manager import task_manager
 from ikaros.dev.codex_app_server_client import (
@@ -47,6 +53,7 @@ from ikaros.dev.codex_app_server_client import (
 logger = logging.getLogger(__name__)
 
 EventCallback = Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any] | None]]
+CODEX_KERNEL_INTERFACE: type[KernelProvider] = KernelProvider
 
 DEFAULT_CODEX_SKILL_DENYLIST = {
     "coding_session",
@@ -74,6 +81,8 @@ class ActiveCodexTurn:
     thread_id: str
     turn_id: str
     client: CodexAppServerClient
+    runtime_session_id: str = ""
+    runtime_turn_id: str = ""
 
 
 _ACTIVE_TURNS: Dict[str, ActiveCodexTurn] = {}
@@ -114,7 +123,12 @@ async def close_persistent_codex_kernel_client() -> None:
 
 
 def _register_active_turn(turn: ActiveCodexTurn) -> None:
-    for key in {turn.user_id, turn.task_id, turn.task_inbox_id}:
+    for key in {
+        turn.user_id,
+        turn.task_id,
+        turn.task_inbox_id,
+        turn.runtime_turn_id,
+    }:
         safe_key = str(key or "").strip()
         if safe_key:
             _ACTIVE_TURNS[safe_key] = turn
@@ -305,6 +319,38 @@ def _thread_user_instruction(
     return _safe_text(user_request)
 
 
+def _runtime_status_for_codex_result(
+    result: dict[str, Any],
+    *,
+    needs_user: bool = False,
+) -> str:
+    stop_reason = _safe_text(result.get("stop_reason"), 80).lower()
+    error_code = _safe_text(result.get("error_code"), 80).lower()
+    if stop_reason in {"interrupted", "interrupt", "cancelled", "canceled"}:
+        return "cancelled"
+    if error_code in {"interrupted", "cancelled", "canceled"}:
+        return "cancelled"
+    if needs_user:
+        return "waiting_user"
+    return "succeeded" if bool(result.get("ok")) else "failed"
+
+
+def _runtime_v2_session_kind(*, platform: str, session_id: str) -> str:
+    safe_platform = _safe_text(platform, 64).lower()
+    safe_session_id = _safe_text(session_id, 160)
+    if safe_platform == "scheduler" or safe_session_id.startswith("scheduler-task-"):
+        return "scheduled_task"
+    if safe_platform == "web":
+        return "web_workspace"
+    return "channel_chat"
+
+
+def _default_runtime_session_id(*, platform: str, user_id: str) -> str:
+    safe_platform = _safe_text(platform, 64).lower() or "channel"
+    safe_user_id = _safe_text(user_id, 128) or "user"
+    return f"{safe_platform}:{safe_user_id}:main"
+
+
 def _inline_data_suffix(mime_type: str) -> str:
     normalized = str(mime_type or "").split(";", 1)[0].strip().lower()
     mapping = {
@@ -330,7 +376,9 @@ def _materialize_codex_inline_file(
     *,
     thread_key: str = "",
 ) -> tuple[str, str]:
-    mime_type = _safe_text(inline_data.get("mime_type") or inline_data.get("mimeType"), 80)
+    mime_type = _safe_text(
+        inline_data.get("mime_type") or inline_data.get("mimeType"), 80
+    )
     encoded = _safe_text(inline_data.get("data"), 0)
     if not encoded:
         return "", mime_type
@@ -407,7 +455,9 @@ def _codex_turn_input_items(
     if not attachment_notes:
         return []
     text = _safe_text(instruction)
-    text += "\n\nAttached local files for this user turn:\n" + "\n".join(attachment_notes)
+    text += "\n\nAttached local files for this user turn:\n" + "\n".join(
+        attachment_notes
+    )
     return [{"type": "text", "text": text.strip()}] + input_items
 
 
@@ -427,12 +477,7 @@ def _codex_generated_image_rows(
         )
         with contextlib.suppress(Exception):
             candidates.append(
-                (
-                    Path.home()
-                    / ".codex"
-                    / "generated_images"
-                    / safe_thread_id
-                ).resolve()
+                (Path.home() / ".codex" / "generated_images" / safe_thread_id).resolve()
             )
     if include_recent_global:
         candidates.append((data_dir() / "codex" / "generated_images").resolve())
@@ -662,11 +707,47 @@ async def interrupt_codex_kernel_task(
             continue
         if not turn.thread_id or not turn.turn_id:
             return False
+        if turn.runtime_session_id:
+            runtime_event_bus.publish(
+                session_id=turn.runtime_session_id,
+                turn_id=turn.runtime_turn_id,
+                event_type="kernel_interrupt_requested",
+                payload={
+                    "kernel_provider": "codex",
+                    "codex_thread_id": turn.thread_id,
+                    "codex_turn_id": turn.turn_id,
+                    "matched_key": str(key or "").strip(),
+                },
+            )
+            if turn.runtime_turn_id:
+                current = runtime_v2.get_turn(turn.runtime_turn_id)
+                if current:
+                    with contextlib.suppress(Exception):
+                        runtime_v2.update_turn_status(
+                            turn.runtime_turn_id,
+                            _safe_text(current.get("status"), 40) or "running",
+                            external_turn_id=turn.turn_id,
+                            metadata={
+                                "cancel_requested_at": _now_iso(),
+                                "cancel_requested_by": str(key or "").strip(),
+                            },
+                        )
         try:
             await turn.client.interrupt_turn(
                 thread_id=turn.thread_id,
                 turn_id=turn.turn_id,
             )
+            if turn.runtime_session_id:
+                runtime_event_bus.publish(
+                    session_id=turn.runtime_session_id,
+                    turn_id=turn.runtime_turn_id,
+                    event_type="kernel_interrupted",
+                    payload={
+                        "kernel_provider": "codex",
+                        "codex_thread_id": turn.thread_id,
+                        "codex_turn_id": turn.turn_id,
+                    },
+                )
             return True
         except Exception:
             logger.warning("Failed to interrupt Codex kernel turn.", exc_info=True)
@@ -683,6 +764,183 @@ class CodexKernelProvider:
         if bool(getattr(runtime_ctx, "heartbeat_runtime_user", False)):
             return False
         return True
+
+    async def ensure_session(self, session: dict[str, Any]) -> KernelSessionRef:
+        session_obj = dict(session or {})
+        session_id = _safe_text(session_obj.get("id") or session_obj.get("session_id"), 180)
+        if not session_id:
+            raise ValueError("session id is required")
+        platform = _safe_text(session_obj.get("platform"), 64)
+        user_id = _safe_text(session_obj.get("platform_user_id"), 128)
+        runtime_v2.ensure_session(
+            session_id=session_id,
+            kind=_runtime_v2_session_kind(platform=platform, session_id=session_id),
+            platform=platform,
+            platform_user_id=user_id,
+            title=_safe_text(session_obj.get("title"), 240),
+            metadata={"kernel_provider": "codex"},
+        )
+        thread_id = self._existing_thread_for_session(
+            user_id=user_id,
+            platform=platform,
+            session_id=session_id,
+        )
+        if thread_id:
+            runtime_v2.upsert_kernel_session(
+                session_id=session_id,
+                provider="codex",
+                external_thread_id=thread_id,
+                status="active",
+                metadata={"ensured_by": "kernel_provider"},
+            )
+        return KernelSessionRef(
+            provider="codex",
+            session_id=session_id,
+            external_thread_id=thread_id,
+            metadata={"platform": platform, "platform_user_id": user_id},
+        )
+
+    async def start_turn(
+        self,
+        session: dict[str, Any],
+        turn: dict[str, Any],
+        input: KernelTurnInput,
+    ) -> AsyncIterator[dict[str, Any]]:
+        session_ref = await self.ensure_session(session)
+        session_id = session_ref.session_id
+        platform = _safe_text(session_ref.metadata.get("platform"), 64)
+        user_id = _safe_text(session_ref.metadata.get("platform_user_id"), 128)
+        turn_obj = dict(turn or {})
+        turn_id = _safe_text(turn_obj.get("id") or turn_obj.get("turn_id"), 180)
+        if not turn_id:
+            created_turn = runtime_v2.create_turn(
+                session_id=session_id,
+                source=_safe_text(turn_obj.get("source"), 80) or "user",
+                input_text=input.text,
+                kernel_provider="codex",
+            )
+            turn_id = _safe_text(created_turn.get("id"), 180)
+        elif not runtime_v2.get_turn(turn_id):
+            created_turn = runtime_v2.create_turn(
+                session_id=session_id,
+                source=_safe_text(turn_obj.get("source"), 80) or "user",
+                input_text=input.text,
+                kernel_provider="codex",
+            )
+            turn_id = _safe_text(created_turn.get("id"), 180)
+        current_turn = runtime_v2.get_turn(turn_id)
+        if current_turn and str(current_turn.get("status") or "") == "queued":
+            runtime_v2.update_turn_status(turn_id, "running")
+
+        metadata = dict(input.metadata or {})
+        request_mode = _safe_text(metadata.get("request_mode"), 40) or "chat"
+        task_id = _safe_text(metadata.get("task_id"), 80)
+        task_inbox_id = _safe_text(metadata.get("task_inbox_id"), 80)
+        message_history = list(metadata.get("message_history") or [])
+        existing_thread_id = session_ref.external_thread_id
+        if existing_thread_id:
+            instruction = _thread_user_instruction(user_request=input.text)
+        else:
+            instruction = _kernel_prompt(
+                user_request=input.text,
+                message_history=message_history,
+                request_mode=request_mode,
+                task_inbox_id=task_inbox_id,
+                runtime_user_id=user_id,
+                platform=platform,
+                include_base_context=True,
+                candidate_skill_names=metadata.get("candidate_skill_names"),
+            )
+        new_thread_instruction = _kernel_prompt(
+            user_request=input.text,
+            message_history=message_history,
+            request_mode=request_mode,
+            task_inbox_id=task_inbox_id,
+            runtime_user_id=user_id,
+            platform=platform,
+            include_base_context=True,
+            candidate_skill_names=metadata.get("candidate_skill_names"),
+        )
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+        async def _event_callback(event: str, payload: Dict[str, Any]) -> None:
+            await queue.put({"type": event, "payload": dict(payload or {})})
+
+        async def _runner() -> None:
+            try:
+                result = await self._run_turn(
+                    user_id=user_id,
+                    task_id=task_id,
+                    task_inbox_id=task_inbox_id,
+                    instruction=instruction,
+                    platform=platform,
+                    existing_thread_id=existing_thread_id,
+                    new_thread_instruction=new_thread_instruction,
+                    message_history=message_history,
+                    thread_key=f"{platform}:{user_id}:{session_id}",
+                    event_callback=_event_callback,
+                    runtime_session_id=session_id,
+                    runtime_turn_id=turn_id,
+                )
+                self._persist_session_thread(
+                    user_id=user_id,
+                    platform=platform,
+                    session_id=session_id,
+                    result=result,
+                )
+                needs_user = self._needs_user(result)
+                runtime_status = _runtime_status_for_codex_result(
+                    result,
+                    needs_user=needs_user,
+                )
+                runtime_v2.update_turn_status(
+                    turn_id,
+                    runtime_status,
+                    error="" if bool(result.get("ok")) else self._output_text(result),
+                    external_turn_id=_safe_text(result.get("turn_id"), 160),
+                    metadata={
+                        "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                        "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+                        "stop_reason": _safe_text(result.get("stop_reason"), 80),
+                    },
+                )
+                output_text = self._output_text(result)
+                if output_text:
+                    runtime_event_bus.publish(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        event_type="assistant_message_final",
+                        payload={
+                            "text": output_text,
+                            "ok": bool(result.get("ok")),
+                            "kernel_provider": "codex",
+                            "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                            "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+                        },
+                    )
+                await queue.put({"type": "turn_completed", "payload": result})
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    runtime_v2.update_turn_status(turn_id, "failed", error=str(exc))
+                await queue.put(
+                    {
+                        "type": "turn_failed",
+                        "payload": {"error": str(exc), "kernel_provider": "codex"},
+                    }
+                )
+            finally:
+                await queue.put(None)
+
+        runner_task = asyncio.create_task(_runner(), name="codex-kernel-provider-turn")
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield event
+        await runner_task
+
+    async def interrupt(self, turn_id: str) -> None:
+        await interrupt_codex_kernel_task(task_id=_safe_text(turn_id, 180))
 
     async def run_for_orchestrator(
         self,
@@ -708,9 +966,76 @@ class CodexKernelProvider:
             user_id=user_id,
             platform=platform,
         )
-        existing_thread_id = self._existing_thread_for_session(
-            user_id=user_id,
+        session_platform = self._resolve_session_store_platform(
+            runtime_ctx=runtime_ctx,
             platform=platform,
+        )
+        session_user_id = self._resolve_session_store_user_id(
+            runtime_ctx=runtime_ctx,
+            user_id=user_id,
+        )
+        if not session_id:
+            session_id = _default_runtime_session_id(
+                platform=session_platform or platform,
+                user_id=session_user_id or user_id,
+            )
+        runtime_session_kind = _runtime_v2_session_kind(
+            platform=session_platform or platform,
+            session_id=session_id,
+        )
+        runtime_v2.ensure_session(
+            session_id=session_id,
+            kind=runtime_session_kind,
+            platform=session_platform or platform,
+            platform_user_id=session_user_id or user_id,
+            title=task_goal[:80],
+            metadata={
+                "request_mode": request_mode,
+                "kernel_provider": "codex",
+            },
+        )
+        user_data = getattr(ctx, "user_data", None)
+        runtime_turn_id = ""
+        if isinstance(user_data, dict):
+            existing_runtime_session_id = _safe_text(
+                user_data.get("runtime_v2_session_id"),
+                180,
+            )
+            if existing_runtime_session_id == session_id:
+                candidate_turn_id = _safe_text(user_data.get("runtime_v2_turn_id"), 180)
+                if candidate_turn_id:
+                    with contextlib.suppress(Exception):
+                        candidate_turn = runtime_v2.get_turn(candidate_turn_id)
+                        if (
+                            candidate_turn
+                            and str(candidate_turn.get("session_id") or "").strip()
+                            == session_id
+                            and str(candidate_turn.get("status") or "").strip()
+                            not in TERMINAL_STATUSES
+                        ):
+                            runtime_turn_id = candidate_turn_id
+        if not runtime_turn_id:
+            runtime_turn = runtime_v2.create_turn(
+                session_id=session_id,
+                source=(
+                    "scheduler" if runtime_session_kind == "scheduled_task" else "user"
+                ),
+                input_text=task_goal,
+                kernel_provider="codex",
+                metadata={
+                    "task_id": _safe_text(getattr(runtime_ctx, "task_id", ""), 80),
+                    "task_inbox_id": task_inbox_id,
+                    "platform": platform,
+                    "runtime_user_id": runtime_user_id,
+                },
+            )
+            runtime_turn_id = _safe_text(runtime_turn.get("id"), 180)
+        if isinstance(user_data, dict):
+            user_data["runtime_v2_session_id"] = session_id
+            user_data["runtime_v2_turn_id"] = runtime_turn_id
+        existing_thread_id = self._existing_thread_for_session(
+            user_id=session_user_id,
+            platform=session_platform,
             session_id=session_id,
         )
         if existing_thread_id:
@@ -745,12 +1070,18 @@ class CodexKernelProvider:
             existing_thread_id=existing_thread_id,
             new_thread_instruction=new_thread_instruction,
             message_history=message_history,
-            thread_key=session_id or user_id,
+            thread_key=(
+                f"{session_platform}:{session_user_id}:{session_id}"
+                if session_id
+                else user_id
+            ),
             event_callback=event_callback,
+            runtime_session_id=session_id,
+            runtime_turn_id=runtime_turn_id,
         )
         self._persist_session_thread(
-            user_id=user_id,
-            platform=platform,
+            user_id=session_user_id,
+            platform=session_platform,
             session_id=session_id,
             result=result,
         )
@@ -770,6 +1101,30 @@ class CodexKernelProvider:
                 },
             )
         needs_user = self._needs_user(result)
+        runtime_v2.update_turn_status(
+            runtime_turn_id,
+            "running",
+            external_turn_id=_safe_text(result.get("turn_id"), 160),
+            metadata={
+                "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+            },
+        )
+        runtime_status = _runtime_status_for_codex_result(
+            result,
+            needs_user=needs_user,
+        )
+        runtime_v2.update_turn_status(
+            runtime_turn_id,
+            runtime_status,
+            error="" if bool(result.get("ok")) else self._output_text(result),
+            external_turn_id=_safe_text(result.get("turn_id"), 160),
+            metadata={
+                "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+                "stop_reason": _safe_text(result.get("stop_reason"), 80),
+            },
+        )
         await self._persist_kernel_metadata(
             user_id=user_id,
             platform=platform,
@@ -780,6 +1135,19 @@ class CodexKernelProvider:
             session_id=session_id,
         )
         output_text = self._output_text(result)
+        if output_text:
+            runtime_event_bus.publish(
+                session_id=session_id,
+                turn_id=runtime_turn_id,
+                event_type="assistant_message_final",
+                payload={
+                    "text": output_text,
+                    "ok": bool(result.get("ok")),
+                    "kernel_provider": "codex",
+                    "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                    "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+                },
+            )
         if needs_user:
             await self._set_active_waiting(
                 user_id=user_id,
@@ -790,6 +1158,11 @@ class CodexKernelProvider:
                 result_summary=output_text,
                 thread_id=_safe_text(result.get("thread_id"), 160),
                 turn_id=_safe_text(result.get("turn_id"), 160),
+                runtime_session_id=session_id,
+                runtime_turn_id=runtime_turn_id,
+                runtime_v2_task_id=_safe_text(
+                    getattr(runtime_ctx, "runtime_v2_task_id", ""), 180
+                ),
             )
         completion_status = "waiting_user" if needs_user else "done"
         if not bool(result.get("ok")):
@@ -877,6 +1250,31 @@ class CodexKernelProvider:
             user_request=task_goal,
             resume_user_message=reply or "继续",
         )
+        if not session_id:
+            session_id = _default_runtime_session_id(
+                platform=platform,
+                user_id=safe_user_id,
+            )
+        runtime_v2.ensure_session(
+            session_id=session_id,
+            kind=_runtime_v2_session_kind(platform=platform, session_id=session_id),
+            platform=platform,
+            platform_user_id=safe_user_id,
+            title=task_goal[:80],
+            metadata={"kernel_provider": "codex", "resume": True},
+        )
+        runtime_turn = runtime_v2.create_turn(
+            session_id=session_id,
+            source="user_resume",
+            input_text=reply or "继续",
+            kernel_provider="codex",
+            metadata={
+                "task_inbox_id": task_inbox_id,
+                "previous_codex_thread_id": thread_id,
+                "source": source,
+            },
+        )
+        runtime_turn_id = _safe_text(runtime_turn.get("id"), 180)
         new_thread_instruction = _kernel_prompt(
             user_request=task_goal,
             message_history=[],
@@ -904,6 +1302,8 @@ class CodexKernelProvider:
             new_thread_instruction=new_thread_instruction,
             platform=platform,
             event_callback=None,
+            runtime_session_id=session_id,
+            runtime_turn_id=runtime_turn_id,
         )
         self._persist_session_thread(
             user_id=safe_user_id,
@@ -913,6 +1313,39 @@ class CodexKernelProvider:
         )
         needs_user = self._needs_user(result)
         output_text = self._output_text(result)
+        runtime_v2.update_turn_status(
+            runtime_turn_id,
+            "running",
+            external_turn_id=_safe_text(result.get("turn_id"), 160),
+            metadata={
+                "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+            },
+        )
+        runtime_v2.update_turn_status(
+            runtime_turn_id,
+            _runtime_status_for_codex_result(result, needs_user=needs_user),
+            error="" if bool(result.get("ok")) else output_text,
+            external_turn_id=_safe_text(result.get("turn_id"), 160),
+            metadata={
+                "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+                "stop_reason": _safe_text(result.get("stop_reason"), 80),
+            },
+        )
+        if output_text:
+            runtime_event_bus.publish(
+                session_id=session_id,
+                turn_id=runtime_turn_id,
+                event_type="assistant_message_final",
+                payload={
+                    "text": output_text,
+                    "ok": bool(result.get("ok")),
+                    "kernel_provider": "codex",
+                    "codex_thread_id": _safe_text(result.get("thread_id"), 160),
+                    "codex_turn_id": _safe_text(result.get("turn_id"), 160),
+                },
+            )
         await self._persist_kernel_metadata(
             user_id=safe_user_id,
             platform=platform,
@@ -936,6 +1369,11 @@ class CodexKernelProvider:
                 result_summary=output_text,
                 thread_id=_safe_text(result.get("thread_id"), 160),
                 turn_id=_safe_text(result.get("turn_id"), 160),
+                runtime_session_id=session_id,
+                runtime_turn_id=_safe_text(active_task.get("runtime_v2_turn_id"), 180),
+                runtime_v2_task_id=_safe_text(
+                    active_task.get("runtime_v2_task_id"), 180
+                ),
             )
             return {
                 "handled": True,
@@ -1014,6 +1452,24 @@ class CodexKernelProvider:
         return ""
 
     @staticmethod
+    def _resolve_session_store_platform(*, runtime_ctx: Any, platform: str) -> str:
+        user_data = getattr(runtime_ctx, "user_data", None)
+        if isinstance(user_data, dict):
+            override = _safe_text(user_data.get("codex_kernel_session_platform"), 64)
+            if override:
+                return override.lower()
+        return _safe_text(platform, 64).lower()
+
+    @staticmethod
+    def _resolve_session_store_user_id(*, runtime_ctx: Any, user_id: str) -> str:
+        user_data = getattr(runtime_ctx, "user_data", None)
+        if isinstance(user_data, dict):
+            override = _safe_text(user_data.get("codex_kernel_session_user_id"), 128)
+            if override:
+                return override
+        return _safe_text(user_id, 128)
+
+    @staticmethod
     def _existing_thread_for_session(
         *,
         user_id: str,
@@ -1022,6 +1478,17 @@ class CodexKernelProvider:
     ) -> str:
         if not session_id:
             return ""
+        runtime_row = runtime_v2.get_kernel_session(
+            session_id=session_id,
+            provider="codex",
+        )
+        runtime_thread_id = _safe_text(
+            runtime_row.get("external_thread_id")
+            or runtime_row.get("codex_thread_id"),
+            160,
+        )
+        if runtime_thread_id:
+            return runtime_thread_id
         row = codex_kernel_sessions.get(
             user_id=user_id,
             platform=platform,
@@ -1040,6 +1507,24 @@ class CodexKernelProvider:
         thread_id = _safe_text(result.get("thread_id"), 160)
         if not session_id or not thread_id:
             return
+        runtime_v2.ensure_session(
+            session_id=session_id,
+            kind=_runtime_v2_session_kind(platform=platform, session_id=session_id),
+            platform=platform,
+            platform_user_id=user_id,
+            metadata={"kernel_provider": "codex"},
+        )
+        runtime_v2.upsert_kernel_session(
+            session_id=session_id,
+            provider="codex",
+            external_thread_id=thread_id,
+            external_turn_id=_safe_text(result.get("turn_id"), 160),
+            status="active" if bool(result.get("ok", True)) else "error",
+            metadata={
+                "legacy_platform": platform,
+                "legacy_user_id": user_id,
+            },
+        )
         codex_kernel_sessions.upsert(
             user_id=user_id,
             platform=platform,
@@ -1061,6 +1546,8 @@ class CodexKernelProvider:
         message_history: list[Any] | None = None,
         thread_key: str = "",
         event_callback: EventCallback | None = None,
+        runtime_session_id: str = "",
+        runtime_turn_id: str = "",
     ) -> Dict[str, Any]:
         command = ikaros_codex_command()
         cwd = str(project_root().resolve())
@@ -1077,10 +1564,22 @@ class CodexKernelProvider:
         emitted_file_paths: set[str] = set()
         session_completion: asyncio.Future[dict[str, Any]] | None = None
         completed_from_session = False
+        timeout_stage = "turn"
+
+        def _publish_runtime_event(
+            event_type: str,
+            payload: dict[str, Any] | None = None,
+        ) -> None:
+            if not runtime_session_id:
+                return
+            runtime_event_bus.publish(
+                session_id=runtime_session_id,
+                turn_id=runtime_turn_id,
+                event_type=event_type,
+                payload=dict(payload or {}),
+            )
 
         async def _emit_result_files(rows: list[dict[str, str]]) -> None:
-            if event_callback is None:
-                return
             result_files = normalize_file_rows(rows)
             if not result_files:
                 return
@@ -1091,11 +1590,28 @@ class CodexKernelProvider:
             ]
             if not new_rows:
                 return
+            artifact_rows = runtime_v2.record_artifacts(
+                session_id=runtime_session_id,
+                turn_id=runtime_turn_id,
+                rows=new_rows,
+                source="codex_kernel",
+            )
+            if artifact_rows:
+                _publish_runtime_event(
+                    "artifact_created",
+                    {
+                        "source": "codex_kernel",
+                        "artifacts": artifact_rows,
+                        "files": new_rows,
+                    },
+                )
             emitted_file_paths.update(
                 str(row.get("path") or "").strip()
                 for row in new_rows
                 if str(row.get("path") or "").strip()
             )
+            if event_callback is None:
+                return
             await event_callback(
                 "codex_result_files",
                 {
@@ -1158,21 +1674,48 @@ class CodexKernelProvider:
                                     ):
                                         session_completion.set_result(completion)
                 except Exception:
-                    logger.debug("Failed to monitor Codex session images.", exc_info=True)
+                    logger.debug(
+                        "Failed to monitor Codex session images.", exc_info=True
+                    )
                 await asyncio.sleep(1)
 
         async def _codex_event_callback(event: str, payload: Dict[str, Any]) -> None:
             nonlocal last_agent_emit_at, last_agent_emit_len
             nonlocal last_activity_emit_at, last_activity_text
-            if event_callback is None:
-                return
-            payload_turn_id = _safe_text(payload.get("turn_id") or payload.get("turnId"), 160)
+            payload_turn_id = _safe_text(
+                payload.get("turn_id") or payload.get("turnId"), 160
+            )
             if payload_turn_id and turn_id and payload_turn_id != turn_id:
                 return
+            _publish_runtime_event(
+                f"kernel.{event}",
+                {
+                    **dict(payload or {}),
+                    "codex_thread_id": thread_id,
+                    "codex_turn_id": turn_id or payload_turn_id,
+                },
+            )
             now = time.monotonic()
             if event in {"agent_message_delta", "agent_message_completed"}:
                 text = _safe_text(payload.get("text"), 6000)
                 if not text:
+                    return
+                runtime_event_bus.publish(
+                    session_id=runtime_session_id,
+                    turn_id=runtime_turn_id,
+                    event_type=(
+                        "text_delta"
+                        if event == "agent_message_delta"
+                        else "message_update"
+                    ),
+                    payload={
+                        "text": text,
+                        "delta": _safe_text(payload.get("delta"), 2000),
+                        "codex_thread_id": thread_id,
+                        "codex_turn_id": turn_id or payload_turn_id,
+                    },
+                )
+                if event_callback is None:
                     return
                 if event == "agent_message_delta":
                     text_len = len(text)
@@ -1199,9 +1742,30 @@ class CodexKernelProvider:
                     },
                 )
                 return
+            if event == "command_output_delta":
+                await _emit_result_files(
+                    extract_file_rows_from_text(
+                        str(payload.get("text") or ""),
+                        base_dir=project_root(),
+                    )
+                )
+                return
             if event == "item_activity":
                 text = _safe_text(payload.get("text"), 800)
                 if not text:
+                    return
+                runtime_event_bus.publish(
+                    session_id=runtime_session_id,
+                    turn_id=runtime_turn_id,
+                    event_type="kernel_activity",
+                    payload={
+                        "text": text,
+                        "item_type": _safe_text(payload.get("item_type"), 80),
+                        "codex_thread_id": thread_id,
+                        "codex_turn_id": turn_id or payload_turn_id,
+                    },
+                )
+                if event_callback is None:
                     return
                 if now - last_activity_emit_at < 0.8 and text == last_activity_text:
                     return
@@ -1218,6 +1782,38 @@ class CodexKernelProvider:
                         "codex_turn_id": turn_id,
                         "item_type": _safe_text(payload.get("item_type"), 80),
                         "text_preview": text,
+                    },
+                )
+                return
+            if event == "request_user_input":
+                params = payload.get("params")
+                params = dict(params) if isinstance(params, dict) else {}
+                prompt = _safe_text(
+                    params.get("prompt")
+                    or params.get("message")
+                    or params.get("label")
+                    or "",
+                    2000,
+                )
+                if runtime_turn_id:
+                    with contextlib.suppress(Exception):
+                        runtime_v2.update_turn_status(
+                            runtime_turn_id,
+                            "waiting_user",
+                            external_turn_id=turn_id or payload_turn_id,
+                            metadata={
+                                "codex_thread_id": thread_id,
+                                "codex_turn_id": turn_id or payload_turn_id,
+                                "waiting_user_prompt": prompt,
+                            },
+                        )
+                _publish_runtime_event(
+                    "request_user_input",
+                    {
+                        "prompt": prompt,
+                        "params": params,
+                        "codex_thread_id": thread_id,
+                        "codex_turn_id": turn_id or payload_turn_id,
                     },
                 )
                 return
@@ -1242,6 +1838,7 @@ class CodexKernelProvider:
                 open_existing_thread_id = existing_thread_id
                 resume_setup_timeouts = 0
                 fresh_setup_timeouts = 0
+                replaced_stale_thread_id = ""
                 while True:
                     client = await self._persistent_client(
                         command=command,
@@ -1251,6 +1848,9 @@ class CodexKernelProvider:
                     client.reset_turn_state()
                     client.set_event_callback(_codex_event_callback)
                     try:
+                        timeout_stage = (
+                            "thread_resume" if open_existing_thread_id else "thread_start"
+                        )
                         thread_id, loaded_existing = await client.open_thread(
                             existing_thread_id=open_existing_thread_id
                         )
@@ -1264,13 +1864,13 @@ class CodexKernelProvider:
                         await close_persistent_codex_kernel_client()
                         if open_existing_thread_id:
                             resume_setup_timeouts += 1
+                            replaced_stale_thread_id = open_existing_thread_id
                             logger.warning(
-                                "Codex existing thread resume timed out; retrying "
-                                "same thread before failing. thread_id=%s",
+                                "Codex existing thread resume timed out; starting "
+                                "a fresh thread for the same Ikaros session. thread_id=%s",
                                 open_existing_thread_id,
                             )
-                            if resume_setup_timeouts >= 2:
-                                raise
+                            open_existing_thread_id = ""
                             continue
                         fresh_setup_timeouts += 1
                         if fresh_setup_timeouts >= 2:
@@ -1297,6 +1897,7 @@ class CodexKernelProvider:
                         thread_key=thread_key or thread_id or user_id,
                     )
                     try:
+                        timeout_stage = "turn_start"
                         start_kwargs: dict[str, Any] = {
                             "thread_id": thread_id,
                             "instruction": turn_instruction,
@@ -1343,6 +1944,26 @@ class CodexKernelProvider:
                     except JsonRpcError:
                         await close_persistent_codex_kernel_client()
                         raise
+                if runtime_turn_id:
+                    runtime_v2.update_turn_status(
+                        runtime_turn_id,
+                        "running",
+                        external_turn_id=turn_id,
+                        metadata={
+                            "codex_thread_id": thread_id,
+                            "codex_turn_id": turn_id,
+                            "loaded_existing_thread": loaded_existing,
+                        },
+                    )
+                _publish_runtime_event(
+                    "kernel_turn_started",
+                    {
+                        "kernel_provider": "codex",
+                        "codex_thread_id": thread_id,
+                        "codex_turn_id": turn_id,
+                        "loaded_existing_thread": loaded_existing,
+                    },
+                )
                 session_completion = asyncio.get_running_loop().create_future()
                 session_monitor_done = asyncio.Event()
                 session_monitor_task = asyncio.create_task(
@@ -1355,8 +1976,11 @@ class CodexKernelProvider:
                     thread_id=thread_id,
                     turn_id=turn_id,
                     client=client,
+                    runtime_session_id=runtime_session_id,
+                    runtime_turn_id=runtime_turn_id,
                 )
                 _register_active_turn(active)
+                timeout_stage = "turn"
                 await self._persist_kernel_metadata(
                     user_id=user_id,
                     platform=platform,
@@ -1406,6 +2030,8 @@ class CodexKernelProvider:
                     turn=turn,
                     loaded_existing_thread=loaded_existing,
                 )
+                if replaced_stale_thread_id:
+                    result["codex_thread_replaced_from"] = replaced_stale_thread_id
                 result["files"] = merge_file_rows(
                     normalize_file_rows(result.get("files")),
                     _codex_generated_image_rows(
@@ -1441,18 +2067,24 @@ class CodexKernelProvider:
             with contextlib.suppress(Exception):
                 if client is not None and thread_id and turn_id:
                     await client.interrupt_turn(thread_id=thread_id, turn_id=turn_id)
+            timeout_messages = {
+                "thread_resume": "Codex kernel thread resume timed out.",
+                "thread_start": "Codex kernel thread start timed out.",
+                "turn_start": "Codex kernel turn start timed out.",
+            }
             return {
                 "ok": False,
                 "error_code": "timeout",
-                "message": "Codex kernel turn timed out.",
+                "message": timeout_messages.get(
+                    timeout_stage,
+                    "Codex kernel turn timed out.",
+                ),
                 "command": _command_to_text(command),
                 "cwd": cwd,
                 "stdout": _client_stdout(client),
                 "stderr": _tail(client.stderr_text) if client is not None else "",
                 "summary": _tail(
-                    (
-                        _client_stdout(client) or client.stderr_text
-                    )
+                    (_client_stdout(client) or client.stderr_text)
                     if client is not None
                     else ""
                 ),
@@ -1506,7 +2138,7 @@ class CodexKernelProvider:
             tuple(command),
             cwd,
             max(30, int(IKAROS_CODEX_TIMEOUT_SEC or 1800)),
-            max(5, int(IKAROS_CODEX_REQUEST_TIMEOUT_SEC or 45)),
+            max(5, int(IKAROS_CODEX_REQUEST_TIMEOUT_SEC or 300)),
             log_path,
             IKAROS_CODEX_MODEL,
             IKAROS_CODEX_EFFORT,
@@ -1530,7 +2162,7 @@ class CodexKernelProvider:
                 timeout_sec=max(30, int(IKAROS_CODEX_TIMEOUT_SEC or 1800)),
                 request_timeout_sec=max(
                     5,
-                    int(IKAROS_CODEX_REQUEST_TIMEOUT_SEC or 45),
+                    int(IKAROS_CODEX_REQUEST_TIMEOUT_SEC or 300),
                 ),
                 log_path=log_path,
                 model=IKAROS_CODEX_MODEL,
@@ -1590,7 +2222,9 @@ class CodexKernelProvider:
             "kernel_updated_at": _now_iso(),
         }
         if task_inbox_id:
-            task_status = "waiting_user" if kernel_status == "waiting_user" else "running"
+            task_status = (
+                "waiting_user" if kernel_status == "waiting_user" else "running"
+            )
             with contextlib.suppress(Exception):
                 await task_inbox.update_status(
                     task_inbox_id,
@@ -1678,6 +2312,9 @@ class CodexKernelProvider:
         result_summary: str,
         thread_id: str,
         turn_id: str,
+        runtime_session_id: str = "",
+        runtime_turn_id: str = "",
+        runtime_v2_task_id: str = "",
     ) -> None:
         fields = {
             "status": "waiting_user",
@@ -1692,6 +2329,12 @@ class CodexKernelProvider:
             "codex_thread_id": thread_id,
             "codex_turn_id": turn_id,
         }
+        if runtime_session_id:
+            fields["runtime_v2_session_id"] = runtime_session_id
+        if runtime_turn_id:
+            fields["runtime_v2_turn_id"] = runtime_turn_id
+        if runtime_v2_task_id:
+            fields["runtime_v2_task_id"] = runtime_v2_task_id
         updated = channel_runtime_store.update_active_task(
             platform=platform,
             platform_user_id=user_id,
@@ -1724,6 +2367,11 @@ class CodexKernelProvider:
                 result={"summary": result_summary[:500]},
                 output={"text": result_summary},
             )
+        if runtime_v2_task_id:
+            with contextlib.suppress(Exception):
+                task = runtime_v2.get_task(runtime_v2_task_id)
+                if task and _safe_text(task.get("status"), 40) != "waiting_user":
+                    runtime_v2.update_task_status(runtime_v2_task_id, "waiting_user")
 
     async def _clear_active_done(
         self,

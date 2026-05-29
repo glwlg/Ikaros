@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +11,23 @@ import pytest
 import core.llm_usage_store as llm_usage_module
 
 
+def _count_open_fds_for_path(path: Path) -> int:
+    fd_dir = Path("/proc/self/fd")
+    if not fd_dir.exists():
+        pytest.skip("/proc/self/fd is not available on this platform")
+    target = str(path.resolve())
+    count = 0
+    for fd in fd_dir.iterdir():
+        try:
+            linked = os.readlink(fd)
+        except OSError:
+            continue
+        linked = linked.removesuffix(" (deleted)")
+        if linked == target or linked.startswith(f"{target}-"):
+            count += 1
+    return count
+
+
 def _reset_llm_usage_store(tmp_path: Path, monkeypatch) -> Path:
     db_path = (tmp_path / "bot_data.db").resolve()
     if db_path.exists():
@@ -18,6 +36,24 @@ def _reset_llm_usage_store(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(llm_usage_module.llm_usage_store, "_db_ready", False)
     llm_usage_module._USAGE_SESSION_VAR.set("")
     return db_path
+
+
+def test_llm_usage_store_closes_sqlite_connections_between_operations(tmp_path, monkeypatch):
+    db_path = _reset_llm_usage_store(tmp_path, monkeypatch)
+    llm_usage_module.set_current_llm_usage_session_id("usage-fd-session")
+
+    before = _count_open_fds_for_path(db_path)
+    for index in range(20):
+        llm_usage_module.llm_usage_store.record_event(
+            operation="chat.completions.create",
+            default_model_key="demo/model",
+            request_kwargs={"model": "demo-model", "messages": [{"content": f"hi {index}"}]},
+            response=None,
+            success=True,
+        )
+        assert llm_usage_module.llm_usage_store.summarize()["requests"] >= 1
+
+    assert _count_open_fds_for_path(db_path) <= before
 
 
 def _insert_usage_row(

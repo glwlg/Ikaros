@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import logging
+import os
 import sys
 import time
 import urllib.request
@@ -36,6 +37,11 @@ from core.model_config import (
 from core.platform.models import UnifiedContext
 
 logger = logging.getLogger(__name__)
+
+
+IMAGE_GENERATION_TIMEOUT_SECONDS = int(
+    str(os.getenv("IMAGE_GENERATION_TIMEOUT_SECONDS") or "300")
+)
 
 _ASPECT_RATIO_TO_SIZE = {
     "1:1": "2048x2048",
@@ -185,7 +191,7 @@ async def _generate_via_images_api(
                 "watermark": False,  # 如果代理支持，可以关闭水印以获得纯净的图片数据
             }
         ),
-        timeout=180,
+        timeout=IMAGE_GENERATION_TIMEOUT_SECONDS,
     )
 
 
@@ -206,7 +212,7 @@ async def _generate_via_chat_completions(
             model=get_model_id_for_api(model_key),
             messages=[{"role": "user", "content": fallback_prompt}],
         ),
-        timeout=180,
+        timeout=IMAGE_GENERATION_TIMEOUT_SECONDS,
     )
 
 
@@ -251,11 +257,14 @@ async def execute(
             aspect_ratio=aspect_ratio,
         )
     except asyncio.TimeoutError:
-        logger.error("generate_image timed out after 180 seconds")
+        logger.error(
+            "generate_image timed out after %s seconds",
+            IMAGE_GENERATION_TIMEOUT_SECONDS,
+        )
         return {
             "success": False,
             "failure_mode": "recoverable",
-            "text": "❌ 生图超时（180 秒），请稍后重试或简化提示词。",
+            "text": f"❌ 生图超时（{IMAGE_GENERATION_TIMEOUT_SECONDS} 秒），请稍后重试或简化提示词。",
         }
     except Exception as exc:
         detail = str(exc or "").strip()
@@ -269,11 +278,14 @@ async def execute(
                     aspect_ratio=aspect_ratio,
                 )
             except asyncio.TimeoutError:
-                logger.error("generate_image chat fallback timed out after 180 seconds")
+                logger.error(
+                    "generate_image chat fallback timed out after %s seconds",
+                    IMAGE_GENERATION_TIMEOUT_SECONDS,
+                )
                 return {
                     "success": False,
                     "failure_mode": "recoverable",
-                    "text": "❌ 生图超时（180 秒），请稍后重试或简化提示词。",
+                    "text": f"❌ 生图超时（{IMAGE_GENERATION_TIMEOUT_SECONDS} 秒），请稍后重试或简化提示词。",
                 }
             except Exception as fallback_exc:
                 fallback_detail = str(fallback_exc or "").strip() or detail or "unknown error"

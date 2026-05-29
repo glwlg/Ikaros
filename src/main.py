@@ -80,9 +80,17 @@ async def init_services():
 
         from core.audit_store import audit_store
         from core.kernel_config_store import kernel_config_store
+        from core.runtime_v2 import runtime_v2
         from core.task_inbox import task_inbox
 
         await task_inbox.compact_storage()
+        expired_runtime = runtime_v2.expire_stale_work()
+        if expired_runtime.get("turns") or expired_runtime.get("tasks"):
+            logger.info(
+                "Runtime v2 startup cleanup expired stale work: turns=%s tasks=%s",
+                expired_runtime.get("turns", 0),
+                expired_runtime.get("tasks", 0),
+            )
         audit_store.maintain()
 
         kernel_config_store.snapshot(

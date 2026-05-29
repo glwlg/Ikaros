@@ -40,6 +40,62 @@ async def test_push_background_text_uses_attachment_for_long_payload(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_push_background_text_attaches_ui_to_last_text_chunk(monkeypatch):
+    sent_messages: list[dict] = []
+
+    class _FakeAdapter:
+        async def send_message(self, **kwargs):
+            sent_messages.append(dict(kwargs))
+            return SimpleNamespace(id=f"msg-{len(sent_messages)}")
+
+    monkeypatch.setenv("BACKGROUND_PUSH_FILE_ENABLED", "false")
+    ok = await push_background_text(
+        platform="telegram",
+        chat_id="c-1",
+        text=("第一段" * 3000) + "最后一段",
+        adapter=_FakeAdapter(),
+        ui={"actions": [[{"text": "进入会话", "callback_data": "schsess_enter_9"}]]},
+    )
+
+    assert ok is True
+    assert len(sent_messages) > 1
+    assert "ui" not in sent_messages[0]
+    assert sent_messages[-1]["ui"]["actions"][0][0]["callback_data"] == "schsess_enter_9"
+
+
+@pytest.mark.asyncio
+async def test_push_background_text_sends_ui_followup_after_document(monkeypatch):
+    sent_documents: list[dict] = []
+    sent_messages: list[dict] = []
+
+    class _FakeAdapter:
+        async def send_document(self, **kwargs):
+            sent_documents.append(dict(kwargs))
+            return SimpleNamespace(id="doc")
+
+        async def send_message(self, **kwargs):
+            sent_messages.append(dict(kwargs))
+            return SimpleNamespace(id="msg")
+
+    monkeypatch.setenv("BACKGROUND_PUSH_FILE_ENABLED", "true")
+    monkeypatch.setenv("BACKGROUND_PUSH_FILE_THRESHOLD", "32")
+    monkeypatch.setenv("BACKGROUND_PUSH_MAX_TEXT_CHUNKS", "1")
+
+    ok = await push_background_text(
+        platform="telegram",
+        chat_id="c-1",
+        text="定时任务报告" * 40,
+        adapter=_FakeAdapter(),
+        filename_prefix="scheduler",
+        ui={"actions": [[{"text": "进入会话", "callback_data": "schsess_enter_9"}]]},
+    )
+
+    assert ok is True
+    assert sent_documents
+    assert sent_messages[-1]["ui"]["actions"][0][0]["callback_data"] == "schsess_enter_9"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_send_via_adapter_delegates_to_background_delivery(monkeypatch):
     calls: list[dict] = []
 
@@ -67,6 +123,22 @@ async def test_scheduler_send_via_adapter_delegates_to_background_delivery(monke
             "filename_prefix": "background",
         }
     ]
+
+
+def test_scheduler_report_session_ui_builds_enter_button():
+    ui = scheduler_module.scheduler_report_session_ui(9)
+
+    assert ui == {
+        "actions": [
+            [
+                {
+                    "text": "进入会话",
+                    "callback_data": "schsess_enter_9",
+                }
+            ]
+        ]
+    }
+    assert scheduler_module.scheduler_report_session_ui("") is None
 
 
 @pytest.mark.asyncio

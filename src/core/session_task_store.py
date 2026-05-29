@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
+from core.runtime_v2 import TERMINAL_STATUSES, runtime_v2
 from core.task_inbox import TaskEnvelope, task_inbox
 
 
@@ -109,6 +110,63 @@ class SessionTaskStore:
         )
 
     @staticmethod
+    def _snapshot_from_runtime_task(row: Dict[str, Any]) -> SessionTaskSnapshot:
+        metadata = dict(row.get("metadata") or {})
+        followup = dict(metadata.get("followup") or {}) if isinstance(metadata.get("followup"), dict) else {}
+        summary = (
+            _safe_text(metadata.get("last_user_visible_summary"), limit=2400)
+            or _safe_text(metadata.get("result_summary"), limit=2400)
+            or _safe_text(followup.get("last_action_summary"), limit=2400)
+        )
+        task_goal = (
+            _safe_text(metadata.get("task_goal"), limit=4000)
+            or _safe_text(metadata.get("original_user_request"), limit=4000)
+            or _safe_text(row.get("goal"), limit=4000)
+            or _safe_text(row.get("turn_input_text"), limit=4000)
+        )
+        return SessionTaskSnapshot(
+            session_task_id=_safe_text(row.get("id"), limit=80),
+            task_inbox_id=_safe_text(metadata.get("task_inbox_id"), limit=80),
+            user_id=_safe_text(row.get("platform_user_id"), limit=80),
+            status=_safe_text(row.get("status"), limit=40).lower() or "queued",
+            current_stage_id=_stage_id_from_metadata(metadata),
+            stage_index=max(0, int(metadata.get("stage_index") or 0)),
+            stage_total=max(0, int(metadata.get("stage_total") or 0)),
+            stage_title=_safe_text(metadata.get("stage_title"), limit=200),
+            attempt_index=max(0, int(metadata.get("attempt_index") or 0)),
+            delivery_state=_safe_text(metadata.get("delivery_state"), limit=40).lower(),
+            last_user_visible_summary=summary,
+            resume_window_until=_safe_text(
+                metadata.get("resume_window_until"),
+                limit=64,
+            ),
+            task_goal=task_goal,
+            original_user_request=_safe_text(
+                metadata.get("original_user_request"),
+                limit=4000,
+            )
+            or task_goal,
+            updated_at=_safe_text(row.get("updated_at"), limit=64),
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _runtime_task_with_context(task_id: str) -> Dict[str, Any]:
+        row = runtime_v2.get_task(task_id)
+        if not row:
+            return {}
+        session = runtime_v2.get_session(str(row.get("session_id") or ""))
+        turn = runtime_v2.get_turn(str(row.get("turn_id") or ""))
+        merged = dict(row)
+        merged.update(
+            {
+                "platform_user_id": str(session.get("platform_user_id") or ""),
+                "turn_input_text": str(turn.get("input_text") or ""),
+            }
+        )
+        return merged
+
+    @staticmethod
     def _snapshot_from_active_task(
         user_id: str,
         active_task: Dict[str, Any],
@@ -174,6 +232,9 @@ class SessionTaskStore:
         direct = await task_inbox.get(safe_id)
         if direct is not None:
             return self._snapshot_from_task(direct)
+        runtime_task = self._runtime_task_with_context(safe_id)
+        if runtime_task and not bool(dict(runtime_task.get("metadata") or {}).get("deleted")):
+            return self._snapshot_from_runtime_task(runtime_task)
         recent = await task_inbox.list_recent(limit=50)
         for task in recent:
             metadata = dict(task.metadata or {})
@@ -191,7 +252,19 @@ class SessionTaskStore:
         if not isinstance(active_task, dict):
             active_task = await heartbeat_store.get_session_active_task(safe_user_id)
         if not isinstance(active_task, dict):
-            return None
+            runtime_rows = runtime_v2.list_tasks_for_user(
+                platform_user_id=safe_user_id,
+                statuses=(
+                    "queued",
+                    "running",
+                    "waiting_user",
+                    "waiting_external",
+                ),
+                limit=1,
+            )
+            if not runtime_rows:
+                return None
+            return self._snapshot_from_runtime_task(runtime_rows[0])
         task_inbox_id = _safe_text(
             active_task.get("task_inbox_id") or active_task.get("session_task_id"),
             limit=80,
@@ -215,7 +288,33 @@ class SessionTaskStore:
         now = _now_local()
         recent = await task_inbox.list_recent(user_id=safe_user_id, limit=max(20, limit * 8))
         rows: List[SessionTaskSnapshot] = []
+        runtime_rows = runtime_v2.list_tasks_for_user(
+            platform_user_id=safe_user_id,
+            statuses=("succeeded",),
+            limit=max(20, limit * 8),
+        )
+        legacy_ids = {
+            _safe_text(dict(row.get("metadata") or {}).get("task_inbox_id"), limit=80)
+            for row in runtime_rows
+        }
+        legacy_ids.discard("")
+        for row in runtime_rows:
+            if str(row.get("status") or "").strip().lower() not in TERMINAL_STATUSES:
+                continue
+            snapshot = self._snapshot_from_runtime_task(row)
+            if not snapshot.resume_window_until:
+                continue
+            resume_until = _parse_iso(snapshot.resume_window_until)
+            if resume_until is None or resume_until <= now:
+                continue
+            if not snapshot.last_user_visible_summary:
+                continue
+            rows.append(snapshot)
+            if len(rows) >= max(1, int(limit or 1)):
+                return rows
         for task in recent:
+            if str(task.task_id or "").strip() in legacy_ids:
+                continue
             if _safe_text(task.status, limit=40).lower() != "completed":
                 continue
             snapshot = self._snapshot_from_task(task)

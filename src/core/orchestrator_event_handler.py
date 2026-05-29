@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import datetime
+import contextlib
 import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict
 
 from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
+from core.runtime_v2 import TERMINAL_STATUSES, runtime_event_bus, runtime_v2
 from core.task_inbox import task_inbox
 from core.task_manager import task_manager
 
@@ -47,6 +49,8 @@ class OrchestratorEventHandler:
         append_session_event: AppendSessionEvent,
         update_session_task: UpdateSessionTask,
         update_task_inbox_status: UpdateTaskInboxStatus,
+        runtime_session_id: str = "",
+        runtime_turn_id: str = "",
     ):
         self.user_id = user_id
         self.task_id = str(task_id)
@@ -63,7 +67,77 @@ class OrchestratorEventHandler:
         self.append_session_event = append_session_event
         self.update_session_task = update_session_task
         self.update_task_inbox_status = update_task_inbox_status
+        self.runtime_session_id = str(runtime_session_id or "").strip()
+        self.runtime_turn_id = str(runtime_turn_id or "").strip()
         self.flags = EventLoopFlags()
+
+    def _publish_runtime_event(
+        self, event_type: str, payload: Dict[str, Any] | None = None
+    ) -> None:
+        if not self.runtime_session_id:
+            return
+        try:
+            runtime_event_bus.publish(
+                session_id=self.runtime_session_id,
+                turn_id=self.runtime_turn_id,
+                event_type=event_type,
+                payload=dict(payload or {}),
+            )
+        except Exception:
+            return
+
+    def _update_runtime_v2_work(
+        self, status: str, metadata: Dict[str, Any] | None = None
+    ) -> None:
+        target = str(status or "").strip().lower()
+        if not target:
+            return
+        user_data = getattr(self.ctx, "user_data", None)
+        user_data = user_data if isinstance(user_data, dict) else {}
+        turn_id = self.runtime_turn_id or str(user_data.get("runtime_v2_turn_id") or "")
+        task_id = str(user_data.get("runtime_v2_task_id") or "").strip()
+
+        if turn_id:
+            with contextlib.suppress(Exception):
+                turn = runtime_v2.get_turn(turn_id)
+                current = str((turn or {}).get("status") or "").strip().lower()
+                if turn and current not in TERMINAL_STATUSES:
+                    if current in {
+                        "queued",
+                        "waiting_user",
+                        "waiting_external",
+                    } and target not in {"queued", current}:
+                        runtime_v2.update_turn_status(
+                            turn_id,
+                            "running",
+                            metadata={"entered_orchestrator_event_handler": True},
+                        )
+                    runtime_v2.update_turn_status(
+                        turn_id,
+                        target,
+                        metadata=dict(metadata or {}),
+                    )
+
+        if task_id:
+            with contextlib.suppress(Exception):
+                task = runtime_v2.get_task(task_id)
+                current = str((task or {}).get("status") or "").strip().lower()
+                if task and current not in TERMINAL_STATUSES:
+                    if current in {
+                        "queued",
+                        "waiting_user",
+                        "waiting_external",
+                    } and target not in {"queued", current}:
+                        runtime_v2.update_task_status(
+                            task_id,
+                            "running",
+                            metadata={"entered_orchestrator_event_handler": True},
+                        )
+                    runtime_v2.update_task_status(
+                        task_id,
+                        target,
+                        metadata=dict(metadata or {}),
+                    )
 
     def _append_pending_ui(self, ui_payload: Any, *, replace: bool = False) -> None:
         if not isinstance(ui_payload, dict):
@@ -160,6 +234,7 @@ class OrchestratorEventHandler:
     ) -> Dict[str, Any] | None:
         if event == "turn_start":
             turn = payload.get("turn")
+            self._publish_runtime_event("kernel_turn_start", payload)
             if self.session_state_active:
                 await heartbeat_store.pulse(str(self.user_id), f"turn:{turn}")
             self.todo_session.heartbeat(f"turn:{turn}")
@@ -167,6 +242,7 @@ class OrchestratorEventHandler:
             return None
 
         if event == "tool_call_started":
+            self._publish_runtime_event("kernel_tool_call_started", payload)
             self.flags.saw_tool_call = True
             tool_name = payload.get("name", "unknown")
             await self.append_session_event(
@@ -179,9 +255,11 @@ class OrchestratorEventHandler:
             return None
 
         if event == "tool_call_finished":
+            self._publish_runtime_event("kernel_tool_call_finished", payload)
             return await self._handle_tool_call_finished(payload)
 
         if event == "retry_after_failure":
+            self._publish_runtime_event("kernel_retry_after_failure", payload)
             failures = payload.get("failures")
             failure_list = failures if isinstance(failures, list) else []
             stage = max(
@@ -204,13 +282,16 @@ class OrchestratorEventHandler:
             }
 
         if event == "final_response":
+            self._publish_runtime_event("kernel_final_response", payload)
             return await self._handle_final_response(payload)
 
         if event == "max_turn_limit":
+            self._publish_runtime_event("kernel_max_turn_limit", payload)
             await self._handle_max_turn_limit(payload)
             return None
 
         if event == "loop_guard":
+            self._publish_runtime_event("kernel_loop_guard", payload)
             await self._handle_loop_guard(payload)
             return None
 
@@ -225,6 +306,10 @@ class OrchestratorEventHandler:
         output_text: str,
         followup: Dict[str, Any] | None = None,
     ) -> None:
+        self._update_runtime_v2_work(
+            "waiting_external",
+            {"orchestrator_status": "waiting_external"},
+        )
         metadata: Dict[str, Any] = {}
         if isinstance(followup, dict) and followup:
             metadata["followup"] = dict(followup)
@@ -257,6 +342,7 @@ class OrchestratorEventHandler:
         terminal_ui: Dict[str, Any],
         terminal_payload: Dict[str, Any],
     ) -> Dict[str, Any]:
+        self._update_runtime_v2_work("succeeded", {"orchestrator_status": "done"})
         if terminal_ui:
             self._append_pending_ui(terminal_ui)
         await self.update_session_task(
@@ -323,6 +409,7 @@ class OrchestratorEventHandler:
             clear_active=True,
         )
         await self.append_session_event(f"terminal_tool_failed:{self.task_id}:{tool_name}")
+        self._update_runtime_v2_work("failed", {"orchestrator_status": "failed"})
         if self.task_inbox_id:
             await task_inbox.fail(
                 self.task_inbox_id,
@@ -411,6 +498,10 @@ class OrchestratorEventHandler:
             deadline = (
                 datetime.datetime.now().astimezone() + datetime.timedelta(seconds=180)
             ).isoformat(timespec="seconds")
+            self._update_runtime_v2_work(
+                "waiting_user",
+                {"orchestrator_status": "waiting_user", "tool_name": str(tool_name)},
+            )
             await self.update_session_task(
                 status="waiting_user",
                 result_summary=final_text,
@@ -519,6 +610,10 @@ class OrchestratorEventHandler:
             deadline = (
                 datetime.datetime.now().astimezone() + datetime.timedelta(seconds=180)
             ).isoformat(timespec="seconds")
+            self._update_runtime_v2_work(
+                "waiting_user",
+                {"orchestrator_status": "waiting_user"},
+            )
             await self.update_session_task(
                 status="waiting_user",
                 result_summary=full_text,
@@ -576,6 +671,13 @@ class OrchestratorEventHandler:
             return None
 
         if completion_status in {"failed", "blocked", "cancelled", "timed_out", "error"}:
+            runtime_status = "cancelled" if completion_status == "cancelled" else "failed"
+            if completion_status == "timed_out":
+                runtime_status = "expired"
+            self._update_runtime_v2_work(
+                runtime_status,
+                {"orchestrator_status": completion_status or "failed"},
+            )
             self.todo_session.mark_failed("Model reported a blocked outcome.")
             if self.session_state_active:
                 await self.update_session_task(
@@ -612,6 +714,10 @@ class OrchestratorEventHandler:
 
         auto_followup = self._maybe_pr_followup_metadata(preview)
         if auto_followup and self.task_inbox_id:
+            self._update_runtime_v2_work(
+                "waiting_external",
+                {"orchestrator_status": "waiting_external", "auto_followup": True},
+            )
             await task_inbox.update_status(
                 self.task_inbox_id,
                 "waiting_external",
@@ -690,6 +796,11 @@ class OrchestratorEventHandler:
                     },
                     final_output=full_text,
                 )
+        if not auto_followup:
+            self._update_runtime_v2_work(
+                "succeeded",
+                {"orchestrator_status": "done"},
+            )
 
         task_manager.heartbeat(self.user_id, "final_response")
         self.flags.completed = True
@@ -722,6 +833,10 @@ class OrchestratorEventHandler:
             detail = f"{detail} Last visible intermediate result: {summary}"
 
         self.todo_session.mark_failed("Reached max tool-loop turns before completion.")
+        self._update_runtime_v2_work(
+            "failed",
+            {"orchestrator_status": "max_turn_limit"},
+        )
         if self.session_state_active:
             await self.update_session_task(
                 status="failed",
@@ -747,6 +862,10 @@ class OrchestratorEventHandler:
 
     async def _handle_loop_guard(self, payload: Dict[str, Any]) -> None:
         repeat_details = str(payload.get("repeat_details") or "").strip()
+        self._update_runtime_v2_work(
+            "failed",
+            {"orchestrator_status": "loop_guard", "repeat_details": repeat_details},
+        )
         if self.session_state_active:
             await self.update_session_task(
                 status="failed",

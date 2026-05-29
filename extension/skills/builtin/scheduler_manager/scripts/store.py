@@ -1,74 +1,72 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from core.storage_service import (
-    dedupe_rows,
-    now_iso,
-    read_row_list,
-    storage_service,
-    user_state_path,
-)
+from core.runtime_v2 import runtime_v2
+from core.state_paths import SINGLE_USER_SCOPE
+from core.storage_service import now_iso
 
 
-def _scheduled_tasks_path(user_id: int | str):
-    return user_state_path(user_id, "scheduler_manager", "scheduled_tasks.md")
+def scheduler_task_session_id(task_id: int | str) -> str:
+    raw = str(task_id or "").strip()
+    safe = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", raw).strip("-")
+    return f"scheduler-task-{safe or 'unknown'}"
+
+
+def _owner_user_id(_user_id: int | str | None = None) -> str:
+    return str(SINGLE_USER_SCOPE)
+
+
+def _to_int_id(value: Any) -> int:
+    try:
+        return int(str(value or "0").strip())
+    except Exception:
+        return 0
 
 
 def _normalize_scheduled_task(raw: dict[str, Any]) -> dict[str, Any]:
+    task_id = _to_int_id(raw.get("id"))
+    metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    session_id = str(raw.get("session_id") or "").strip() or scheduler_task_session_id(
+        task_id
+    )
     return {
-        "id": int(raw.get("id") or 0),
+        "id": task_id,
         "crontab": str(raw.get("crontab") or "").strip(),
         "instruction": str(raw.get("instruction") or "").strip(),
         "platform": str(raw.get("platform") or "telegram").strip() or "telegram",
         "chat_id": str(raw.get("chat_id") or "").strip(),
-        "session_id": str(raw.get("session_id") or "").strip(),
-        "need_push": bool(raw.get("need_push", True)),
-        "is_active": bool(raw.get("is_active", True)),
+        "session_id": session_id,
+        "need_push": bool(metadata.get("need_push", True)),
+        "is_active": bool(raw.get("enabled", 1)),
         "created_at": str(raw.get("created_at") or now_iso()),
         "updated_at": str(raw.get("updated_at") or now_iso()),
     }
 
 
-async def _read_user_scheduled_tasks(user_id: int | str) -> list[dict[str, Any]]:
-    current_rows = read_row_list(
-        await storage_service.read(_scheduled_tasks_path(user_id), []),
-        "scheduled_tasks",
-        "tasks",
+def _ensure_scheduler_session(
+    task_id: int | str,
+    *,
+    instruction: str = "",
+    user_id: int | str | None = None,
+    platform: str = "scheduler",
+    chat_id: str = "",
+) -> str:
+    session_id = scheduler_task_session_id(task_id)
+    runtime_v2.ensure_session(
+        session_id=session_id,
+        kind="scheduled_task",
+        platform="scheduler",
+        platform_user_id=_owner_user_id(user_id),
+        title=str(instruction or "")[:80],
+        metadata={
+            "scheduled_task_id": str(task_id or "").strip(),
+            "delivery_platform": str(platform or "").strip(),
+            "delivery_chat_id": str(chat_id or "").strip(),
+        },
     )
-    return dedupe_rows(
-        [
-            _normalize_scheduled_task(item)
-            for item in current_rows
-            if isinstance(item, dict)
-        ],
-        key_fn=lambda row: int(row.get("id") or 0),
-    )
-
-
-async def _write_user_scheduled_tasks(
-    user_id: int | str,
-    rows: list[dict[str, Any]],
-) -> None:
-    payload: list[dict[str, Any]] = []
-    for row in dedupe_rows(rows, key_fn=lambda item: int(item.get("id") or 0)):
-        serialized = {
-            "id": int(row.get("id") or 0),
-            "crontab": str(row.get("crontab") or "").strip(),
-            "instruction": str(row.get("instruction") or "").strip(),
-            "platform": str(row.get("platform") or "telegram"),
-            "need_push": bool(row.get("need_push", True)),
-            "is_active": bool(row.get("is_active", True)),
-            "created_at": str(row.get("created_at") or now_iso()),
-            "updated_at": str(row.get("updated_at") or now_iso()),
-        }
-        if str(row.get("chat_id") or "").strip():
-            serialized["chat_id"] = str(row.get("chat_id") or "").strip()
-        if str(row.get("session_id") or "").strip():
-            serialized["session_id"] = str(row.get("session_id") or "").strip()
-        payload.append(serialized)
-    payload.sort(key=lambda item: int(item.get("id") or 0))
-    await storage_service.write(_scheduled_tasks_path(user_id), payload)
+    return session_id
 
 
 async def add_scheduled_task(
@@ -80,27 +78,28 @@ async def add_scheduled_task(
     session_id: str = "",
     need_push: bool = True,
 ) -> int:
-    rows = await _read_user_scheduled_tasks(user_id or "")
-    task_id = await storage_service.next_id_after_store_rows(
-        "scheduled_task",
-        _scheduled_tasks_path(""),
-        list_keys=("scheduled_tasks", "tasks"),
+    _ = session_id
+    task_id = runtime_v2.next_scheduler_job_id()
+    scheduler_session_id = _ensure_scheduler_session(
+        task_id,
+        instruction=instruction,
+        user_id=user_id,
+        platform=platform,
+        chat_id=chat_id,
     )
-    rows.append(
-        {
-            "id": int(task_id),
-            "crontab": str(crontab or "").strip(),
-            "instruction": str(instruction or "").strip(),
-            "platform": str(platform or "telegram"),
-            "chat_id": str(chat_id or "").strip(),
-            "session_id": str(session_id or "").strip(),
+    runtime_v2.upsert_scheduler_job(
+        job_id=str(task_id),
+        session_id=scheduler_session_id,
+        crontab=str(crontab or "").strip(),
+        instruction=str(instruction or "").strip(),
+        platform=str(platform or "telegram").strip() or "telegram",
+        chat_id=str(chat_id or "").strip(),
+        enabled=True,
+        metadata={
             "need_push": bool(need_push),
-            "is_active": True,
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-        }
+            "created_by_user_id": str(user_id or "").strip(),
+        },
     )
-    await _write_user_scheduled_tasks(user_id or "", rows)
     return int(task_id)
 
 
@@ -114,7 +113,12 @@ async def get_all_active_tasks(
 async def get_all_scheduled_tasks(
     user_id: int | str | None = None,
 ) -> list[dict[str, Any]]:
-    return await _read_user_scheduled_tasks(user_id or "")
+    rows = runtime_v2.list_scheduler_jobs(
+        platform_user_id=_owner_user_id(user_id),
+        limit=1000,
+    )
+    normalized = [_normalize_scheduled_task(item) for item in rows]
+    return sorted(normalized, key=lambda item: int(item.get("id") or 0))
 
 
 async def update_task_status(
@@ -122,20 +126,28 @@ async def update_task_status(
     is_active: bool,
     user_id: int | str | None = None,
 ) -> bool:
-    tid = int(task_id)
-    rows = await _read_user_scheduled_tasks(user_id or "")
-    changed = False
-    for item in rows:
-        if int(item.get("id") or 0) != tid:
-            continue
-        item["is_active"] = bool(is_active)
-        item["updated_at"] = now_iso()
-        changed = True
-        break
-    if changed:
-        await _write_user_scheduled_tasks(user_id or "", rows)
-        return True
-    return False
+    existing = runtime_v2.get_scheduler_job(str(int(task_id)))
+    if not existing:
+        return False
+    task = _normalize_scheduled_task(existing)
+    session_id = _ensure_scheduler_session(
+        task_id,
+        instruction=task["instruction"],
+        user_id=user_id,
+        platform=task["platform"],
+        chat_id=task["chat_id"],
+    )
+    runtime_v2.upsert_scheduler_job(
+        job_id=str(int(task_id)),
+        session_id=session_id,
+        crontab=task["crontab"],
+        instruction=task["instruction"],
+        platform=task["platform"],
+        chat_id=task["chat_id"],
+        enabled=bool(is_active),
+        metadata={"need_push": task["need_push"]},
+    )
+    return True
 
 
 async def update_task_delivery_target(
@@ -146,30 +158,36 @@ async def update_task_delivery_target(
     chat_id: str,
     session_id: str = "",
 ) -> bool:
-    tid = int(task_id)
-    rows = await _read_user_scheduled_tasks(user_id or "")
-    changed = False
-    for item in rows:
-        if int(item.get("id") or 0) != tid:
-            continue
-        item["platform"] = str(platform or "telegram").strip() or "telegram"
-        item["chat_id"] = str(chat_id or "").strip()
-        item["session_id"] = str(session_id or "").strip()
-        item["updated_at"] = now_iso()
-        changed = True
-        break
-    if changed:
-        await _write_user_scheduled_tasks(user_id or "", rows)
-        return True
-    return False
+    _ = session_id
+    existing = runtime_v2.get_scheduler_job(str(int(task_id)))
+    if not existing:
+        return False
+    task = _normalize_scheduled_task(existing)
+    target_platform = str(platform or "telegram").strip() or "telegram"
+    target_chat_id = str(chat_id or "").strip()
+    scheduler_session_id = _ensure_scheduler_session(
+        task_id,
+        instruction=task["instruction"],
+        user_id=user_id,
+        platform=target_platform,
+        chat_id=target_chat_id,
+    )
+    runtime_v2.upsert_scheduler_job(
+        job_id=str(int(task_id)),
+        session_id=scheduler_session_id,
+        crontab=task["crontab"],
+        instruction=task["instruction"],
+        platform=target_platform,
+        chat_id=target_chat_id,
+        enabled=task["is_active"],
+        metadata={"need_push": task["need_push"]},
+    )
+    return True
 
 
 async def delete_task(task_id: int, user_id: int | str | None = None) -> None:
-    tid = int(task_id)
-    rows = await _read_user_scheduled_tasks(user_id or "")
-    kept = [item for item in rows if int(item.get("id") or 0) != tid]
-    if len(kept) != len(rows):
-        await _write_user_scheduled_tasks(user_id or "", kept)
+    _ = user_id
+    runtime_v2.delete_scheduler_job(str(int(task_id)))
 
 
 async def update_scheduled_task(
@@ -178,23 +196,32 @@ async def update_scheduled_task(
     crontab: str | None = None,
     instruction: str | None = None,
 ) -> bool:
-    tid = int(task_id)
-    rows = await _read_user_scheduled_tasks(user_id or "")
-    changed = False
-    for item in rows:
-        if int(item.get("id") or 0) != tid:
-            continue
-        if crontab is not None:
-            item["crontab"] = str(crontab).strip()
-        if instruction is not None:
-            item["instruction"] = str(instruction).strip()
-        item["updated_at"] = now_iso()
-        changed = True
-        break
-    if changed:
-        await _write_user_scheduled_tasks(user_id or "", rows)
-        return True
-    return False
+    existing = runtime_v2.get_scheduler_job(str(int(task_id)))
+    if not existing:
+        return False
+    task = _normalize_scheduled_task(existing)
+    next_crontab = task["crontab"] if crontab is None else str(crontab).strip()
+    next_instruction = (
+        task["instruction"] if instruction is None else str(instruction).strip()
+    )
+    session_id = _ensure_scheduler_session(
+        task_id,
+        instruction=next_instruction,
+        user_id=user_id,
+        platform=task["platform"],
+        chat_id=task["chat_id"],
+    )
+    runtime_v2.upsert_scheduler_job(
+        job_id=str(int(task_id)),
+        session_id=session_id,
+        crontab=next_crontab,
+        instruction=next_instruction,
+        platform=task["platform"],
+        chat_id=task["chat_id"],
+        enabled=task["is_active"],
+        metadata={"need_push": task["need_push"]},
+    )
+    return True
 
 
 __all__ = [
@@ -202,6 +229,7 @@ __all__ = [
     "delete_task",
     "get_all_active_tasks",
     "get_all_scheduled_tasks",
+    "scheduler_task_session_id",
     "update_scheduled_task",
     "update_task_delivery_target",
     "update_task_status",

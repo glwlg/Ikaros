@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
@@ -14,6 +13,15 @@ from ap_utils import augment_image_prompt, derive_topic_requirements, topic_slug
 from ap_stages import StageResult
 
 logger = logging.getLogger(__name__)
+
+
+def _looks_like_svg_payload(payload: bytes) -> bool:
+    head = bytes(payload or b"")[:512].lstrip().lower()
+    if not head:
+        return False
+    return head.startswith(b"<svg") or (
+        head.startswith(b"<?xml") and b"<svg" in head[:256]
+    )
 
 
 async def illustrate_stage(
@@ -141,7 +149,15 @@ async def _generate_images(
             )
             if isinstance(result, dict) and isinstance(result.get("files"), dict):
                 files = list(result["files"].values())
-                if files:
+                if files and isinstance(files[0], bytes):
+                    if _looks_like_svg_payload(files[0]):
+                        logger.warning(
+                            "Rejected SVG image payload for %s:%s; article_publisher "
+                            "images must be generated as raster output by generate_image.",
+                            image_type,
+                            image_idx,
+                        )
+                        return image_type, image_idx, None
                     return image_type, image_idx, files[0]
         except Exception as exc:
             logger.warning(
@@ -152,7 +168,9 @@ async def _generate_images(
             )
         return image_type, image_idx, None
 
-    img_results = await asyncio.gather(*(gen_img(task) for task in image_tasks))
+    img_results = []
+    for task in image_tasks:
+        img_results.append(await gen_img(task))
 
     cover_bytes: bytes | None = None
     section_images: dict[int, bytes] = {}
