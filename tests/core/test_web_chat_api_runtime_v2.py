@@ -335,7 +335,7 @@ async def test_web_chat_stream_switches_to_runtime_v2_after_session_is_created(
     response = await web_chat.session_stream(
         "late-runtime-session",
         _Request(),
-        after=0,
+        after=5,
         once=False,
         user=user,
         session=SimpleNamespace(),
@@ -364,6 +364,43 @@ async def test_web_chat_stream_switches_to_runtime_v2_after_session_is_created(
     streamed = await anext(iterator)
     assert "event: assistant_message_final" in streamed
     assert "late runtime output" in streamed
+
+
+def test_web_chat_api_stream_surfaces_adapter_errors_as_runtime_events(
+    web_chat_api_runtime,
+    monkeypatch,
+):
+    app, runtime_store = web_chat_api_runtime
+
+    async def _raise_build_context(_event):
+        raise RuntimeError("adapter exploded")
+
+    adapter = WebAdapter()
+    monkeypatch.setattr(adapter, "_build_context", _raise_build_context)
+
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/web-chat/sessions",
+            json={"title": "Runtime v2 adapter error"},
+        ).json()["id"]
+        posted = client.post(
+            f"/api/v1/web-chat/sessions/{session_id}/events",
+            json={"type": "message_text", "text": "触发 adapter 失败"},
+        )
+        turn_id = posted.json()["runtime"]["turn_id"]
+        inbound = asyncio.run(web_store.claim_inbound_events(limit=1))
+
+        asyncio.run(adapter._process_event(inbound[0]))
+
+        with client.stream(
+            "GET",
+            f"/api/v1/web-chat/sessions/{session_id}/stream?once=true",
+        ) as response:
+            body = "".join(response.iter_text())
+
+    assert runtime_store.get_turn(turn_id)["status"] == "failed"
+    assert "event: error" in body
+    assert "adapter exploded" in body
 
 
 def test_web_chat_api_context_delivers_artifact_through_runtime_delivery(
@@ -485,6 +522,48 @@ def test_web_chat_api_serves_owned_runtime_v2_artifact_file(
     assert response.status_code == 200
     assert response.content == b"runtime artifact body"
     assert response.headers["content-type"].startswith("text/plain")
+
+
+def test_web_chat_api_registers_runtime_event_artifact_paths(
+    web_chat_api_runtime,
+    tmp_path,
+):
+    app, runtime_store = web_chat_api_runtime
+    document_path = tmp_path / "event-only-artifact.txt"
+    document_path.write_text("event artifact body", encoding="utf-8")
+    session = runtime_store.ensure_session(
+        session_id="scheduler-task-event-artifact",
+        kind="scheduled_task",
+        platform="scheduler",
+        platform_user_id=SINGLE_USER_SCOPE,
+        title="Runtime event artifact",
+    )
+    turn = runtime_store.create_turn(
+        session_id=session["id"],
+        source="scheduler",
+        input_text="生成文件",
+    )
+    runtime_store.append_event(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        event_type="artifact_created",
+        payload={
+            "kind": "document",
+            "filename": document_path.name,
+            "path": str(document_path),
+            "mime": "text/plain",
+        },
+    )
+
+    with TestClient(app) as client:
+        messages = client.get(
+            "/api/v1/web-chat/sessions/scheduler-task-event-artifact/messages"
+        ).json()["items"]
+        file_id = messages[-1]["attachments"][0]["file_id"]
+        response = client.get(f"/api/v1/web-chat/files/{file_id}")
+
+    assert response.status_code == 200
+    assert response.content == b"event artifact body"
 
 
 def test_web_chat_api_runtime_trace_includes_turn_events_artifacts_and_deliveries(

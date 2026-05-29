@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from datetime import datetime
@@ -51,17 +52,21 @@ def prepare_runtime_v2_reset(
     repo_root = (root or project_root()).expanduser().resolve()
     ikaros_data = (data_root or data_dir()).expanduser().resolve()
     backup_dir = (
-        (backup_root.expanduser().resolve() if backup_root else ikaros_data / "backups")
-        / f"runtime-v2-reset-{_timestamp()}"
+        backup_root.expanduser().resolve() if backup_root else ikaros_data / "backups"
+    ) / f"runtime-v2-reset-{_timestamp()}"
+    runtime_db = (
+        RuntimeV2Store().db_path
+        if str(os.getenv("IKAROS_RUNTIME_DB_PATH") or "").strip()
+        else ikaros_data / "runtime.db"
     )
 
     paths = {
         "env": repo_root / ".env",
         "bot_data": ikaros_data / "bot_data.db",
         "accounting_state": ikaros_data / "user" / "accounting" / "state.md",
-        "runtime_db": ikaros_data / "runtime.db",
-        "runtime_db_wal": ikaros_data / "runtime.db-wal",
-        "runtime_db_shm": ikaros_data / "runtime.db-shm",
+        "runtime_db": runtime_db,
+        "runtime_db_wal": runtime_db.with_name(f"{runtime_db.name}-wal"),
+        "runtime_db_shm": runtime_db.with_name(f"{runtime_db.name}-shm"),
     }
     backed_up = {
         name: _copy_if_exists(path, backup_dir, dry_run=dry_run)

@@ -39,9 +39,15 @@ from core.platform.models import UnifiedContext
 logger = logging.getLogger(__name__)
 
 
-IMAGE_GENERATION_TIMEOUT_SECONDS = int(
-    str(os.getenv("IMAGE_GENERATION_TIMEOUT_SECONDS") or "300")
-)
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        value = int(str(os.getenv(name) or default))
+    except Exception:
+        value = default
+    return max(minimum, value)
+
+
+IMAGE_GENERATION_TIMEOUT_SECONDS = _env_int("IMAGE_GENERATION_TIMEOUT_SECONDS", 300)
 
 _ASPECT_RATIO_TO_SIZE = {
     "1:1": "2048x2048",

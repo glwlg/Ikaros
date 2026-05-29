@@ -92,6 +92,7 @@ async def test_reload_scheduler_jobs_mirrors_runtime_v2_jobs(monkeypatch, tmp_pa
                 "instruction": "生成今日 AI 快讯",
                 "platform": "telegram",
                 "chat_id": "chat-42",
+                "user_id": "owner-42",
                 "need_push": False,
             }
         ]
@@ -110,6 +111,7 @@ async def test_reload_scheduler_jobs_mirrors_runtime_v2_jobs(monkeypatch, tmp_pa
     session = runtime_store.get_session("scheduler-task-job-42")
     job = runtime_store.get_scheduler_job("job-42")
     assert session["kind"] == "scheduled_task"
+    assert session["platform_user_id"] == "owner-42"
     assert session["metadata"]["scheduled_task_id"] == "job-42"
     assert job["session_id"] == "scheduler-task-job-42"
     assert job["crontab"] == "10 8 * * *"
@@ -118,6 +120,7 @@ async def test_reload_scheduler_jobs_mirrors_runtime_v2_jobs(monkeypatch, tmp_pa
     assert job["metadata"]["need_push"] is False
     assert runtime_store.get_scheduler_job("stale")["enabled"] == 0
     assert fake_scheduler.added[0]["id"] == "cron_db_job-42"
+    assert fake_scheduler.added[0]["args"][1] == "owner-42"
     assert fake_scheduler.added[0]["args"][-2:] == [
         "scheduler-task-job-42",
         "job-42",

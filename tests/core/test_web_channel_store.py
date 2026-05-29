@@ -192,3 +192,110 @@ async def test_web_session_messages_merge_state_rows_with_runtime_artifacts(
         "[附件] report.txt",
     ]
     assert messages[-1]["attachments"][0]["name"] == "report.txt"
+
+
+@pytest.mark.asyncio
+async def test_web_session_messages_keep_distinct_runtime_attachments(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        web_store, "WEB_CHANNEL_SESSIONS_DIR", tmp_path / "web_sessions_distinct"
+    )
+    (tmp_path / "web_sessions_distinct").mkdir(parents=True, exist_ok=True)
+
+    await web_store.create_session_projection(
+        user_id="owner-user",
+        session_id="attachment-session",
+    )
+    await web_store.upsert_session_message(
+        user_id="owner-user",
+        session_id="attachment-session",
+        message={
+            "id": "projected-doc",
+            "role": "assistant",
+            "content": "[附件] old.txt",
+            "message_type": "document",
+            "attachments": [
+                {
+                    "kind": "document",
+                    "file_id": "old-doc",
+                    "name": "old.txt",
+                }
+            ],
+        },
+    )
+    session = runtime_v2.ensure_session(
+        session_id="attachment-session",
+        kind="web_workspace",
+        platform="web",
+        platform_user_id="owner-user",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="生成新附件",
+    )
+    runtime_v2.append_event(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        event_type="artifact_created",
+        payload={
+            "artifact_id": "new-doc",
+            "kind": "document",
+            "filename": "new.txt",
+            "path": "/tmp/new.txt",
+        },
+    )
+
+    messages = await web_store.get_session_messages(
+        "owner-user",
+        "attachment-session",
+    )
+
+    assert [item["content"] for item in messages] == [
+        "[附件] old.txt",
+        "[附件] new.txt",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_web_session_runtime_messages_use_latest_event_window(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        web_store, "WEB_CHANNEL_SESSIONS_DIR", tmp_path / "web_sessions_latest"
+    )
+    (tmp_path / "web_sessions_latest").mkdir(parents=True, exist_ok=True)
+
+    session = runtime_v2.ensure_session(
+        session_id="long-runtime-session",
+        kind="scheduled_task",
+        platform="scheduler",
+        platform_user_id="owner-user",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="scheduler",
+        input_text="long run",
+    )
+    for index in range(505):
+        runtime_v2.append_event(
+            session_id=session["id"],
+            turn_id=turn["id"],
+            event_type="assistant_message_final",
+            payload={"text": f"message {index}"},
+        )
+
+    messages = await web_store.get_session_messages(
+        "web-user",
+        "long-runtime-session",
+        source_user_ids=["owner-user"],
+    )
+
+    assert len(messages) == 500
+    assert messages[0]["content"] == "message 5"
+    assert messages[-1]["content"] == "message 504"

@@ -258,21 +258,38 @@ def _runtime_event_message(event: dict[str, Any], *, session_id: str) -> dict[st
     elif event_type == "artifact_created":
         role = "assistant"
         kind = _safe_text(payload.get("kind")) or "document"
-        filename = _safe_text(payload.get("filename")) or Path(
-            _safe_text(payload.get("path"))
-        ).name
+        filename = (
+            _safe_text(payload.get("filename"))
+            or Path(_safe_text(payload.get("path"))).name
+        )
+        artifact_id = _safe_text(payload.get("artifact_id")) or _safe_text(
+            payload.get("id")
+        )
+        artifact = runtime_v2.get_artifact(artifact_id) if artifact_id else {}
+        path_text = _safe_text(payload.get("path"))
+        if path_text and not artifact:
+            artifact = runtime_v2.record_artifact(
+                session_id=session_id,
+                turn_id=_safe_text(event.get("turn_id")),
+                kind=kind,
+                path=path_text,
+                mime=_safe_text(payload.get("mime") or payload.get("mime_type")),
+                filename=filename,
+                source=_safe_text(payload.get("source")) or "runtime_event",
+            )
+            artifact_id = _safe_text(artifact.get("id")) or artifact_id
+            filename = _safe_text(artifact.get("filename")) or filename
         message_type = kind
         content = f"[附件] {filename}".strip()
         attachments = [
             {
-                "id": _safe_text(payload.get("artifact_id"))
-                or _safe_text(payload.get("path")),
-                "file_id": _safe_text(payload.get("artifact_id"))
-                or _safe_text(payload.get("path")),
+                "id": artifact_id,
+                "file_id": artifact_id,
                 "kind": kind,
                 "name": filename,
-                "mime_type": _safe_text(payload.get("mime")),
-                "path": _safe_text(payload.get("path")),
+                "mime_type": _safe_text(payload.get("mime"))
+                or _safe_text(artifact.get("mime")),
+                "path": path_text or _safe_text(artifact.get("path")),
             }
         ]
     elif event_type == "request_user_input":
@@ -291,6 +308,13 @@ def _runtime_event_message(event: dict[str, Any], *, session_id: str) -> dict[st
         details = "；".join(part for part in [target, error] if part)
         if details:
             content = f"{content}（{details}）"
+    elif event_type == "error":
+        role = "assistant"
+        content = (
+            _safe_text(payload.get("message"))
+            or _safe_text(payload.get("error"))
+            or "处理失败。"
+        )
 
     if not role or not content:
         return {}
@@ -352,20 +376,25 @@ def _runtime_event_messages_for_event(
 
 
 def _message_key(message: dict[str, Any]) -> tuple[Any, ...]:
-    attachments = [
-        (
-            _safe_text(item.get("kind")),
-            _safe_text(item.get("name")) or _safe_text(item.get("path")),
-        )
-        for item in list(message.get("attachments") or [])
-        if isinstance(item, dict)
-    ]
     return (
         _safe_text(message.get("role")),
         _safe_text(message.get("content")),
         _safe_text(message.get("message_type")),
-        tuple(attachments),
+        tuple(sorted(_attachment_identities(message))),
     )
+
+
+def _attachment_identities(message: dict[str, Any]) -> set[tuple[str, str]]:
+    output: set[tuple[str, str]] = set()
+    for item in list(message.get("attachments") or []):
+        if not isinstance(item, dict):
+            continue
+        kind = _safe_text(item.get("kind"))
+        for key in ("file_id", "id", "path", "name"):
+            value = _safe_text(item.get(key))
+            if value:
+                output.add((kind, value))
+    return output
 
 
 def _merge_projection_and_runtime_messages(
@@ -376,33 +405,31 @@ def _merge_projection_and_runtime_messages(
         return list(runtime_messages)
     output = list(projection_messages)
     seen = {_message_key(item) for item in output}
-    projection_attachment_kinds = {
-        _safe_text(attachment.get("kind"))
-        for item in output
-        for attachment in list(item.get("attachments") or [])
-        if isinstance(attachment, dict)
-    }
+    seen_attachments: set[tuple[str, str]] = set()
+    for item in output:
+        seen_attachments.update(_attachment_identities(item))
     for message in runtime_messages:
         key = _message_key(message)
         if key in seen:
             continue
-        attachments = [
-            item
-            for item in list(message.get("attachments") or [])
-            if isinstance(item, dict)
-        ]
-        if attachments and any(
-            _safe_text(item.get("kind")) in projection_attachment_kinds
-            for item in attachments
+        attachment_identities = _attachment_identities(message)
+        meta = message.get("meta") if isinstance(message.get("meta"), dict) else {}
+        if (
+            meta.get("event_type") == "artifact_created"
+            and attachment_identities
+            and attachment_identities.intersection(seen_attachments)
         ):
             continue
         output.append(message)
         seen.add(key)
+        seen_attachments.update(attachment_identities)
     return output
 
 
 def _runtime_event_messages(session_id: str) -> list[dict[str, Any]]:
-    runtime_events = runtime_v2.list_events(session_id=session_id, limit=500)
+    runtime_events = runtime_v2.list_events(
+        session_id=session_id, limit=500, latest=True
+    )
     return [
         message
         for event in runtime_events

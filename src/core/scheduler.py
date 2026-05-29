@@ -644,11 +644,16 @@ async def reload_scheduler_jobs():
         active_task_ids.add(str(task_id))
         crontab = task["crontab"]
         instruction = task["instruction"]
-        user_id = SINGLE_USER_SCOPE
         platform = task.get("platform", "telegram")
         chat_id = str(task.get("chat_id") or "").strip()
         need_push = bool(task.get("need_push", True))
         session_id = scheduler_task_session_id(task_id)
+        existing_session = runtime_v2.get_session(session_id)
+        user_id = (
+            str(task.get("user_id") or "").strip()
+            or str(existing_session.get("platform_user_id") or "").strip()
+            or str(SINGLE_USER_SCOPE)
+        )
         runtime_v2.ensure_session(
             session_id=session_id,
             kind="scheduled_task",

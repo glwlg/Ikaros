@@ -340,6 +340,8 @@ async def session_stream(
     request: Request,
     after: int = Query(default=0, ge=0),
     once: bool = Query(default=False),
+    runtime_after: int | None = None,
+    legacy_after: int | None = None,
     user: User = Depends(require_viewer),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -347,7 +349,10 @@ async def session_stream(
     _assert_runtime_session_access(session_id, user, source_user_ids)
 
     async def event_stream():
-        last_seq = int(after or 0)
+        runtime_last_seq = int(runtime_after if runtime_after is not None else 0)
+        legacy_last_seq = int(
+            legacy_after if legacy_after is not None else int(after or 0)
+        )
         while True:
             if await request.is_disconnected():
                 return
@@ -361,14 +366,14 @@ async def session_stream(
             if runtime_session:
                 events = runtime_v2.list_events(
                     session_id=session_id,
-                    after_seq=last_seq,
+                    after_seq=runtime_last_seq,
                     limit=100,
                 )
             else:
                 events = await list_outbound_events(
                     owner_user_id=_user_id(user),
                     session_id=session_id,
-                    after_seq=last_seq,
+                    after_seq=legacy_last_seq,
                     limit=100,
                 )
             if not events:
@@ -378,12 +383,17 @@ async def session_stream(
                 await asyncio.sleep(1.0)
                 continue
             for event in events:
-                last_seq = max(last_seq, int(event.get("seq") or 0))
+                if runtime_session:
+                    runtime_last_seq = max(runtime_last_seq, int(event.get("seq") or 0))
+                else:
+                    legacy_last_seq = max(legacy_last_seq, int(event.get("seq") or 0))
                 event_payload = dict(event.get("payload") or {})
                 if runtime_session:
                     event_payload.setdefault("runtime_v2", True)
                     event_payload.setdefault("turn_id", event.get("turn_id") or "")
-                    event_payload.setdefault("created_at", event.get("created_at") or "")
+                    event_payload.setdefault(
+                        "created_at", event.get("created_at") or ""
+                    )
                 payload = json.dumps(event_payload, ensure_ascii=False)
                 yield (
                     f"id: {event.get('seq')}\n"

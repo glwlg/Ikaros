@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -200,6 +201,27 @@ def test_runtime_v2_disables_stale_scheduler_jobs(tmp_path):
 
     assert store.get_scheduler_job("old")["enabled"] == 0
     assert store.get_scheduler_job("live")["enabled"] == 1
+
+
+def test_runtime_v2_creates_scheduler_job_ids_atomically(tmp_path):
+    store = RuntimeV2Store(tmp_path / "runtime.db")
+
+    def create_job(index: int) -> str:
+        row = store.create_scheduler_job(
+            crontab=f"{index % 60} 9 * * *",
+            instruction=f"task {index}",
+            owner_user_id=f"owner-{index}",
+            platform="telegram",
+            chat_id=f"chat-{index}",
+        )
+        return str(row["id"])
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        ids = list(pool.map(create_job, range(20)))
+
+    assert len(ids) == 20
+    assert len(set(ids)) == 20
+    assert sorted(int(item) for item in ids) == list(range(1, 21))
 
 
 def test_runtime_v2_expires_stale_waiting_user_turn_and_task(tmp_path):

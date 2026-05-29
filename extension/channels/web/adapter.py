@@ -241,6 +241,29 @@ class WebAdapter(BotAdapter):
             session_id = self._safe_text(event.get("session_id")) or self._safe_text(
                 payload.get("session_id")
             )
+            runtime_session_id = self._safe_text(payload.get("runtime_v2_session_id"))
+            runtime_turn_id = self._safe_text(payload.get("runtime_v2_turn_id"))
+            if runtime_session_id:
+                if runtime_turn_id:
+                    try:
+                        runtime_v2.update_turn_status(
+                            runtime_turn_id,
+                            "failed",
+                            error=str(exc),
+                            metadata={"handler": "web_adapter"},
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to mark Runtime v2 turn %s as failed",
+                            runtime_turn_id,
+                            exc_info=True,
+                        )
+                runtime_event_bus.publish(
+                    session_id=runtime_session_id,
+                    turn_id=runtime_turn_id,
+                    event_type="error",
+                    payload={"message": str(exc), "source": "web_adapter"},
+                )
             if owner_user_id and session_id:
                 await append_outbound_event(
                     owner_user_id=owner_user_id,
@@ -741,7 +764,9 @@ class WebAdapter(BotAdapter):
                     },
                 )
             except Exception:
-                logger.warning("Runtime v2 web artifact delivery failed.", exc_info=True)
+                logger.warning(
+                    "Runtime v2 web artifact delivery failed.", exc_info=True
+                )
         return response
 
     async def delete_message(

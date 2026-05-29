@@ -27,9 +27,7 @@ def _session_owner_user_id(session_id: str, user_id: int | str | None = None) ->
     if owner:
         return owner
     existing = runtime_v2.get_session(session_id)
-    return str(existing.get("platform_user_id") or "").strip() or str(
-        SINGLE_USER_SCOPE
-    )
+    return str(existing.get("platform_user_id") or "").strip() or str(SINGLE_USER_SCOPE)
 
 
 def _to_int_id(value: Any) -> int:
@@ -52,6 +50,11 @@ def _normalize_scheduled_task(raw: dict[str, Any]) -> dict[str, Any]:
         "platform": str(raw.get("platform") or "telegram").strip() or "telegram",
         "chat_id": str(raw.get("chat_id") or "").strip(),
         "session_id": session_id,
+        "user_id": str(
+            raw.get("platform_user_id")
+            or metadata.get("created_by_user_id")
+            or SINGLE_USER_SCOPE
+        ).strip(),
         "need_push": bool(metadata.get("need_push", True)),
         "is_active": bool(raw.get("enabled", 1)),
         "created_at": str(raw.get("created_at") or now_iso()),
@@ -109,19 +112,10 @@ async def add_scheduled_task(
     need_push: bool = True,
 ) -> int:
     _ = session_id
-    task_id = runtime_v2.next_scheduler_job_id()
-    scheduler_session_id = _ensure_scheduler_session(
-        task_id,
-        instruction=instruction,
-        user_id=user_id,
-        platform=platform,
-        chat_id=chat_id,
-    )
-    runtime_v2.upsert_scheduler_job(
-        job_id=str(task_id),
-        session_id=scheduler_session_id,
+    job = runtime_v2.create_scheduler_job(
         crontab=str(crontab or "").strip(),
         instruction=str(instruction or "").strip(),
+        owner_user_id=_default_owner_user_id(user_id),
         platform=str(platform or "telegram").strip() or "telegram",
         chat_id=str(chat_id or "").strip(),
         enabled=True,
@@ -130,7 +124,7 @@ async def add_scheduled_task(
             "created_by_user_id": str(user_id or "").strip(),
         },
     )
-    return int(task_id)
+    return int(job.get("id") or 0)
 
 
 async def get_all_active_tasks(

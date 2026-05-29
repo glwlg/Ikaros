@@ -614,6 +614,7 @@ class RuntimeV2Store:
         turn_id: str = "",
         after_seq: int = 0,
         limit: int = 200,
+        latest: bool = False,
     ) -> list[dict[str, Any]]:
         clauses = ["session_id = ?", "seq > ?"]
         args: list[Any] = [_safe_text(session_id, 180), int(after_seq or 0)]
@@ -621,16 +622,19 @@ class RuntimeV2Store:
             clauses.append("turn_id = ?")
             args.append(_safe_text(turn_id, 180))
         args.append(max(1, int(limit or 1)))
+        order = "DESC" if latest else "ASC"
         with self._lock, self._connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM events
                 WHERE {' AND '.join(clauses)}
-                ORDER BY seq ASC
+                ORDER BY seq {order}
                 LIMIT ?
                 """,
                 args,
             ).fetchall()
+            if latest:
+                rows = list(reversed(rows))
             return [_row_to_dict(row) for row in rows]
 
     def get_kernel_session(self, *, session_id: str, provider: str) -> dict[str, Any]:
@@ -1394,6 +1398,93 @@ class RuntimeV2Store:
                 conn.execute("SELECT * FROM scheduler_jobs WHERE id = ?", (safe_job_id,)).fetchone()
             )
 
+    def create_scheduler_job(
+        self,
+        *,
+        crontab: str,
+        instruction: str,
+        owner_user_id: str = "",
+        platform: str = "",
+        chat_id: str = "",
+        enabled: bool = True,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = _now_iso()
+        with self._lock, self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute("SELECT id FROM scheduler_jobs").fetchall()
+            max_id = 0
+            for row in rows:
+                try:
+                    max_id = max(max_id, int(str(row["id"] or "").strip()))
+                except Exception:
+                    continue
+            while True:
+                job_id = str(max_id + 1)
+                session_id = f"scheduler-task-{job_id}"
+                if not conn.execute(
+                    "SELECT 1 FROM scheduler_jobs WHERE id = ?", (job_id,)
+                ).fetchone() and not conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone():
+                    break
+                max_id += 1
+            owner = _safe_text(owner_user_id, 160)
+            session_metadata = {
+                "scheduled_task_id": job_id,
+                "delivery_platform": _safe_text(platform, 64).lower(),
+                "delivery_chat_id": _safe_text(chat_id, 160),
+            }
+            job_metadata = dict(metadata or {})
+            if owner:
+                job_metadata.setdefault("created_by_user_id", owner)
+            conn.execute(
+                """
+                INSERT INTO sessions(
+                    id, kind, platform, platform_user_id, title,
+                    created_at, updated_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    "scheduled_task",
+                    "scheduler",
+                    owner,
+                    _safe_text(instruction, 240),
+                    now,
+                    now,
+                    _json_dumps(session_metadata),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO scheduler_jobs(
+                    id, session_id, crontab, instruction, platform, chat_id,
+                    enabled, created_at, updated_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    session_id,
+                    _safe_text(crontab, 120),
+                    str(instruction or ""),
+                    _safe_text(platform, 64).lower(),
+                    _safe_text(chat_id, 160),
+                    1 if enabled else 0,
+                    now,
+                    now,
+                    _json_dumps(job_metadata),
+                ),
+            )
+            conn.commit()
+            return _row_to_dict(
+                conn.execute(
+                    "SELECT * FROM scheduler_jobs WHERE id = ?", (job_id,)
+                ).fetchone()
+            )
+
     def get_scheduler_job(self, job_id: str) -> dict[str, Any]:
         with self._lock, self._connection() as conn:
             return _row_to_dict(
@@ -1427,7 +1518,8 @@ class RuntimeV2Store:
         with self._lock, self._connection() as conn:
             rows = conn.execute(
                 f"""
-                SELECT j.* FROM scheduler_jobs j
+                SELECT j.*, s.platform_user_id AS platform_user_id
+                FROM scheduler_jobs j
                 LEFT JOIN sessions s ON s.id = j.session_id
                 {where}
                 ORDER BY j.updated_at DESC, j.id ASC

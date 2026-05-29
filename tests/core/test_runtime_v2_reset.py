@@ -57,3 +57,28 @@ def test_runtime_v2_reset_dry_run_does_not_touch_files(tmp_path):
     assert result["dry_run"] is True
     assert result["runtime_initialized"] is True
     assert (data_root / "runtime.db").read_bytes() == b"old runtime"
+
+
+def test_runtime_v2_reset_uses_configured_runtime_db_path(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    data_root = tmp_path / "data"
+    backup_root = tmp_path / "backups"
+    runtime_db = tmp_path / "runtime" / "live.db"
+    repo_root.mkdir()
+    data_root.mkdir()
+    runtime_db.parent.mkdir(parents=True)
+    runtime_db.write_bytes(b"old configured runtime")
+    monkeypatch.setenv("IKAROS_RUNTIME_DB_PATH", str(runtime_db))
+
+    result = prepare_runtime_v2_reset(
+        root=repo_root,
+        data_root=data_root,
+        backup_root=backup_root,
+        dry_run=False,
+    )
+
+    backup_dir = Path(result["backup_dir"])
+    assert (backup_dir / "live.db").read_bytes() == b"old configured runtime"
+    assert runtime_db.exists()
+    assert runtime_db.read_bytes() != b"old configured runtime"
+    assert not (data_root / "runtime.db").exists()
