@@ -69,6 +69,7 @@ def test_runtime_v2_records_session_turn_event_artifact_and_delivery(tmp_path):
     assert event["seq"] == 1
     assert artifact["kind"] == "photo"
     assert artifact["sha256"]
+    assert store.get_artifact(artifact["id"])["path"] == str(image)
     assert delivery["status"] == "delivered"
     assert store.list_events(session_id=session["id"])[0]["payload"]["text"] == "我来画"
     assert store.get_turn(turn["id"])["input_text"] == "画一张图"

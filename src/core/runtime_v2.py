@@ -885,6 +885,18 @@ class RuntimeV2Store:
             ).fetchall()
             return [_row_to_dict(row) for row in rows]
 
+    def get_artifact(self, artifact_id: str) -> dict[str, Any]:
+        safe_artifact_id = _safe_text(artifact_id, 180)
+        if not safe_artifact_id:
+            return {}
+        with self._lock, self._connection() as conn:
+            return _row_to_dict(
+                conn.execute(
+                    "SELECT * FROM artifacts WHERE id = ?",
+                    (safe_artifact_id,),
+                ).fetchone()
+            )
+
     def record_delivery(
         self,
         *,

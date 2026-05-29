@@ -348,9 +348,15 @@ async def session_stream(
 
     async def event_stream():
         last_seq = int(after or 0)
-        runtime_session = runtime_v2.get_session(session_id)
         while True:
             if await request.is_disconnected():
+                return
+            runtime_session = runtime_v2.get_session(session_id)
+            if runtime_session and not runtime_session_visible_to_user(
+                _user_id(user),
+                session_id,
+                source_user_ids=source_user_ids,
+            ):
                 return
             if runtime_session:
                 events = runtime_v2.list_events(
@@ -423,19 +429,34 @@ async def upload_file(
 async def download_chat_file(
     file_id: str,
     user: User = Depends(require_viewer),
+    session: AsyncSession = Depends(get_async_session),
 ):
     record = await get_file_record(file_id)
-    if not isinstance(record, dict):
+    if isinstance(record, dict):
+        if str(record.get("owner_user_id") or "") != _user_id(user):
+            raise HTTPException(status_code=403, detail="没有访问权限")
+        path = Path(str(record.get("path") or "")).resolve()
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="文件不存在")
+        return FileResponse(
+            path,
+            media_type=str(record.get("mime_type") or "application/octet-stream"),
+            filename=str(record.get("name") or path.name),
+        )
+
+    artifact = runtime_v2.get_artifact(file_id)
+    if not artifact:
         raise HTTPException(status_code=404, detail="文件不存在")
-    if str(record.get("owner_user_id") or "") != _user_id(user):
-        raise HTTPException(status_code=403, detail="没有访问权限")
-    path = Path(str(record.get("path") or "")).resolve()
+    source_user_ids = await _source_user_ids(user, session)
+    artifact_session_id = str(artifact.get("session_id") or "").strip()
+    _assert_runtime_session_access(artifact_session_id, user, source_user_ids)
+    path = Path(str(artifact.get("path") or "")).resolve()
     if not path.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(
         path,
-        media_type=str(record.get("mime_type") or "application/octet-stream"),
-        filename=str(record.get("name") or path.name),
+        media_type=str(artifact.get("mime") or "application/octet-stream"),
+        filename=str(artifact.get("filename") or path.name),
     )
 
 

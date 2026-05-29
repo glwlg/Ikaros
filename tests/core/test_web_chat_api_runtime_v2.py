@@ -307,6 +307,65 @@ def test_web_chat_api_stream_reads_runtime_v2_events(web_chat_api_runtime):
     assert turn_id in body
 
 
+@pytest.mark.asyncio
+async def test_web_chat_stream_switches_to_runtime_v2_after_session_is_created(
+    web_chat_api_runtime,
+    monkeypatch,
+):
+    _app, runtime_store = web_chat_api_runtime
+
+    async def _no_sleep(_seconds):
+        return None
+
+    class _Request:
+        async def is_disconnected(self):
+            return False
+
+    monkeypatch.setattr(web_chat.asyncio, "sleep", _no_sleep)
+    user = User(
+        id=50101,
+        email="runtime-v2@example.test",
+        hashed_password="x",
+        is_active=True,
+        is_verified=True,
+        role=UserRole.ADMIN,
+        username="runtime-v2",
+        display_name="Runtime v2 Tester",
+    )
+    response = await web_chat.session_stream(
+        "late-runtime-session",
+        _Request(),
+        after=0,
+        once=False,
+        user=user,
+        session=SimpleNamespace(),
+    )
+    iterator = response.body_iterator
+    assert await anext(iterator) == ": keep-alive\n\n"
+
+    session = runtime_store.ensure_session(
+        session_id="late-runtime-session",
+        kind="web_workspace",
+        platform="web",
+        platform_user_id=str(user.id),
+    )
+    turn = runtime_store.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="late stream",
+    )
+    runtime_store.append_event(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        event_type="assistant_message_final",
+        payload={"text": "late runtime output"},
+    )
+
+    streamed = await anext(iterator)
+    assert "event: assistant_message_final" in streamed
+    assert "late runtime output" in streamed
+
+
 def test_web_chat_api_context_delivers_artifact_through_runtime_delivery(
     web_chat_api_runtime,
     tmp_path,
@@ -375,6 +434,57 @@ def test_web_chat_api_context_delivers_artifact_through_runtime_delivery(
     assert "event: artifact_delivered" in body
     assert "event: artifact_created" in body
     assert "rv2-video.mp4" in body
+
+
+def test_web_chat_api_serves_owned_runtime_v2_artifact_file(
+    web_chat_api_runtime,
+    tmp_path,
+):
+    app, runtime_store = web_chat_api_runtime
+    document_path = tmp_path / "runtime-artifact.txt"
+    document_path.write_text("runtime artifact body", encoding="utf-8")
+    session = runtime_store.ensure_session(
+        session_id="scheduler-task-artifact-download",
+        kind="scheduled_task",
+        platform="scheduler",
+        platform_user_id=SINGLE_USER_SCOPE,
+        title="Runtime artifact download",
+    )
+    turn = runtime_store.create_turn(
+        session_id=session["id"],
+        source="scheduler",
+        input_text="生成文件",
+    )
+    artifact = runtime_store.record_artifact(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        kind="document",
+        path=str(document_path),
+        source="test",
+    )
+    runtime_store.append_event(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        event_type="artifact_created",
+        payload={
+            "artifact_id": artifact["id"],
+            "kind": "document",
+            "filename": artifact["filename"],
+            "path": artifact["path"],
+            "mime": artifact["mime"],
+        },
+    )
+
+    with TestClient(app) as client:
+        messages = client.get(
+            "/api/v1/web-chat/sessions/scheduler-task-artifact-download/messages"
+        ).json()["items"]
+        file_id = messages[-1]["attachments"][0]["file_id"]
+        response = client.get(f"/api/v1/web-chat/files/{file_id}")
+
+    assert response.status_code == 200
+    assert response.content == b"runtime artifact body"
+    assert response.headers["content-type"].startswith("text/plain")
 
 
 def test_web_chat_api_runtime_trace_includes_turn_events_artifacts_and_deliveries(

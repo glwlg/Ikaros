@@ -1313,6 +1313,11 @@ class CodexKernelProvider:
         )
         needs_user = self._needs_user(result)
         output_text = self._output_text(result)
+        runtime_result_status = _runtime_status_for_codex_result(
+            result,
+            needs_user=needs_user,
+        )
+        runtime_task_id = _safe_text(active_task.get("runtime_v2_task_id"), 180)
         runtime_v2.update_turn_status(
             runtime_turn_id,
             "running",
@@ -1324,7 +1329,7 @@ class CodexKernelProvider:
         )
         runtime_v2.update_turn_status(
             runtime_turn_id,
-            _runtime_status_for_codex_result(result, needs_user=needs_user),
+            runtime_result_status,
             error="" if bool(result.get("ok")) else output_text,
             external_turn_id=_safe_text(result.get("turn_id"), 160),
             metadata={
@@ -1333,6 +1338,18 @@ class CodexKernelProvider:
                 "stop_reason": _safe_text(result.get("stop_reason"), 80),
             },
         )
+        if runtime_task_id:
+            with contextlib.suppress(Exception):
+                runtime_task = runtime_v2.get_task(runtime_task_id)
+                runtime_task_status = _safe_text(runtime_task.get("status"), 40)
+                if runtime_task and runtime_task_status not in TERMINAL_STATUSES:
+                    if runtime_task_status != "running":
+                        runtime_v2.update_task_status(runtime_task_id, "running")
+                    if runtime_result_status != "running":
+                        runtime_v2.update_task_status(
+                            runtime_task_id,
+                            runtime_result_status,
+                        )
         if output_text:
             runtime_event_bus.publish(
                 session_id=session_id,
@@ -1371,9 +1388,7 @@ class CodexKernelProvider:
                 turn_id=_safe_text(result.get("turn_id"), 160),
                 runtime_session_id=session_id,
                 runtime_turn_id=runtime_turn_id,
-                runtime_v2_task_id=_safe_text(
-                    active_task.get("runtime_v2_task_id"), 180
-                ),
+                runtime_v2_task_id=runtime_task_id,
             )
             return {
                 "handled": True,

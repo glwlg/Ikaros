@@ -806,6 +806,31 @@ async def test_codex_waiting_resume_uses_existing_thread(monkeypatch):
             "codex_thread_id": "thread-existing",
         },
     )
+    session = codex_kernel_module.runtime_v2.ensure_session(
+        session_id="telegram:u-codex-resume:main",
+        platform="telegram",
+        platform_user_id="u-codex-resume",
+    )
+    runtime_turn = codex_kernel_module.runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="等待确认",
+        status="running",
+    )
+    codex_kernel_module.runtime_v2.update_turn_status(
+        runtime_turn["id"],
+        "waiting_user",
+    )
+    runtime_task = codex_kernel_module.runtime_v2.create_task(
+        session_id=session["id"],
+        turn_id=runtime_turn["id"],
+        goal=task.goal,
+        status="running",
+    )
+    codex_kernel_module.runtime_v2.update_task_status(
+        runtime_task["id"],
+        "waiting_user",
+    )
     active = {
         "id": "runtime-codex-resume",
         "session_task_id": task.task_id,
@@ -818,6 +843,9 @@ async def test_codex_waiting_resume_uses_existing_thread(monkeypatch):
         "kernel_provider": "codex",
         "kernel_status": "waiting_user",
         "codex_thread_id": "thread-existing",
+        "runtime_v2_session_id": session["id"],
+        "runtime_v2_turn_id": runtime_turn["id"],
+        "runtime_v2_task_id": runtime_task["id"],
     }
     channel_runtime_store.set_active_task(
         active,
@@ -869,6 +897,10 @@ async def test_codex_waiting_resume_uses_existing_thread(monkeypatch):
     assert prompt_kwargs["platform"] == "telegram"
     stored = await task_inbox.get(task.task_id)
     assert stored.status == "completed"
+    assert (
+        codex_kernel_module.runtime_v2.get_task(runtime_task["id"])["status"]
+        == "succeeded"
+    )
     assert await heartbeat_store.get_session_active_task("u-codex-resume") is None
 
 
