@@ -32,6 +32,7 @@ from web_channel.store import (
     list_session_projections,
     register_artifact_file,
     register_upload_file,
+    runtime_session_visible_to_user,
     upsert_session_message,
 )
 
@@ -63,6 +64,22 @@ async def _source_user_ids(user: User, session: AsyncSession) -> list[str]:
         seen.add(safe)
         output.append(safe)
     return output
+
+
+def _assert_runtime_session_access(
+    session_id: str,
+    user: User,
+    source_user_ids: list[str] | tuple[str, ...],
+) -> None:
+    if not runtime_v2.get_session(session_id):
+        return
+    if runtime_session_visible_to_user(
+        _user_id(user),
+        session_id,
+        source_user_ids=source_user_ids,
+    ):
+        return
+    raise HTTPException(status_code=404, detail="会话不存在")
 
 
 def _message_payload_for_user_event(
@@ -151,6 +168,7 @@ async def session_messages(
     session: AsyncSession = Depends(get_async_session),
 ):
     source_user_ids = await _source_user_ids(user, session)
+    _assert_runtime_session_access(session_id, user, source_user_ids)
     projection = await get_session_projection(
         _user_id(user),
         session_id,
@@ -178,6 +196,7 @@ async def session_deliveries(
     session: AsyncSession = Depends(get_async_session),
 ):
     source_user_ids = await _source_user_ids(user, session)
+    _assert_runtime_session_access(session_id, user, source_user_ids)
     projection = await get_session_projection(
         _user_id(user),
         session_id,
@@ -199,6 +218,7 @@ async def session_trace(
     session: AsyncSession = Depends(get_async_session),
 ):
     source_user_ids = await _source_user_ids(user, session)
+    _assert_runtime_session_access(session_id, user, source_user_ids)
     projection = await get_session_projection(
         _user_id(user),
         session_id,
@@ -216,7 +236,10 @@ async def create_session_event(
     session_id: str,
     payload: WebInboundEventCreate,
     user: User = Depends(require_viewer),
+    session: AsyncSession = Depends(get_async_session),
 ):
+    source_user_ids = await _source_user_ids(user, session)
+    _assert_runtime_session_access(session_id, user, source_user_ids)
     projection = await create_session_projection(
         user_id=_user_id(user),
         session_id=session_id,
@@ -318,7 +341,11 @@ async def session_stream(
     after: int = Query(default=0, ge=0),
     once: bool = Query(default=False),
     user: User = Depends(require_viewer),
+    session: AsyncSession = Depends(get_async_session),
 ):
+    source_user_ids = await _source_user_ids(user, session)
+    _assert_runtime_session_access(session_id, user, source_user_ids)
+
     async def event_stream():
         last_seq = int(after or 0)
         runtime_session = runtime_v2.get_session(session_id)
@@ -368,7 +395,11 @@ async def upload_file(
     file: UploadFile = File(...),
     session_id: str = Query(default=""),
     user: User = Depends(require_viewer),
+    session: AsyncSession = Depends(get_async_session),
 ):
+    if str(session_id or "").strip():
+        source_user_ids = await _source_user_ids(user, session)
+        _assert_runtime_session_access(session_id, user, source_user_ids)
     suffix = Path(str(file.filename or "")).suffix
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
         tmp_path = Path(handle.name)
@@ -416,6 +447,7 @@ async def create_tts_audio(
     session: AsyncSession = Depends(get_async_session),
 ):
     source_user_ids = await _source_user_ids(user, session)
+    _assert_runtime_session_access(session_id, user, source_user_ids)
     messages = await get_session_messages(
         _user_id(user),
         session_id,

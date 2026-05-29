@@ -79,6 +79,25 @@ def test_runtime_v2_records_session_turn_event_artifact_and_delivery(tmp_path):
     ]
 
 
+def test_runtime_v2_ensure_session_preserves_existing_owner(tmp_path):
+    store = RuntimeV2Store(tmp_path / "runtime.db")
+    store.ensure_session(
+        session_id="owned-session",
+        platform="telegram",
+        platform_user_id="owner-1",
+    )
+
+    updated = store.ensure_session(
+        session_id="owned-session",
+        platform="web",
+        platform_user_id="owner-2",
+        title="Attempted takeover",
+    )
+
+    assert updated["platform_user_id"] == "owner-1"
+    assert store.get_session("owned-session")["platform_user_id"] == "owner-1"
+
+
 def test_runtime_v2_closes_sqlite_connections_between_operations(tmp_path):
     db_path = tmp_path / "runtime.db"
     store = RuntimeV2Store(db_path)

@@ -122,6 +122,49 @@ async def test_ensure_runtime_v2_task_creates_session_turn_and_task(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_ensure_runtime_v2_task_replaces_stale_terminal_task(
+    tmp_path,
+    monkeypatch,
+):
+    runtime_store = RuntimeV2Store(tmp_path / "runtime.db")
+    monkeypatch.setattr(context_module, "runtime_v2", runtime_store)
+    session = runtime_store.ensure_session(
+        session_id="telegram:u-1:main",
+        platform="telegram",
+        platform_user_id="u-1",
+    )
+    old_turn = runtime_store.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="旧任务",
+        status="running",
+    )
+    runtime_store.update_turn_status(old_turn["id"], "succeeded")
+    old_task = runtime_store.create_task(
+        session_id=session["id"],
+        turn_id=old_turn["id"],
+        goal="旧任务",
+        status="running",
+    )
+    runtime_store.update_task_status(old_task["id"], "succeeded")
+
+    user_data = {
+        "runtime_v2_session_id": session["id"],
+        "runtime_v2_turn_id": old_turn["id"],
+        "runtime_v2_task_id": old_task["id"],
+    }
+    runtime_ctx = _runtime_context(session_id=session["id"], user_data=user_data)
+
+    task_id = await runtime_ctx.ensure_runtime_v2_task(task_goal="新任务")
+
+    assert task_id != old_task["id"]
+    assert runtime_ctx.user_data["runtime_v2_task_id"] == task_id
+    assert runtime_ctx.user_data["runtime_v2_turn_id"] != old_turn["id"]
+    assert runtime_store.get_task(task_id)["status"] == "running"
+    assert runtime_store.get_task(task_id)["goal"] == "新任务"
+
+
+@pytest.mark.asyncio
 async def test_mark_ikaros_loop_started_updates_task_inbox(monkeypatch):
     calls = []
 

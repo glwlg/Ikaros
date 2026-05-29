@@ -1370,7 +1370,7 @@ class CodexKernelProvider:
                 thread_id=_safe_text(result.get("thread_id"), 160),
                 turn_id=_safe_text(result.get("turn_id"), 160),
                 runtime_session_id=session_id,
-                runtime_turn_id=_safe_text(active_task.get("runtime_v2_turn_id"), 180),
+                runtime_turn_id=runtime_turn_id,
                 runtime_v2_task_id=_safe_text(
                     active_task.get("runtime_v2_task_id"), 180
                 ),

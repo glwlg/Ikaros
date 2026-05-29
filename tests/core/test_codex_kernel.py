@@ -873,6 +873,98 @@ async def test_codex_waiting_resume_uses_existing_thread(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_codex_waiting_resume_stores_new_waiting_turn(monkeypatch):
+    task = await task_inbox.submit(
+        source="user_chat",
+        goal="继续后还要确认",
+        user_id="u-codex-resume-wait",
+        metadata={
+            "kernel_provider": "codex",
+            "kernel_status": "waiting_user",
+            "codex_thread_id": "thread-existing-wait",
+        },
+    )
+    session = codex_kernel_module.runtime_v2.ensure_session(
+        session_id="telegram:u-codex-resume-wait:main",
+        platform="telegram",
+        platform_user_id="u-codex-resume-wait",
+    )
+    old_turn = codex_kernel_module.runtime_v2.create_turn(
+        session_id=session["id"],
+        source="user",
+        input_text="旧确认",
+        status="running",
+    )
+    codex_kernel_module.runtime_v2.update_turn_status(old_turn["id"], "waiting_user")
+    runtime_task = codex_kernel_module.runtime_v2.create_task(
+        session_id=session["id"],
+        turn_id=old_turn["id"],
+        goal=task.goal,
+        status="running",
+    )
+    codex_kernel_module.runtime_v2.update_task_status(
+        runtime_task["id"],
+        "waiting_user",
+    )
+    active = {
+        "id": "runtime-codex-resume-wait",
+        "session_task_id": task.task_id,
+        "task_inbox_id": task.task_id,
+        "goal": task.goal,
+        "status": "waiting_user",
+        "source": "message",
+        "needs_confirmation": True,
+        "confirmation_deadline": "2999-01-01T00:00:00+00:00",
+        "kernel_provider": "codex",
+        "kernel_status": "waiting_user",
+        "codex_thread_id": "thread-existing-wait",
+        "runtime_v2_session_id": session["id"],
+        "runtime_v2_turn_id": old_turn["id"],
+        "runtime_v2_task_id": runtime_task["id"],
+    }
+    channel_runtime_store.set_active_task(
+        active,
+        platform="telegram",
+        platform_user_id="u-codex-resume-wait",
+    )
+    await heartbeat_store.set_session_active_task("u-codex-resume-wait", active)
+    captured = {}
+
+    async def fake_run_turn(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "stdout": "继续后仍需要确认。",
+            "summary": "继续后仍需要确认。",
+            "thread_id": "thread-existing-wait",
+            "turn_id": "turn-next-wait",
+            "transport": "app-server",
+            "stop_reason": "completed",
+            "user_input_requests": [{"params": {"prompt": "again?"}}],
+        }
+
+    monkeypatch.setattr(codex_kernel_provider, "_run_turn", fake_run_turn)
+
+    result = await codex_kernel_provider.resume_waiting_task(
+        user_id="u-codex-resume-wait",
+        platform="telegram",
+        user_message="继续",
+        source="text",
+    )
+
+    active_after = await heartbeat_store.get_session_active_task(
+        "u-codex-resume-wait"
+    )
+    assert result["ok"] is True
+    assert active_after["runtime_v2_turn_id"] == captured["runtime_turn_id"]
+    assert active_after["runtime_v2_turn_id"] != old_turn["id"]
+    assert (
+        codex_kernel_module.runtime_v2.get_turn(captured["runtime_turn_id"])["status"]
+        == "waiting_user"
+    )
+
+
+@pytest.mark.asyncio
 async def test_codex_kernel_keeps_app_server_client_resident(monkeypatch):
     await codex_kernel_module.close_persistent_codex_kernel_client()
 

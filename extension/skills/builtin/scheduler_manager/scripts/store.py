@@ -14,8 +14,22 @@ def scheduler_task_session_id(task_id: int | str) -> str:
     return f"scheduler-task-{safe or 'unknown'}"
 
 
-def _owner_user_id(_user_id: int | str | None = None) -> str:
-    return str(SINGLE_USER_SCOPE)
+def _owner_user_id(user_id: int | str | None = None) -> str:
+    return str(user_id or "").strip()
+
+
+def _default_owner_user_id(user_id: int | str | None = None) -> str:
+    return _owner_user_id(user_id) or str(SINGLE_USER_SCOPE)
+
+
+def _session_owner_user_id(session_id: str, user_id: int | str | None = None) -> str:
+    owner = _owner_user_id(user_id)
+    if owner:
+        return owner
+    existing = runtime_v2.get_session(session_id)
+    return str(existing.get("platform_user_id") or "").strip() or str(
+        SINGLE_USER_SCOPE
+    )
 
 
 def _to_int_id(value: Any) -> int:
@@ -58,7 +72,7 @@ def _ensure_scheduler_session(
         session_id=session_id,
         kind="scheduled_task",
         platform="scheduler",
-        platform_user_id=_owner_user_id(user_id),
+        platform_user_id=_session_owner_user_id(session_id, user_id),
         title=str(instruction or "")[:80],
         metadata={
             "scheduled_task_id": str(task_id or "").strip(),
@@ -67,6 +81,22 @@ def _ensure_scheduler_session(
         },
     )
     return session_id
+
+
+def _get_scheduler_job_for_user(
+    task_id: int | str,
+    user_id: int | str | None = None,
+) -> dict[str, Any]:
+    existing = runtime_v2.get_scheduler_job(str(int(task_id)))
+    if not existing:
+        return {}
+    owner = _owner_user_id(user_id)
+    if not owner:
+        return existing
+    session = runtime_v2.get_session(str(existing.get("session_id") or ""))
+    if str(session.get("platform_user_id") or "").strip() != owner:
+        return {}
+    return existing
 
 
 async def add_scheduled_task(
@@ -126,7 +156,7 @@ async def update_task_status(
     is_active: bool,
     user_id: int | str | None = None,
 ) -> bool:
-    existing = runtime_v2.get_scheduler_job(str(int(task_id)))
+    existing = _get_scheduler_job_for_user(task_id, user_id)
     if not existing:
         return False
     task = _normalize_scheduled_task(existing)
@@ -159,7 +189,7 @@ async def update_task_delivery_target(
     session_id: str = "",
 ) -> bool:
     _ = session_id
-    existing = runtime_v2.get_scheduler_job(str(int(task_id)))
+    existing = _get_scheduler_job_for_user(task_id, user_id)
     if not existing:
         return False
     task = _normalize_scheduled_task(existing)
@@ -186,7 +216,8 @@ async def update_task_delivery_target(
 
 
 async def delete_task(task_id: int, user_id: int | str | None = None) -> None:
-    _ = user_id
+    if not _get_scheduler_job_for_user(task_id, user_id):
+        return
     runtime_v2.delete_scheduler_job(str(int(task_id)))
 
 
@@ -196,7 +227,7 @@ async def update_scheduled_task(
     crontab: str | None = None,
     instruction: str | None = None,
 ) -> bool:
-    existing = runtime_v2.get_scheduler_job(str(int(task_id)))
+    existing = _get_scheduler_job_for_user(task_id, user_id)
     if not existing:
         return False
     task = _normalize_scheduled_task(existing)

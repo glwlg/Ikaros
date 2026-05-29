@@ -459,6 +459,9 @@ def _set_visible_session(
 
     safe_session_id = str(session_id or "").strip()
     ctx.user_data[SESSION_ID_KEY] = safe_session_id
+    ctx.user_data["runtime_v2_session_id"] = safe_session_id
+    ctx.user_data.pop("runtime_v2_turn_id", None)
+    ctx.user_data.pop("runtime_v2_task_id", None)
     if scheduler_session:
         ctx.user_data["codex_kernel_session_platform"] = "scheduler"
         ctx.user_data["codex_kernel_session_user_id"] = SINGLE_USER_SCOPE

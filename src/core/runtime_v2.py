@@ -336,6 +336,9 @@ class RuntimeV2Store:
                 current = _json_loads(row["metadata_json"])
                 if metadata:
                     current.update(dict(metadata))
+                existing_owner = _safe_text(row["platform_user_id"], 160)
+                requested_owner = _safe_text(platform_user_id, 160)
+                next_owner = existing_owner or requested_owner
                 conn.execute(
                     """
                     UPDATE sessions
@@ -347,7 +350,7 @@ class RuntimeV2Store:
                     (
                         _kind(kind),
                         _safe_text(platform, 64).lower(),
-                        _safe_text(platform_user_id, 160),
+                        next_owner,
                         _safe_text(title, 240),
                         now,
                         _json_dumps(current),

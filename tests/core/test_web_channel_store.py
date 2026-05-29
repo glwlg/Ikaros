@@ -99,3 +99,96 @@ async def test_web_sessions_include_runtime_v2_scheduler_session(tmp_path, monke
         source_user_ids=["user"],
     )
     assert [item["content"] for item in messages] == ["抓取 AI 新闻", "AI 新闻结果"]
+
+
+@pytest.mark.asyncio
+async def test_web_session_messages_do_not_expose_unowned_runtime_session(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        web_store, "WEB_CHANNEL_SESSIONS_DIR", tmp_path / "web_sessions_private"
+    )
+    (tmp_path / "web_sessions_private").mkdir(parents=True, exist_ok=True)
+
+    session = runtime_v2.ensure_session(
+        session_id="scheduler-task-private",
+        kind="scheduled_task",
+        platform="scheduler",
+        platform_user_id="owner-user",
+        title="私有定时任务",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="scheduler",
+        input_text="私有请求",
+    )
+    runtime_v2.append_event(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        event_type="assistant_message_final",
+        payload={"text": "私有结果"},
+    )
+
+    projection = await web_store.get_session_projection(
+        "web-1",
+        "scheduler-task-private",
+        source_user_ids=["other-user"],
+    )
+    assert projection["session"]["preferences"] == {}
+    assert (
+        await web_store.get_session_messages(
+            "web-1",
+            "scheduler-task-private",
+            source_user_ids=["other-user"],
+        )
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_web_session_messages_merge_state_rows_with_runtime_artifacts(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        web_store, "WEB_CHANNEL_SESSIONS_DIR", tmp_path / "web_sessions_merged"
+    )
+    (tmp_path / "web_sessions_merged").mkdir(parents=True, exist_ok=True)
+
+    await save_message("owner-user", "model", "历史报告正文", "scheduler-task-merged")
+    session = runtime_v2.ensure_session(
+        session_id="scheduler-task-merged",
+        kind="scheduled_task",
+        platform="scheduler",
+        platform_user_id="owner-user",
+        title="合并定时任务",
+    )
+    turn = runtime_v2.create_turn(
+        session_id=session["id"],
+        source="scheduler",
+        input_text="生成报告",
+    )
+    runtime_v2.append_event(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        event_type="artifact_created",
+        payload={
+            "kind": "document",
+            "filename": "report.txt",
+            "path": "/tmp/report.txt",
+        },
+    )
+
+    messages = await web_store.get_session_messages(
+        "web-1",
+        "scheduler-task-merged",
+        source_user_ids=["owner-user"],
+    )
+
+    assert [item["content"] for item in messages] == [
+        "历史报告正文",
+        "[附件] report.txt",
+    ]
+    assert messages[-1]["attachments"][0]["name"] == "report.txt"

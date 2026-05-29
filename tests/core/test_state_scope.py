@@ -8,6 +8,7 @@ from core.state_migration import migrate_legacy_user_state
 from core.state_paths import all_user_ids, shared_user_path, system_path, user_path
 from extension.skills.builtin.scheduler_manager.scripts.store import (
     add_scheduled_task,
+    delete_task,
     get_all_active_tasks,
     get_all_scheduled_tasks,
     scheduler_task_session_id,
@@ -71,9 +72,10 @@ async def test_state_store_rows_are_shared_across_runtime_user_ids(
     assert [row["message"] for row in await get_pending_reminders("2002")] == [
         "alpha reminder"
     ]
-    assert [row["instruction"] for row in await get_all_active_tasks("2002")] == [
+    assert [row["instruction"] for row in await get_all_active_tasks("1001")] == [
         "alpha"
     ]
+    assert await get_all_active_tasks("2002") == []
     assert [row["stock_code"] for row in await get_user_watchlist("2002")] == ["AAA"]
 
 
@@ -86,12 +88,13 @@ async def test_paused_scheduled_tasks_remain_listable(tmp_path, monkeypatch):
 
     assert await update_task_status(paused_id, False, user_id="1001") is True
 
-    all_rows = await get_all_scheduled_tasks("2002")
+    all_rows = await get_all_scheduled_tasks("1001")
     assert [(row["id"], row["instruction"], row["is_active"]) for row in all_rows] == [
         (paused_id, "paused task", False),
         (active_id, "active task", True),
     ]
-    assert [row["id"] for row in await get_all_active_tasks("2002")] == [active_id]
+    assert [row["id"] for row in await get_all_active_tasks("1001")] == [active_id]
+    assert await get_all_scheduled_tasks("2002") == []
 
 
 @pytest.mark.asyncio
@@ -105,7 +108,7 @@ async def test_scheduled_tasks_get_stable_per_task_sessions(tmp_path, monkeypatc
         session_id="chat-session-that-created-it",
     )
 
-    rows = await get_all_scheduled_tasks("2002")
+    rows = await get_all_scheduled_tasks("1001")
     assert rows[0]["session_id"] == scheduler_task_session_id(task_id)
 
     changed = await update_task_delivery_target(
@@ -117,10 +120,31 @@ async def test_scheduled_tasks_get_stable_per_task_sessions(tmp_path, monkeypatc
     )
 
     assert changed is True
-    rows = await get_all_scheduled_tasks("2002")
+    rows = await get_all_scheduled_tasks("1001")
     assert rows[0]["platform"] == "weixin"
     assert rows[0]["chat_id"] == "wx-chat"
     assert rows[0]["session_id"] == scheduler_task_session_id(task_id)
+    assert await get_all_scheduled_tasks("2002") == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_task_updates_respect_runtime_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    task_id = await add_scheduled_task("0 8 * * *", "owner task", user_id="1001")
+
+    assert (
+        await update_scheduled_task(task_id, "2002", instruction="stolen update")
+        is False
+    )
+    assert await update_task_status(task_id, False, user_id="2002") is False
+    await delete_task(task_id, user_id="2002")
+
+    rows = await get_all_scheduled_tasks("1001")
+    assert [(row["id"], row["instruction"], row["is_active"]) for row in rows] == [
+        (task_id, "owner task", True)
+    ]
+    assert await get_all_scheduled_tasks("2002") == []
 
 
 @pytest.mark.asyncio
@@ -191,10 +215,11 @@ async def test_scheduled_tasks_use_runtime_v2_instead_of_legacy_markdown(
         task_id, "1001", instruction="runtime updated"
     ) is True
 
-    rows = await get_all_active_tasks("2002")
+    rows = await get_all_active_tasks("1001")
     assert [(row["id"], row["instruction"], row["session_id"]) for row in rows] == [
         (task_id, "runtime updated", scheduler_task_session_id(task_id)),
     ]
+    assert await get_all_active_tasks("2002") == []
     assert [row["instruction"] for row in await read_json(scheduled_path, [])] == [
         "legacy blank owner",
         "latest alpha",

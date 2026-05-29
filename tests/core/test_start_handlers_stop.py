@@ -498,6 +498,38 @@ async def test_button_callback_stop_closes_runtime_v2_waiting_task(
     assert "已停止" in ctx.replies[-1]
 
 
+def test_set_visible_session_updates_runtime_session_keys(monkeypatch):
+    fake_channel_store = _FakeChannelRuntimeStore()
+    monkeypatch.setattr(
+        channel_runtime_store_module,
+        "channel_runtime_store",
+        fake_channel_store,
+    )
+
+    ctx = _DummyContext("u-visible")
+    ctx.user_data = {
+        "current_session_id": "old-session",
+        "runtime_v2_session_id": "old-runtime-session",
+        "runtime_v2_turn_id": "old-turn",
+        "runtime_v2_task_id": "old-task",
+    }
+
+    start_handlers._set_visible_session(
+        ctx,
+        session_id="scheduler-task-9",
+        user_id="u-visible",
+        platform="telegram",
+        scheduler_session=True,
+    )
+
+    assert ctx.user_data["current_session_id"] == "scheduler-task-9"
+    assert ctx.user_data["runtime_v2_session_id"] == "scheduler-task-9"
+    assert "runtime_v2_turn_id" not in ctx.user_data
+    assert "runtime_v2_task_id" not in ctx.user_data
+    assert ctx.user_data["codex_kernel_session_platform"] == "scheduler"
+    assert fake_channel_store.current_session_id == "scheduler-task-9"
+
+
 @pytest.mark.asyncio
 async def test_new_command_resets_active_task_state(monkeypatch):
     async def _allow(_ctx):

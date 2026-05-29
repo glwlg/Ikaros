@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 from core.channel_runtime_store import channel_runtime_store
 from core.heartbeat_store import heartbeat_store
-from core.runtime_v2 import runtime_v2
+from core.runtime_v2 import TERMINAL_STATUSES, runtime_v2
 from core.task_inbox import task_inbox
 from core.task_manager import task_manager
 from core.tool_access_store import tool_access_store
@@ -138,6 +138,28 @@ class OrchestratorRuntimeContext:
             return "system"
         return "user"
 
+    def _usable_runtime_v2_task_id(
+        self,
+        task_id: str,
+        *,
+        session_id: str,
+        goal: str,
+    ) -> str:
+        safe_task_id = str(task_id or "").strip()
+        if not safe_task_id:
+            return ""
+        task = runtime_v2.get_task(safe_task_id)
+        if not task:
+            return ""
+        if str(task.get("status") or "").strip() in TERMINAL_STATUSES:
+            return ""
+        if session_id and str(task.get("session_id") or "").strip() != session_id:
+            return ""
+        existing_goal = str(task.get("goal") or "").strip()
+        if goal and existing_goal and existing_goal != goal:
+            return ""
+        return safe_task_id
+
     async def ensure_task_inbox(self, *, task_goal: str) -> str:
         if self.task_inbox_id:
             self.user_data["task_inbox_id"] = self.task_inbox_id
@@ -184,13 +206,6 @@ class OrchestratorRuntimeContext:
         return self.task_inbox_id
 
     async def ensure_runtime_v2_task(self, *, task_goal: str) -> str:
-        if self.runtime_v2_task_id:
-            self.user_data["runtime_v2_task_id"] = self.runtime_v2_task_id
-            return self.runtime_v2_task_id
-        existing = str(self.user_data.get("runtime_v2_task_id") or "").strip()
-        if existing:
-            self.runtime_v2_task_id = existing
-            return existing
         if not self.session_state_enabled:
             return ""
 
@@ -201,6 +216,21 @@ class OrchestratorRuntimeContext:
         session_id = self._runtime_v2_session_id()
         if not session_id:
             return ""
+        existing = str(
+            self.runtime_v2_task_id or self.user_data.get("runtime_v2_task_id") or ""
+        ).strip()
+        usable_existing = self._usable_runtime_v2_task_id(
+            existing,
+            session_id=session_id,
+            goal=goal,
+        )
+        if usable_existing:
+            self.runtime_v2_task_id = usable_existing
+            self.user_data["runtime_v2_task_id"] = usable_existing
+            return usable_existing
+        if existing:
+            self.runtime_v2_task_id = ""
+            self.user_data.pop("runtime_v2_task_id", None)
         session = runtime_v2.ensure_session(
             session_id=session_id,
             kind=self._runtime_v2_session_kind(session_id),
@@ -213,11 +243,17 @@ class OrchestratorRuntimeContext:
             },
         )
         runtime_turn_id = str(self.user_data.get("runtime_v2_turn_id") or "").strip()
-        if runtime_turn_id:
-            current_turn = runtime_v2.get_turn(runtime_turn_id)
-            if current_turn and str(current_turn.get("status") or "") == "queued":
-                runtime_v2.update_turn_status(runtime_turn_id, "running")
-        else:
+        current_turn = runtime_v2.get_turn(runtime_turn_id) if runtime_turn_id else {}
+        current_turn_status = str(current_turn.get("status") or "").strip()
+        if (
+            not current_turn
+            or str(current_turn.get("session_id") or "").strip() != session["id"]
+            or current_turn_status in TERMINAL_STATUSES
+        ):
+            runtime_turn_id = ""
+        if runtime_turn_id and current_turn_status == "queued":
+            runtime_v2.update_turn_status(runtime_turn_id, "running")
+        if not runtime_turn_id:
             turn = runtime_v2.create_turn(
                 session_id=session["id"],
                 source=self._runtime_v2_turn_source(),

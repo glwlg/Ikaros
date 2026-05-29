@@ -125,6 +125,26 @@ def _dedupe_texts(values: list[str]) -> list[str]:
     return output
 
 
+def _allowed_runtime_user_ids(
+    user_id: str,
+    source_user_ids: list[str] | tuple[str, ...] = (),
+) -> set[str]:
+    return set(_dedupe_texts([_safe_text(user_id), *list(source_user_ids or [])]))
+
+
+def runtime_session_visible_to_user(
+    user_id: str,
+    session_id: str,
+    *,
+    source_user_ids: list[str] | tuple[str, ...] = (),
+) -> bool:
+    runtime_session = runtime_v2.get_session(_safe_text(session_id))
+    if not runtime_session:
+        return True
+    owner = _safe_text(runtime_session.get("platform_user_id"))
+    return bool(owner and owner in _allowed_runtime_user_ids(user_id, source_user_ids))
+
+
 def _state_session_kind(session_id: str) -> str:
     if _safe_text(session_id).startswith("scheduler-task-"):
         return "scheduled_task"
@@ -827,6 +847,12 @@ async def get_session_projection(
 
     runtime_session = runtime_v2.get_session(safe_session_id)
     if runtime_session:
+        if not runtime_session_visible_to_user(
+            safe_user_id,
+            safe_session_id,
+            source_user_ids=source_user_ids,
+        ):
+            return _session_default(safe_session_id)
         return {
             "version": 1,
             "session": _runtime_session_projection(runtime_session),
@@ -867,6 +893,13 @@ async def get_session_messages(
         )
         projection_messages = list(payload.get("messages") or [])
 
+    if not runtime_session_visible_to_user(
+        safe_user_id,
+        safe_session_id,
+        source_user_ids=source_user_ids,
+    ):
+        return projection_messages
+
     runtime_messages = _runtime_event_messages(safe_session_id)
     if projection_messages:
         return _merge_projection_and_runtime_messages(
@@ -878,7 +911,7 @@ async def get_session_messages(
         rows = await get_session_entries(source_user_id, safe_session_id)
         if not rows:
             continue
-        return [
+        state_messages = [
             _state_entry_message(
                 item,
                 session_id=safe_session_id,
@@ -887,6 +920,10 @@ async def get_session_messages(
             )
             for index, item in enumerate(rows, start=1)
         ]
+        return _merge_projection_and_runtime_messages(
+            state_messages,
+            runtime_messages,
+        )
 
     if runtime_messages:
         return runtime_messages

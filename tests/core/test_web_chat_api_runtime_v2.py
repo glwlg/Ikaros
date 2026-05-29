@@ -211,6 +211,60 @@ def test_web_chat_api_lists_runtime_v2_scheduled_session(web_chat_api_runtime):
         ]
 
 
+def test_web_chat_api_rejects_unowned_runtime_v2_session(web_chat_api_runtime):
+    app, runtime_store = web_chat_api_runtime
+    session = runtime_store.ensure_session(
+        session_id="scheduler-task-private-api",
+        kind="scheduled_task",
+        platform="scheduler",
+        platform_user_id="other-platform-user",
+        title="别人的定时任务",
+    )
+    turn = runtime_store.create_turn(
+        session_id=session["id"],
+        source="scheduler",
+        input_text="私有输入",
+    )
+    runtime_store.append_event(
+        session_id=session["id"],
+        turn_id=turn["id"],
+        event_type="assistant_message_final",
+        payload={"text": "私有输出"},
+    )
+
+    with TestClient(app) as client:
+        assert (
+            client.get(
+                "/api/v1/web-chat/sessions/scheduler-task-private-api/messages"
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(
+                "/api/v1/web-chat/sessions/scheduler-task-private-api/trace"
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(
+                "/api/v1/web-chat/sessions/scheduler-task-private-api/deliveries"
+            ).status_code
+            == 404
+        )
+        assert (
+            client.post(
+                "/api/v1/web-chat/sessions/scheduler-task-private-api/events",
+                json={"type": "message_text", "text": "篡改"},
+            ).status_code
+            == 404
+        )
+
+    assert (
+        runtime_store.get_session("scheduler-task-private-api")["platform_user_id"]
+        == "other-platform-user"
+    )
+
+
 def test_web_chat_api_stream_reads_runtime_v2_events(web_chat_api_runtime):
     app, runtime_store = web_chat_api_runtime
 
