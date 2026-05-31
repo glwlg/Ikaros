@@ -32,6 +32,8 @@ venv.bak/
 # Project Specific
 data/
 downloads/
+tmp/
+.codex_tmp/
 *.log
 bot_data.db
 bot_data.db-journal
