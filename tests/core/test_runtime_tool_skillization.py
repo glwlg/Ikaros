@@ -56,6 +56,32 @@ def test_tool_registry_builds_skill_tools_from_loader_metadata(monkeypatch):
     assert binding["entrypoint"] == "scripts/execute.py"
 
 
+def test_daily_query_declares_direct_tool_export():
+    registry = ToolRegistry()
+
+    tool_names = {tool["name"] for tool in registry.get_skill_tools(runtime_role="ikaros")}
+    binding = registry.get_skill_tool_binding("daily_query", runtime_role="ikaros")
+
+    assert "daily_query" in tool_names
+    assert binding["skill_name"] == "daily_query"
+    assert binding["entrypoint"] == "scripts/execute.py"
+
+
+def test_article_publisher_declares_direct_tool_export():
+    registry = ToolRegistry()
+
+    tools = registry.get_skill_tools(runtime_role="ikaros")
+    tool_names = {tool["name"] for tool in tools}
+    binding = registry.get_skill_tool_binding("article_publisher", runtime_role="ikaros")
+    tool = next(tool for tool in tools if tool["name"] == "article_publisher")
+
+    assert "article_publisher" in tool_names
+    assert binding["skill_name"] == "article_publisher"
+    assert binding["entrypoint"] == "scripts/execute.py"
+    assert "current_date" in tool["parameters"]["properties"]
+    assert "output_dir" in tool["parameters"]["properties"]
+
+
 @pytest.mark.asyncio
 async def test_runtime_tool_assembler_injects_ikaros_skill_tools():
     assembler = RuntimeToolAssembler(
@@ -79,6 +105,21 @@ async def test_runtime_tool_assembler_injects_ikaros_skill_tools():
         "task_tracker",
     } <= set(names)
     assert "analyze_video" not in names
+
+
+@pytest.mark.asyncio
+async def test_runtime_tool_assembler_keeps_scoped_daily_query_tool():
+    assembler = RuntimeToolAssembler(
+        runtime_user_id="u-1",
+        platform_name="telegram",
+        runtime_tool_allowed=lambda **_kwargs: True,
+        allowed_skill_names={"daily_query"},
+    )
+
+    names = {tool["name"] for tool in await assembler.assemble()}
+
+    assert "daily_query" in names
+    assert "load_skill" in names
 
 
 @pytest.mark.asyncio
@@ -220,6 +261,67 @@ async def test_dispatcher_accepts_ikaros_runtime_only_tools_after_skill_load(
     assert captured["action"] == "status"
     assert captured["session_id"] == "cs-1"
     assert captured["instruction"] == "查看开发任务状态"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_collects_async_generator_skill_tool(monkeypatch):
+    class _FakeModule:
+        @staticmethod
+        async def execute(ctx, params, runtime=None):
+            _ = (ctx, runtime)
+            yield "working"
+            yield {"ok": True, "text": f"weather:{params.get('location')}"}
+
+    monkeypatch.setattr(
+        runtime_tools_module.skill_loader,
+        "get_tool_export",
+        lambda name: (
+            {
+                "name": "daily_query",
+                "skill_name": "daily_query",
+                "entrypoint": "scripts/execute.py",
+                "allowed_roles": ["ikaros"],
+            }
+            if name == "daily_query"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_tools_module.skill_loader,
+        "import_skill_module",
+        lambda skill_name, script_name="execute.py", **_kwargs: (
+            _FakeModule
+            if skill_name == "daily_query" and script_name == "execute.py"
+            else None
+        ),
+    )
+
+    async def append_event(_event: str):
+        return None
+
+    dispatcher = ToolCallDispatcher(
+        runtime_user_id="u-1",
+        platform_name="telegram",
+        task_id="task-daily",
+        task_inbox_id="",
+        task_workspace_root="/tmp",
+        ctx=SimpleNamespace(message=SimpleNamespace(text="明天天气"), user_data={}),
+        runtime=object(),
+        tool_broker=object(),
+        runtime_tool_allowed=lambda **_kwargs: True,
+        todo_mark_step=lambda *_args, **_kwargs: None,
+        append_session_event=append_event,
+    )
+    dispatcher.set_available_tool_names({"daily_query"})
+
+    result = await dispatcher.execute(
+        name="daily_query",
+        args={"query_type": "weather", "location": "无锡"},
+        execution_policy=None,
+        started=time.perf_counter(),
+    )
+
+    assert result == {"ok": True, "text": "weather:无锡"}
 
 
 @pytest.mark.asyncio

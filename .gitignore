@@ -34,6 +34,7 @@ data/
 downloads/
 tmp/
 .codex_tmp/
+tmp_*/
 *.log
 bot_data.db
 bot_data.db-journal

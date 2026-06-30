@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlparse
 import httpx
 
 from api.services.env_config import ensure_admin_user_id_present
-from core.config import DATA_DIR, WEIXIN_DEBUG_UPDATES
+from core.config import DATA_DIR, WEIXIN_DEBUG_UPDATES, WEIXIN_SEND_VIDEO_AS_FILE
 from core.platform.adapter import BotAdapter
 from core.platform.exceptions import MediaDownloadUnavailableError, MessageSendError
 from core.platform.models import UnifiedContext
@@ -118,6 +118,10 @@ class WeixinAdapter(BotAdapter):
     @property
     def can_update_message(self) -> bool:
         return False
+
+    @staticmethod
+    def _video_force_media_kind() -> str:
+        return "file" if WEIXIN_SEND_VIDEO_AS_FILE else ""
 
     @staticmethod
     def _normalize_base_url(value: str) -> str:
@@ -2114,13 +2118,28 @@ class WeixinAdapter(BotAdapter):
         caption: Optional[str] = None,
         **kwargs,
     ) -> Any:
-        filename = kwargs.pop("filename", None)
-        return await self.send_document(
-            chat_id,
-            video,
-            filename=filename,
+        user_id = self._safe_text(chat_id)
+        session_account_id = self._resolve_session_account_id(
+            user_id=user_id,
+            preferred_account_id=self._safe_text(kwargs.get("session_account_id")),
+        )
+        context_token = self._resolve_context_token(
+            user_id=user_id,
+            account_id=session_account_id,
+        )
+        if not context_token:
+            raise MessageSendError(
+                f"Weixin proactive video send is unavailable for {user_id}: no cached context_token."
+            )
+        return await self._send_prepared_media_to_user(
+            user_id=user_id,
+            context_token=context_token,
+            account_id=session_account_id,
+            media=video,
             caption=caption,
-            **kwargs,
+            filename=kwargs.get("filename"),
+            fallback_mime_type="video/mp4",
+            force_media_kind=self._video_force_media_kind(),
         )
 
     async def send_audio(
@@ -2180,9 +2199,7 @@ class WeixinAdapter(BotAdapter):
             caption=caption,
             filename=kwargs.get("filename"),
             fallback_mime_type="video/mp4",
-            # The iLink video item can acknowledge successfully while not
-            # rendering in Weixin clients. Send MP4s as regular files instead.
-            force_media_kind="file",
+            force_media_kind=self._video_force_media_kind(),
         )
 
     async def reply_audio(

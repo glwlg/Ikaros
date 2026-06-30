@@ -212,8 +212,16 @@ def _resolve_article_output_dir(params: dict[str, Any]) -> str:
     )
 
 
-async def _resolve_current_date(ctx: UnifiedContext, topic: str) -> str:
-    requirements = derive_topic_requirements(topic)
+async def _resolve_current_date(
+    ctx: UnifiedContext,
+    topic: str,
+    *,
+    explicit_current_date: str = "",
+) -> str:
+    explicit_current_date = str(explicit_current_date or "").strip()
+    requirements = derive_topic_requirements(topic, current_date=explicit_current_date)
+    if explicit_current_date and requirements["prefer_news"]:
+        return explicit_current_date
     if not requirements["same_day_only"]:
         return ""
 
@@ -647,7 +655,15 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
             }
             return
 
-    current_date = await _resolve_current_date(ctx, topic) if topic else ""
+    current_date = (
+        await _resolve_current_date(
+            ctx,
+            topic,
+            explicit_current_date=str(params.get("current_date") or "").strip(),
+        )
+        if topic
+        else ""
+    )
     output_dir = _resolve_article_output_dir(params)
 
     if stage:

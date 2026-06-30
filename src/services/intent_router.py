@@ -74,6 +74,16 @@ def _render_skill_catalog(candidates: Iterable[ExtensionCandidate]) -> str:
     return "\n".join(lines).strip()
 
 
+def _trigger_matches_dialog(trigger: str, dialog_text: str) -> bool:
+    token = str(trigger or "").strip().lower()
+    text = str(dialog_text or "").strip().lower()
+    if not token or not text:
+        return False
+    if any("\u4e00" <= ch <= "\u9fff" for ch in token):
+        return token in text
+    return bool(re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", text))
+
+
 class IntentRouter:
     """Route the current turn to chat/task mode and shrink skill scope."""
 
@@ -242,13 +252,47 @@ class IntentRouter:
             raise RuntimeError("No candidate routing model available")
         except Exception as exc:
             logger.debug("Intent router failed: %s", exc, exc_info=True)
+            fallback_skills = self._fallback_skills_by_trigger(
+                rendered_dialog,
+                candidate_rows,
+                max_candidates=max_candidates,
+            )
             return RoutingDecision(
                 request_mode="chat",
-                candidate_skills=[],
-                confidence=0.0,
-                reason=f"router_error:{exc}",
+                candidate_skills=fallback_skills,
+                confidence=0.35 if fallback_skills else 0.0,
+                reason=(
+                    f"router_error:{exc};trigger_fallback"
+                    if fallback_skills
+                    else f"router_error:{exc}"
+                ),
                 task_tracking=False,
             )
+
+    @staticmethod
+    def _fallback_skills_by_trigger(
+        dialog_text: str,
+        candidates: list[ExtensionCandidate],
+        *,
+        max_candidates: int,
+    ) -> list[str]:
+        if max_candidates <= 0:
+            return []
+        selected: list[str] = []
+        for candidate in candidates:
+            name = str(candidate.name or "").strip()
+            if not name:
+                continue
+            triggers = [
+                str(item or "").strip()
+                for item in list(candidate.triggers or [])
+                if str(item or "").strip()
+            ]
+            if any(_trigger_matches_dialog(trigger, dialog_text) for trigger in triggers):
+                selected.append(name)
+            if len(selected) >= max(1, int(max_candidates)):
+                break
+        return selected
 
     @staticmethod
     def _resolve_skills(

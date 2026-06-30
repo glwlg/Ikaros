@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, List, cast
 
 from core.channel_runtime_store import channel_runtime_store
+from core.agents import AgentsSdkAssistantRuntime
 from core.config import (
     X_DEPLOYMENT_STAGING_PATH,
     AUTO_RECOVERY_MAX_ATTEMPTS,
@@ -110,6 +111,11 @@ class AgentOrchestrator:
             self.auto_evolve_enabled,
         )
 
+    def _select_assistant_runtime(self) -> Any:
+        if ikaros_kernel_provider() == "agents_sdk":
+            return AgentsSdkAssistantRuntime()
+        return self.ai_service
+
     async def handle_message(self, ctx: UnifiedContext, message_history: list):
         runtime_ctx = OrchestratorRuntimeContext.from_message(ctx)
         user_id = runtime_ctx.user_id
@@ -134,6 +140,11 @@ class AgentOrchestrator:
         dispatched_subagent_labels: Dict[str, str] = {}
         last_user_text = self._extract_last_user_text(message_history)
         routing_text = self._extract_recent_user_text(message_history, max_messages=3)
+        routing_context = self._routing_context_from_user_data(user_data)
+        if routing_context:
+            routing_text = (
+                f"{routing_context}\n\n当前用户消息：{routing_text or last_user_text}"
+            ).strip()
         if not routing_text:
             routing_text = last_user_text
         task_goal = last_user_text or routing_text
@@ -152,6 +163,7 @@ class AgentOrchestrator:
         ) = await self._resolve_extension_candidates(
             message_history=message_history,
             routing_text=routing_text,
+            routing_context=routing_context,
             last_user_text=last_user_text,
             runtime_user_id=user_id_str,
             platform_name=platform_name,
@@ -525,7 +537,8 @@ class AgentOrchestrator:
             return
 
         logger.info("final tools: %s", tools)
-        async for chunk in self.ai_service.generate_response_stream(
+        assistant_runtime = self._select_assistant_runtime()
+        async for chunk in assistant_runtime.generate_response_stream(
             message_history,
             tools=tools,
             tool_executor=tool_executor,
@@ -572,6 +585,7 @@ class AgentOrchestrator:
                 ) = await self._resolve_extension_candidates(
                     message_history=message_history,
                     routing_text=routing_text,
+                    routing_context=routing_context,
                     last_user_text=last_user_text,
                     runtime_user_id=user_id_str,
                     platform_name=platform_name,
@@ -649,7 +663,7 @@ class AgentOrchestrator:
                 event_handler.flags.blocked_reason = ""
                 suppressed_max_turn_warning = ""
 
-                async for chunk in self.ai_service.generate_response_stream(
+                async for chunk in assistant_runtime.generate_response_stream(
                     message_history,
                     tools=tools,
                     tool_executor=tool_executor,
@@ -895,6 +909,7 @@ class AgentOrchestrator:
         message_history: list,
         routing_text: str,
         last_user_text: str,
+        routing_context: str = "",
         runtime_user_id: str,
         platform_name: str,
         explicit_allowed_skill_names: set[str] | None = None,
@@ -922,11 +937,14 @@ class AgentOrchestrator:
                 if candidate.name in explicit_allowed_skill_names
             ]
 
+        dialog_messages = self._extract_recent_dialog_messages(
+            message_history,
+            max_messages=10,
+        )
+        if routing_context:
+            dialog_messages = [{"role": "user", "content": routing_context}] + dialog_messages
         routing_decision = await intent_router.route(
-            dialog_messages=self._extract_recent_dialog_messages(
-                message_history,
-                max_messages=10,
-            ),
+            dialog_messages=dialog_messages,
             candidates=extension_candidates,
             max_candidates=5,
         )
@@ -1021,6 +1039,15 @@ class AgentOrchestrator:
                         texts.append(str(part_text))
             return "\n".join(texts).strip()
         return ""
+
+    @staticmethod
+    def _routing_context_from_user_data(user_data: Dict[str, Any]) -> str:
+        raw = str((user_data or {}).get("routing_context") or "").strip()
+        if not raw:
+            return ""
+        if len(raw) > 1200:
+            raw = raw[-1200:]
+        return f"会话背景：\n{raw}"
 
     def _extract_recent_user_text(
         self,

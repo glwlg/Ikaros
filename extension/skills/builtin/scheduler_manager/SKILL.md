@@ -32,6 +32,7 @@ entrypoint: scripts/execute.py
 ## Commands
 
 - 添加任务：`python scripts/execute.py add --crontab "0 8 * * *" --instruction "查询北京天气" --push true`
+- 添加带日期模板的任务：`python scripts/execute.py add --crontab "0 8 * * *" --instruction "写一篇 {{date:%-m月%-d日}} 全球AI快讯" --push true`
 - 列出任务：`python scripts/execute.py list`
 - 删除任务：`python scripts/execute.py delete <task_id>`
 
@@ -39,3 +40,4 @@ entrypoint: scripts/execute.py
 
 - 周期性或自动运行需求都走这里，不走 `reminder`。
 - `instruction` 尽量保留用户原始意图，不要过度总结。
+- `instruction` 支持在触发时渲染日期/时间模板：`{{date}}`/`{{today}}` 输出 `YYYY-MM-DD`，`{{date:%-m月%-d日}}` 输出中文月日，`{{date-1:%Y-%m-%d}}` 表示昨天，`{{date+1:%Y-%m-%d}}` 表示明天，`{{now:%H:%M}}` 输出当前时间。需要标题或正文包含当天日期时，优先把日期写成模板表达式，而不是让执行模型临场猜。

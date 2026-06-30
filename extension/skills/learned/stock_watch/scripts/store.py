@@ -21,6 +21,10 @@ def _delivery_target_path(user_id: int | str):
     return user_state_path(user_id, "stock_watch", "delivery_target.md")
 
 
+def _last_push_prices_path(user_id: int | str):
+    return user_state_path(user_id, "stock_watch", "last_push_prices.md")
+
+
 def _normalize_delivery_target(raw: dict[str, Any] | None) -> dict[str, str]:
     payload = dict(raw or {})
     return {
@@ -56,6 +60,49 @@ async def set_stock_delivery_target(
         raise ValueError("platform and chat_id are required")
     await storage_service.write(_delivery_target_path(user_id), normalized)
     return normalized
+
+
+async def get_last_stock_push_prices(user_id: int | str) -> dict[str, float]:
+    data = await storage_service.read(_last_push_prices_path(user_id), {})
+    if not isinstance(data, dict):
+        return {}
+    raw_prices = data.get("prices")
+    if not isinstance(raw_prices, dict):
+        return {}
+
+    prices: dict[str, float] = {}
+    for raw_code, raw_price in raw_prices.items():
+        code = str(raw_code or "").strip()
+        if not code:
+            continue
+        try:
+            prices[code] = float(raw_price)
+        except (TypeError, ValueError):
+            continue
+    return prices
+
+
+async def save_last_stock_push_prices(
+    user_id: int | str,
+    quotes: list[dict[str, Any]],
+) -> None:
+    prices: dict[str, float] = {}
+    for quote in quotes:
+        code = str(quote.get("code") or "").strip()
+        if not code:
+            continue
+        try:
+            prices[code] = float(quote.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    await storage_service.write(
+        _last_push_prices_path(user_id),
+        {
+            "updated_at": now_iso(),
+            "prices": prices,
+        },
+    )
 
 
 def _normalize_watchlist_row(raw: dict[str, Any]) -> dict[str, Any]:
@@ -186,8 +233,10 @@ async def get_all_watchlist_users() -> list[tuple[int | str, str]]:
 __all__ = [
     "add_watchlist_stock",
     "get_all_watchlist_users",
+    "get_last_stock_push_prices",
     "get_stock_delivery_target",
     "get_user_watchlist",
     "remove_watchlist_stock",
+    "save_last_stock_push_prices",
     "set_stock_delivery_target",
 ]

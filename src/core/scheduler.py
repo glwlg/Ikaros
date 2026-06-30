@@ -6,6 +6,7 @@ import logging
 import datetime
 import contextlib
 import dateutil.parser
+import re
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from core.background_delivery import push_background_text
@@ -35,6 +36,11 @@ RUNTIME_V2_WAITING_STATUSES = {"waiting_user", "waiting_external"}
 # Global Scheduler Instance
 scheduler = AsyncIOScheduler()
 _scheduler_store_revision: int | None = None
+SCHEDULER_TEMPLATE_RE = re.compile(
+    r"\{\{\s*(?P<name>date|today|now|datetime)"
+    r"(?P<offset>[+-]\d+)?"
+    r"(?::(?P<fmt>[^{}]+))?\s*\}\}"
+)
 
 
 def _scheduled_tasks_store_revision() -> int:
@@ -43,6 +49,32 @@ def _scheduled_tasks_store_revision() -> int:
     except Exception:
         logger.debug("Failed to read scheduler task store revision.", exc_info=True)
         return 0
+
+
+def render_scheduler_instruction_template(
+    instruction: str,
+    *,
+    now: datetime.datetime | None = None,
+) -> str:
+    """Render safe time placeholders in a scheduled task instruction."""
+    raw = str(instruction or "")
+    if "{{" not in raw:
+        return raw
+
+    base_now = now or datetime.datetime.now().astimezone()
+    if base_now.tzinfo is None:
+        base_now = base_now.astimezone()
+
+    def _replace(match: re.Match[str]) -> str:
+        name = str(match.group("name") or "").strip().lower()
+        offset = int(str(match.group("offset") or "0"))
+        fmt = str(match.group("fmt") or "").strip()
+        target = base_now + datetime.timedelta(days=offset)
+        if name in {"date", "today"}:
+            return target.strftime(fmt) if fmt else target.date().isoformat()
+        return target.strftime(fmt) if fmt else target.isoformat(timespec="seconds")
+
+    return SCHEDULER_TEMPLATE_RE.sub(_replace, raw)
 
 
 async def reconcile_scheduler_jobs() -> None:
@@ -353,25 +385,43 @@ async def run_skill_cron_job(
         if scheduled_task_id_text
         else str(session_id or "").strip()
     )
+    run_now = datetime.datetime.now().astimezone()
+    run_date_iso = run_now.date().isoformat()
+    original_instruction = str(instruction or "")
+    rendered_instruction = render_scheduler_instruction_template(
+        original_instruction,
+        now=run_now,
+    )
+    template_rendered = rendered_instruction != original_instruction
+    if not rendered_instruction:
+        rendered_instruction = "Execute scheduled maintenance/run_cron task."
+
     if run_session_id:
         runtime_v2.ensure_session(
             session_id=run_session_id,
             kind="scheduled_task",
             platform="scheduler",
             platform_user_id=user_id_text,
-            title=str(instruction or "")[:80],
+            title=rendered_instruction[:80],
             metadata={
                 "scheduled_task_id": scheduled_task_id_text,
                 "delivery_platform": str(platform or "").strip(),
                 "delivery_chat_id": str(chat_id or "").strip(),
+                "run_date": run_date_iso,
+                "original_instruction": original_instruction,
+                "template_rendered": template_rendered,
             },
         )
         runtime_turn = runtime_v2.create_turn(
             session_id=run_session_id,
             source="scheduler",
-            input_text=instruction,
+            input_text=rendered_instruction,
             kernel_provider="codex",
-            metadata={"scheduled_task_id": scheduled_task_id_text},
+            metadata={
+                "scheduled_task_id": scheduled_task_id_text,
+                "original_instruction": original_instruction,
+                "template_rendered": template_rendered,
+            },
         )
         runtime_turn_id = str(runtime_turn.get("id") or "").strip()
         runtime_event_bus.publish(
@@ -380,21 +430,26 @@ async def run_skill_cron_job(
             event_type="scheduler_triggered",
             payload={
                 "scheduled_task_id": scheduled_task_id_text,
-                "instruction": instruction,
+                "instruction": rendered_instruction,
+                "original_instruction": original_instruction,
                 "platform": platform,
             },
         )
         _mark_scheduler_runtime_turn_running(
             runtime_turn_id,
             scheduled_task_id=scheduled_task_id_text,
-            metadata={"instruction": str(instruction or "")[:500]},
+            metadata={
+                "instruction": rendered_instruction[:500],
+                "original_instruction": original_instruction[:500],
+                "template_rendered": template_rendered,
+            },
         )
     else:
         runtime_turn_id = ""
 
     logger.info(
         "[Cron] Executing scheduled skill: '%s' for user %s on %s session=%s",
-        instruction,
+        rendered_instruction,
         user_id_text,
         platform,
         run_session_id,
@@ -412,17 +467,17 @@ async def run_skill_cron_job(
         mock_user = User(id=user_id_text, username="Cron User", is_bot=False)
         mock_chat = Chat(id=run_session_id or user_id_text, type="private")
         cron_task_id = (
-            f"cron-{scheduled_task_id_text}-{int(datetime.datetime.now().timestamp())}"
+            f"cron-{scheduled_task_id_text}-{int(run_now.timestamp())}"
             if scheduled_task_id_text
-            else f"cron-{int(datetime.datetime.now().timestamp())}"
+            else f"cron-{int(run_now.timestamp())}"
         )
         mock_message = UnifiedMessage(
             id=cron_task_id,
             platform=platform,
             user=mock_user,
             chat=mock_chat,
-            text=instruction,
-            date=datetime.datetime.now(),
+            text=rendered_instruction,
+            date=run_now,
             type=MessageType.TEXT,
             raw_data={
                 "source": "scheduler",
@@ -430,6 +485,9 @@ async def run_skill_cron_job(
                 "session_id": run_session_id,
                 "delivery_platform": str(platform or "").strip(),
                 "delivery_chat_id": str(chat_id or "").strip(),
+                "run_date": run_date_iso,
+                "original_instruction": original_instruction,
+                "template_rendered": template_rendered,
             },
         )
 
@@ -453,27 +511,35 @@ async def run_skill_cron_job(
             if runtime_turn_id:
                 ctx.user_data["runtime_v2_turn_id"] = runtime_turn_id
         ctx.user_data["runtime_task_id"] = cron_task_id
+        ctx.user_data["scheduler_run_date"] = run_date_iso
+        ctx.user_data["scheduler_instruction"] = original_instruction
+        ctx.user_data["scheduler_rendered_instruction"] = rendered_instruction
+        ctx.user_data["routing_context"] = (
+            f"定时任务原始描述：{original_instruction}\n"
+            f"定时任务本次描述：{rendered_instruction}"
+        )
         if scheduled_task_id_text:
             ctx.user_data["scheduled_task_id"] = scheduled_task_id_text
-
-        if not instruction:
-            instruction = "Execute scheduled maintenance/run_cron task."
 
         final_output = []
 
         prompt_text = (
             f"[CRON TASK id={cron_task_id}]\n"
             f"source=cron\n"
+            f"本次执行时间：{run_now.isoformat(timespec='seconds')}\n"
             f"【系统级别最高指令】：你当前正在“执行”一个已被触发的系统定时任务！\n"
             f"请从以下目标描述中提取需要真实执行的查询、分析等动作并**立刻执行它**。\n"
+            f"如果目标描述中包含日期/时间模板表达式，它们已经按本次执行时间渲染完成；请以渲染后的目标描述为准。\n"
             f"如果目标描述里带有“每天/每小时/定时”等字眼，请直接忽略这些时间修饰词，只执行里面提到的查天气、看新闻等实际动作！\n"
             f"**绝对禁止**调用 scheduler_manager 去再次添加、创建新的定时任务（那会导致无限套娃循环）！\n\n"
-            f"目标任务描述：{instruction}"
+            f"目标任务描述：{rendered_instruction}"
         )
+        if template_rendered:
+            prompt_text += f"\n\n原始任务描述：{original_instruction}"
         prepared_input = await build_agent_message_history(
             ctx,
             user_message=prompt_text,
-            inline_input_source_texts=[instruction],
+            inline_input_source_texts=[rendered_instruction],
             strip_refs_from_user_message=False,
             max_inline_inputs=MAX_INLINE_IMAGE_INPUTS,
         )
@@ -483,9 +549,9 @@ async def run_skill_cron_job(
                 user_id_text,
                 "user",
                 (
-                    f"[定时任务 #{scheduled_task_id_text}] {instruction}"
+                    f"[定时任务 #{scheduled_task_id_text}] {rendered_instruction}"
                     if scheduled_task_id_text
-                    else f"[定时任务] {instruction}"
+                    else f"[定时任务] {rendered_instruction}"
                 ),
                 run_session_id,
             )
@@ -511,7 +577,7 @@ async def run_skill_cron_job(
 
             full_response = "".join(final_output).strip()
         report_text = (
-            f"⏰ **定时任务执行报告 ({instruction})**\n\n{full_response}"
+            f"⏰ **定时任务执行报告 ({rendered_instruction})**\n\n{full_response}"
             if full_response
             else ""
         )

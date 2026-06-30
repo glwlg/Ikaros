@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,19 @@ from extension.channels.web.adapter import WebAdapter
 from handlers import ai_handlers
 from shared.queue.jsonl_queue import JsonlTable
 from web_channel import store as web_store
+
+
+def test_scheduler_instruction_template_supports_date_offsets():
+    from core.scheduler import render_scheduler_instruction_template
+
+    now = datetime.datetime(2026, 6, 23, 8, 10, tzinfo=datetime.timezone.utc)
+
+    rendered = render_scheduler_instruction_template(
+        "标题 {{date:%-m月%-d日}}，昨天 {{date-1:%Y-%m-%d}}，时间 {{now:%H:%M}}",
+        now=now,
+    )
+
+    assert rendered == "标题 6月23日，昨天 2026-06-22，时间 08:10"
 
 
 @pytest.fixture
@@ -891,6 +905,68 @@ def test_web_chat_api_scheduler_cron_turn_succeeds_and_is_visible(
     assert [item["role"] for item in messages] == ["user", "assistant"]
     assert messages[0]["content"] == "生成报告"
     assert messages[1]["content"] == "调度完成"
+
+
+def test_scheduler_cron_renders_instruction_templates(
+    web_chat_api_runtime,
+    monkeypatch,
+):
+    import core.agent_input as agent_input_module
+    import core.scheduler as scheduler_module
+    import core.state_store as state_store_module
+    from core.agent_orchestrator import agent_orchestrator
+
+    _app, runtime_store = web_chat_api_runtime
+    event_bus = RuntimeEventBus(runtime_store)
+    captured = {}
+
+    async def _fake_build_history(ctx, *, user_message, **_kwargs):
+        captured["user_message"] = user_message
+        captured["scheduler_run_date"] = ctx.user_data["scheduler_run_date"]
+        captured["routing_context"] = ctx.user_data["routing_context"]
+        return SimpleNamespace(
+            message_history=[{"role": "user", "parts": [{"text": user_message}]}],
+            detected_refs=[],
+            has_inline_inputs=False,
+            truncated_inline_count=0,
+            errors=[],
+        )
+
+    async def _fake_handle_message(_ctx, _message_history):
+        yield "调度完成"
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(scheduler_module, "runtime_v2", runtime_store)
+    monkeypatch.setattr(scheduler_module, "runtime_event_bus", event_bus)
+    monkeypatch.setattr(
+        agent_input_module,
+        "build_agent_message_history",
+        _fake_build_history,
+    )
+    monkeypatch.setattr(agent_orchestrator, "handle_message", _fake_handle_message)
+    monkeypatch.setattr(state_store_module, "create_chat_session", _noop)
+    monkeypatch.setattr(state_store_module, "save_message", _noop)
+
+    asyncio.run(
+        scheduler_module.run_skill_cron_job(
+            "写一篇 {{date:%-m月%-d日}} 全球AI快讯",
+            user_id=SINGLE_USER_SCOPE,
+            platform="web",
+            need_push=False,
+            scheduled_task_id="job-template",
+        )
+    )
+
+    today = captured["scheduler_run_date"]
+    month_day = f"{int(today[5:7])}月{int(today[8:10])}日"
+    prompt = captured["user_message"]
+
+    assert f"写一篇 {month_day} 全球AI快讯" in prompt
+    assert "写一篇 {{date:%-m月%-d日}} 全球AI快讯" in prompt
+    assert "日期/时间模板表达式" in prompt
+    assert f"定时任务本次描述：写一篇 {month_day} 全球AI快讯" in captured["routing_context"]
 
 
 def test_scheduler_cron_preserves_kernel_terminal_runtime_turn(

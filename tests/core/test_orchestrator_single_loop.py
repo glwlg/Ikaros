@@ -164,6 +164,64 @@ async def test_orchestrator_intent_router_narrows_prompt_and_load_skill(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_uses_routing_context_for_scheduler_followup(monkeypatch):
+    orchestrator = AgentOrchestrator()
+    captured = {}
+
+    async def fake_stream(
+        message_history,
+        tools=None,
+        tool_executor=None,
+        system_instruction=None,
+        event_callback=None,
+    ):
+        _ = (message_history, tools, tool_executor, system_instruction, event_callback)
+        yield "ok"
+
+    async def fake_route(**kwargs):
+        dialog = kwargs.get("dialog_messages") or []
+        captured["intent_dialog"] = "\n".join(
+            str(item.get("content") or "") for item in dialog
+        )
+        return RoutingDecision(
+            request_mode="task",
+            candidate_skills=["article_publisher"],
+            reason="scheduler followup",
+            confidence=0.9,
+        )
+
+    def fake_extension_route(user_text, max_candidates=24):
+        _ = max_candidates
+        captured["extension_route_text"] = user_text
+        return [
+            ExtensionCandidate(
+                name="article_publisher",
+                description="公众号文章写作发布",
+                tool_name="ext_article_publisher",
+            )
+        ]
+
+    monkeypatch.setattr(
+        orchestrator.ai_service, "generate_response_stream", fake_stream
+    )
+    monkeypatch.setattr(orchestrator, "_runtime_tool_allowed", lambda **_kwargs: True)
+    monkeypatch.setattr(orchestrator.extension_router, "route", fake_extension_route)
+    monkeypatch.setattr("core.agent_orchestrator.intent_router.route", fake_route)
+
+    ctx = DummyContext()
+    ctx.user_data["routing_context"] = (
+        "定时任务原始描述：用article_publisher技能写公众号AI快讯并发布"
+    )
+    message_history = [{"role": "user", "parts": [{"text": "那你重新写吧"}]}]
+    _ = [chunk async for chunk in orchestrator.handle_message(ctx, message_history)]
+
+    assert "article_publisher" in captured["extension_route_text"]
+    assert "那你重新写吧" in captured["extension_route_text"]
+    assert "article_publisher" in captured["intent_dialog"]
+    assert "那你重新写吧" in captured["intent_dialog"]
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_intent_router_empty_result_removes_load_skill(monkeypatch):
     orchestrator = AgentOrchestrator()
     captured = {}

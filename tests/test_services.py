@@ -251,6 +251,45 @@ class TestIntentRouter:
         assert decision.confidence == 0.75
         assert decision.task_tracking is True
 
+    @pytest.mark.asyncio
+    async def test_intent_router_trigger_fallback_keeps_weather_skill_when_model_unavailable(
+        self, monkeypatch
+    ):
+        from core.extension_router import ExtensionCandidate
+        from services.intent_router import intent_router
+
+        monkeypatch.setattr(
+            "services.intent_router.get_model_candidates_for_input",
+            lambda *args, **kwargs: [],
+        )
+        monkeypatch.setattr(
+            "services.intent_router.get_routing_model",
+            lambda: "",
+        )
+
+        decision = await intent_router.route(
+            dialog_messages=[{"role": "user", "content": "明天天气怎么样"}],
+            candidates=[
+                ExtensionCandidate(
+                    name="daily_query",
+                    description="天气时间查询",
+                    tool_name="ext_daily_query",
+                    triggers=["天气", "weather"],
+                ),
+                ExtensionCandidate(
+                    name="rss_subscribe",
+                    description="RSS 订阅",
+                    tool_name="ext_rss_subscribe",
+                    triggers=["rss"],
+                ),
+            ],
+        )
+
+        assert decision.request_mode == "chat"
+        assert decision.candidate_skills == ["daily_query"]
+        assert decision.task_tracking is False
+        assert "trigger_fallback" in decision.reason
+
 
 class TestWebSummaryService:
     """测试网页摘要服务"""

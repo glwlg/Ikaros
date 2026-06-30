@@ -24,9 +24,11 @@ from core.channel_access import channel_feature_denied_text, is_channel_feature_
 from extension.skills.learned.stock_watch.scripts.store import (
     add_watchlist_stock,
     get_all_watchlist_users,
+    get_last_stock_push_prices,
     get_stock_delivery_target,
     get_user_watchlist,
     remove_watchlist_stock,
+    save_last_stock_push_prices,
     set_stock_delivery_target,
 )
 from core.skill_menu import make_callback, parse_callback
@@ -291,7 +293,8 @@ async def stock_push_job() -> None:
                 if not quotes:
                     continue
 
-                message = format_stock_message(quotes)
+                previous_prices = await get_last_stock_push_prices(user_id)
+                message = format_stock_message(quotes, previous_prices)
                 stock_delivery_target = await get_stock_delivery_target(user_id)
                 target_platform, target_chat_id = await _resolve_proactive_delivery_target(
                     user_id,
@@ -326,6 +329,7 @@ async def stock_push_job() -> None:
                     user_id=user_id,
                     record_history=True,
                 )
+                await save_last_stock_push_prices(user_id, quotes)
                 await _remember_proactive_delivery_target(
                     user_id,
                     target_platform,

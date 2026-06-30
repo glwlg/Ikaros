@@ -45,6 +45,9 @@ WEIXIN_LOGIN_TIMEOUT_SEC = _env_int("WEIXIN_LOGIN_TIMEOUT_SEC", 300)
 WEIXIN_LOGIN_POLL_INTERVAL_SEC = _env_int("WEIXIN_LOGIN_POLL_INTERVAL_SEC", 3)
 WEIXIN_TEXT_CHUNK_LIMIT = _env_int("WEIXIN_TEXT_CHUNK_LIMIT", 2000)
 WEIXIN_DEBUG_UPDATES = os.getenv("WEIXIN_DEBUG_UPDATES", "false").lower() == "true"
+WEIXIN_SEND_VIDEO_AS_FILE = (
+    os.getenv("WEIXIN_SEND_VIDEO_AS_FILE", "false").lower() == "true"
+)
 
 # 日志配置
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -223,8 +226,9 @@ CORE_CHAT_EXECUTION_MODE = (
 )
 
 # Replaceable Ikaros execution kernel. `native` keeps the historical
-# AgentOrchestrator + AiService loop; `codex` delegates task execution to
-# `codex app-server` from the Ikaros repo root.
+# AgentOrchestrator + AiService loop; `agents_sdk` uses OpenAI Agents SDK
+# with Ikaros tools; `codex` delegates task execution to `codex app-server`
+# from the Ikaros repo root.
 IKAROS_KERNEL = os.getenv("IKAROS_KERNEL", "native").strip().lower() or "native"
 IKAROS_CODEX_COMMAND = os.getenv("IKAROS_CODEX_COMMAND", "codex").strip() or "codex"
 IKAROS_CODEX_ARGS = (
@@ -247,8 +251,10 @@ IKAROS_CODEX_REQUEST_TIMEOUT_SEC = _env_int("IKAROS_CODEX_REQUEST_TIMEOUT_SEC", 
 
 
 def ikaros_kernel_provider() -> str:
-    provider = str(os.getenv("IKAROS_KERNEL", IKAROS_KERNEL) or "native").strip().lower()
-    return provider if provider in {"native", "codex"} else "native"
+    provider = (
+        str(os.getenv("IKAROS_KERNEL", IKAROS_KERNEL) or "native").strip().lower()
+    )
+    return provider if provider in {"native", "agents_sdk", "codex"} else "native"
 
 
 def ikaros_codex_command() -> list[str]:

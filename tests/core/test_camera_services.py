@@ -248,3 +248,24 @@ def test_camera_view_uses_safe_mobile_ptz_defaults():
     assert "const PTZ_MOVE_DURATION_MS = 80" in text
     assert ".camera-ptz-panel" in text
     assert "order: 1;" in text
+
+
+def test_camera_view_offers_zoomed_picture_in_picture():
+    view_path = (
+        Path(__file__).resolve().parents[2]
+        / "src/platforms/web/src/views/Modules/CameraView.vue"
+    )
+    text = view_path.read_text(encoding="utf-8")
+
+    assert "const DIGITAL_ZOOM_MAX = 5" in text
+    assert "const TIMESTAMP_CROP_WIDTH_RATIO" in text
+    assert "canvas.captureStream(24)" in text
+    assert "requestPictureInPicture()" in text
+    assert "new URL(" in text
+    assert "ref=\"previewCanvasRef\"" in text
+    assert "ref=\"overviewCanvasRef\"" in text
+    assert "v-else-if=\"playerMode === 'webrtc' && stream?.webrtc_whep_url\"" in text
+    assert "playerMode.value === 'hls' && !!stream.value?.hls_page_url" in text
+    assert "class=\"camera-hls-frame h-full w-full\"" in text
+    assert "camera-overview-rect" in text
+    assert "drawTimestampInset" in text

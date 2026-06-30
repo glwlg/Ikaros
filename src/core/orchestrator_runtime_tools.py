@@ -510,6 +510,12 @@ class ToolCallDispatcher:
         resolved_args = dict(tool_args or {})
         resolved_args["_ikaros_dispatch"] = self._skill_dispatch_context()
         result = execute_fn(self.ctx, resolved_args, runtime=self.runtime)
+        if inspect.isasyncgen(result):
+            final_item: Any = None
+            async for item in result:
+                if isinstance(item, dict):
+                    final_item = item
+            result = final_item
         if inspect.isawaitable(result):
             result = await result
         if not isinstance(result, dict):

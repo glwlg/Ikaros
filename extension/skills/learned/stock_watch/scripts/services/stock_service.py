@@ -161,12 +161,33 @@ async def search_stock_by_name(keyword: str) -> list[dict]:
     return results
 
 
-def format_stock_message(stocks: list[dict]) -> str:
+def _format_push_direction(stock: dict, previous_prices: dict[str, float] | None) -> str:
+    if not previous_prices:
+        return ""
+
+    code = str(stock.get("code") or "").strip()
+    if not code or code not in previous_prices:
+        return ""
+
+    current_price = float(stock.get("price") or 0)
+    previous_price = previous_prices[code]
+    if current_price > previous_price:
+        return "↑"
+    if current_price < previous_price:
+        return "↓"
+    return ""
+
+
+def format_stock_message(
+    stocks: list[dict],
+    previous_prices: dict[str, float] | None = None,
+) -> str:
     """
     格式化股票行情消息 (双列排版)
     
     Args:
         stocks: fetch_stock_quotes 返回的股票列表
+        previous_prices: 上一次成功推送时的股票价格，用于展示本次推送相对方向
     
     Returns:
         格式化的消息文本
@@ -195,7 +216,9 @@ def format_stock_message(stocks: list[dict]) -> str:
         if len(name) > 4:
             name = name[:4]
             
-        item_str = f"{emoji} {name} {stock['price']} {sign}{stock['percent']}%"
+        direction = _format_push_direction(stock, previous_prices)
+        direction_text = f" {direction}" if direction else ""
+        item_str = f"{emoji} {name} {stock['price']} {sign}{stock['percent']}%{direction_text}"
         
         # 涨跌幅超过 1% 加粗
         if abs(stock["percent"]) > 1.0:

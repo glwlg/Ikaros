@@ -13,6 +13,7 @@ import {
     CircleStop,
     Loader2,
     Pencil,
+    PictureInPicture2,
     Play,
     Plus,
     RefreshCw,
@@ -38,6 +39,24 @@ import {
 
 type PlayerMode = 'webrtc' | 'hls'
 
+interface MediaMTXWebRTCReaderConfig {
+    url: string
+    onError?: (error: string) => void
+    onTrack?: (event: RTCTrackEvent) => void
+}
+
+interface MediaMTXWebRTCReaderInstance {
+    close: () => void
+}
+
+declare global {
+    interface Window {
+        MediaMTXWebRTCReader?: new (
+            config: MediaMTXWebRTCReaderConfig
+        ) => MediaMTXWebRTCReaderInstance
+    }
+}
+
 interface CameraForm {
     name: string
     rtsp_url: string
@@ -58,6 +77,16 @@ const selectedId = ref<number | null>(null)
 const stream = ref<StreamToken | null>(null)
 const streamError = ref('')
 const playerMode = ref<PlayerMode>('webrtc')
+const liveVideoRef = ref<HTMLVideoElement | null>(null)
+const previewCanvasRef = ref<HTMLCanvasElement | null>(null)
+const overviewCanvasRef = ref<HTMLCanvasElement | null>(null)
+const pipVideoRef = ref<HTMLVideoElement | null>(null)
+const pipCanvasRef = ref<HTMLCanvasElement | null>(null)
+const directStreamReady = ref(false)
+const directStreamError = ref('')
+const digitalZoom = ref(1)
+const zoomCenter = ref({ x: 0.5, y: 0.5 })
+const pipActive = ref(false)
 const showDialog = ref(false)
 const editingId = ref<number | null>(null)
 const saving = ref(false)
@@ -66,7 +95,29 @@ const ptzAction = ref<PtzAction | ''>('')
 const ptzSpeed = ref(0.12)
 const ptzSpeedPercent = computed(() => Math.round(ptzSpeed.value * 100))
 const PTZ_MOVE_DURATION_MS = 80
+const DIGITAL_ZOOM_MIN = 1
+const DIGITAL_ZOOM_MAX = 5
+const DIGITAL_ZOOM_STEP = 0.25
+const TIMESTAMP_CROP_WIDTH_RATIO = 0.42
+const TIMESTAMP_CROP_HEIGHT_RATIO = 0.12
 let ptzIdleTimer: ReturnType<typeof window.setTimeout> | null = null
+let mediamtxReader: MediaMTXWebRTCReaderInstance | null = null
+let directMediaStream: MediaStream | null = null
+let directStreamGeneration = 0
+let readerScriptPromise: Promise<void> | null = null
+let previewFrameId: number | null = null
+let pipFrameId: number | null = null
+let pipCanvasStream: MediaStream | null = null
+let zoomPan:
+    | {
+        pointerId: number
+        startX: number
+        startY: number
+        centerX: number
+        centerY: number
+        mode: 'main' | 'overview'
+    }
+    | null = null
 
 const emptyForm = (): CameraForm => ({
     name: '',
@@ -91,6 +142,40 @@ const ptzCount = computed(() => cameras.value.filter((camera) => camera.onvif_en
 const canControlPtz = computed(() =>
     !!selectedCamera.value?.onvif_enabled && !!selectedCamera.value?.onvif_host
 )
+const canUseDirectWebRtc = computed(() =>
+    playerMode.value === 'webrtc' && !!stream.value?.webrtc_whep_url
+)
+const canUseDigitalZoom = computed(() =>
+    !!selectedCamera.value &&
+    (
+        canUseDirectWebRtc.value ||
+        (playerMode.value === 'hls' && !!stream.value?.hls_page_url)
+    )
+)
+const canOpenZoomPip = computed(() =>
+    canUseDirectWebRtc.value && directStreamReady.value && isPictureInPictureSupported()
+)
+const zoomLabel = computed(() =>
+    `${digitalZoom.value.toFixed(2).replace(/\.00$/, '').replace(/0$/, '')}x`
+)
+const zoomedMediaStyle = computed(() => {
+    const zoom = Math.max(1, digitalZoom.value)
+    return {
+        transform: `translate(${(0.5 - zoomCenter.value.x * zoom) * 100}%, ${(0.5 - zoomCenter.value.y * zoom) * 100}%) scale(${zoom})`,
+        transformOrigin: '0 0',
+    }
+})
+const viewportRectStyle = computed(() => {
+    const zoom = Math.max(1, digitalZoom.value)
+    const width = 100 / zoom
+    const height = 100 / zoom
+    return {
+        left: `${(zoomCenter.value.x - 0.5 / zoom) * 100}%`,
+        top: `${(zoomCenter.value.y - 0.5 / zoom) * 100}%`,
+        width: `${width}%`,
+        height: `${height}%`,
+    }
+})
 
 const loadData = async (isRefresh = false) => {
     if (isRefresh) {
@@ -263,6 +348,360 @@ const stopPtz = async (forceOrEvent: boolean | Event = false) => {
     }
 }
 
+const isPictureInPictureSupported = () =>
+    typeof document !== 'undefined' &&
+    document.pictureInPictureEnabled &&
+    typeof HTMLVideoElement !== 'undefined' &&
+    typeof HTMLVideoElement.prototype.requestPictureInPicture === 'function'
+
+const clampZoom = (value: number) => {
+    const stepped = Math.round(value / DIGITAL_ZOOM_STEP) * DIGITAL_ZOOM_STEP
+    return Math.min(DIGITAL_ZOOM_MAX, Math.max(DIGITAL_ZOOM_MIN, stepped))
+}
+
+const setDigitalZoom = (value: number) => {
+    digitalZoom.value = clampZoom(Number(value) || DIGITAL_ZOOM_MIN)
+    zoomCenter.value = clampZoomCenter(zoomCenter.value.x, zoomCenter.value.y)
+}
+
+const clampZoomCenter = (x: number, y: number) => {
+    const zoom = Math.max(1, digitalZoom.value)
+    const halfWidth = 0.5 / zoom
+    const halfHeight = 0.5 / zoom
+    return {
+        x: Math.min(1 - halfWidth, Math.max(halfWidth, x)),
+        y: Math.min(1 - halfHeight, Math.max(halfHeight, y)),
+    }
+}
+
+const setZoomCenter = (x: number, y: number) => {
+    zoomCenter.value = clampZoomCenter(x, y)
+}
+
+const isBenignPlayError = (error: any) => {
+    const message = String(error?.message || error || '').toLowerCase()
+    return error?.name === 'AbortError' || message.includes('interrupted by a new load request')
+}
+
+const seekZoomCenterFromEvent = (event: PointerEvent, element: HTMLElement, mode: 'main' | 'overview') => {
+    const rect = element.getBoundingClientRect()
+    const localX = (event.clientX - rect.left) / rect.width
+    const localY = (event.clientY - rect.top) / rect.height
+    if (mode === 'overview') {
+        setZoomCenter(localX, localY)
+        return
+    }
+    const zoom = Math.max(1, digitalZoom.value)
+    setZoomCenter(
+        zoomPan ? zoomPan.centerX - (event.clientX - zoomPan.startX) / rect.width / zoom : localX,
+        zoomPan ? zoomPan.centerY - (event.clientY - zoomPan.startY) / rect.height / zoom : localY
+    )
+}
+
+const startZoomPan = (event: PointerEvent, mode: 'main' | 'overview') => {
+    if (!canUseDigitalZoom.value || digitalZoom.value <= 1) return
+    const element = event.currentTarget as HTMLElement
+    element.setPointerCapture?.(event.pointerId)
+    zoomPan = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        centerX: zoomCenter.value.x,
+        centerY: zoomCenter.value.y,
+        mode,
+    }
+    seekZoomCenterFromEvent(event, element, mode)
+}
+
+const moveZoomPan = (event: PointerEvent) => {
+    if (!zoomPan || zoomPan.pointerId !== event.pointerId) return
+    seekZoomCenterFromEvent(event, event.currentTarget as HTMLElement, zoomPan.mode)
+}
+
+const stopZoomPan = (event: PointerEvent) => {
+    if (!zoomPan || zoomPan.pointerId !== event.pointerId) return
+    const element = event.currentTarget as HTMLElement
+    element.releasePointerCapture?.(event.pointerId)
+    zoomPan = null
+}
+
+const videoSourceRect = (width: number, height: number) => {
+    const zoom = Math.max(1, digitalZoom.value)
+    const sourceWidth = width / zoom
+    const sourceHeight = height / zoom
+    const center = clampZoomCenter(zoomCenter.value.x, zoomCenter.value.y)
+    return {
+        x: center.x * width - sourceWidth / 2,
+        y: center.y * height - sourceHeight / 2,
+        width: sourceWidth,
+        height: sourceHeight,
+    }
+}
+
+const ensureCanvasSize = (canvas: HTMLCanvasElement, width: number, height: number) => {
+    if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width
+        canvas.height = height
+    }
+}
+
+const drawTimestampInset = (
+    context: CanvasRenderingContext2D,
+    source: HTMLVideoElement,
+    width: number,
+    height: number
+) => {
+    const sourceWidth = Math.round(width * TIMESTAMP_CROP_WIDTH_RATIO)
+    const sourceHeight = Math.round(height * TIMESTAMP_CROP_HEIGHT_RATIO)
+    const targetWidth = Math.round(sourceWidth * 1.15)
+    const targetHeight = Math.round(sourceHeight * 1.15)
+    context.save()
+    context.fillStyle = 'rgba(0, 0, 0, 0.45)'
+    context.fillRect(0, 0, targetWidth + 16, targetHeight + 12)
+    context.drawImage(
+        source,
+        0,
+        0,
+        sourceWidth,
+        sourceHeight,
+        8,
+        6,
+        targetWidth,
+        targetHeight
+    )
+    context.restore()
+}
+
+const drawZoomedFrame = (target: HTMLCanvasElement | null, includeTimestamp = true) => {
+    const source = liveVideoRef.value
+    const context = target?.getContext('2d')
+    if (!source || !target || !context) return false
+
+    const width = source.videoWidth || 1280
+    const height = source.videoHeight || 720
+    ensureCanvasSize(target, width, height)
+
+    if (source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return false
+
+    const rect = videoSourceRect(width, height)
+    context.drawImage(
+        source,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        0,
+        0,
+        width,
+        height
+    )
+    if (includeTimestamp && digitalZoom.value > 1) {
+        drawTimestampInset(context, source, width, height)
+    }
+    return true
+}
+
+const drawOverviewFrame = () => {
+    const source = liveVideoRef.value
+    const canvas = overviewCanvasRef.value
+    const context = canvas?.getContext('2d')
+    if (!source || !canvas || !context || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
+    ensureCanvasSize(canvas, 320, 180)
+    context.drawImage(source, 0, 0, canvas.width, canvas.height)
+}
+
+const startPreviewRenderer = () => {
+    if (previewFrameId !== null) return
+    const render = () => {
+        if (directStreamReady.value) {
+            drawZoomedFrame(previewCanvasRef.value)
+            drawOverviewFrame()
+        }
+        previewFrameId = window.requestAnimationFrame(render)
+    }
+    previewFrameId = window.requestAnimationFrame(render)
+}
+
+const stopPreviewRenderer = () => {
+    if (previewFrameId !== null) {
+        window.cancelAnimationFrame(previewFrameId)
+        previewFrameId = null
+    }
+}
+
+const withToken = (url: string, token: string) => {
+    if (!url || !token || url.includes('token=')) return url
+    return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+}
+
+const readerScriptUrlFor = (whepUrl: string) => {
+    const url = new URL(whepUrl, window.location.href)
+    const parts = url.pathname.split('/').filter(Boolean)
+    parts.splice(Math.max(0, parts.length - 2), 2, 'reader.js')
+    url.pathname = `/${parts.join('/')}`
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+}
+
+const loadMediaMTXReader = (scriptUrl: string) => {
+    if (window.MediaMTXWebRTCReader) return Promise.resolve()
+    if (readerScriptPromise) return readerScriptPromise
+    readerScriptPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = scriptUrl
+        script.async = true
+        script.onload = () => resolve()
+        script.onerror = () => {
+            readerScriptPromise = null
+            reject(new Error('WebRTC reader load failed'))
+        }
+        document.head.appendChild(script)
+    })
+    return readerScriptPromise
+}
+
+const stopDirectWebRtc = () => {
+    directStreamGeneration += 1
+    directStreamReady.value = false
+    directStreamError.value = ''
+    stopPreviewRenderer()
+    if (mediamtxReader) {
+        mediamtxReader.close()
+        mediamtxReader = null
+    }
+    if (liveVideoRef.value) {
+        liveVideoRef.value.pause()
+        liveVideoRef.value.srcObject = null
+    }
+    if (directMediaStream) {
+        directMediaStream.getTracks().forEach((track) => track.stop())
+        directMediaStream = null
+    }
+}
+
+const startDirectWebRtc = async () => {
+    stopDirectWebRtc()
+    directStreamError.value = ''
+    const currentStream = stream.value
+    const liveVideo = liveVideoRef.value
+    if (!currentStream?.webrtc_whep_url || !liveVideo) return
+
+    const generation = directStreamGeneration
+    const whepUrl = new URL(
+        withToken(currentStream.webrtc_whep_url, currentStream.token),
+        window.location.href
+    ).toString()
+    try {
+        await loadMediaMTXReader(readerScriptUrlFor(whepUrl))
+        if (generation !== directStreamGeneration) return
+        const Reader = window.MediaMTXWebRTCReader
+        if (!Reader) throw new Error('WebRTC reader unavailable')
+        mediamtxReader = new Reader({
+            url: whepUrl,
+            onError: (error) => {
+                if (generation === directStreamGeneration) {
+                    if (directStreamReady.value) {
+                        console.warn(error || 'WebRTC 播放失败')
+                    } else {
+                        directStreamError.value = error || 'WebRTC 播放失败'
+                    }
+                }
+            },
+            onTrack: (event) => {
+                if (generation !== directStreamGeneration || !liveVideoRef.value) return
+                const mediaStream = event.streams[0]
+                if (!mediaStream) return
+                directMediaStream = mediaStream
+                liveVideoRef.value.srcObject = mediaStream
+                liveVideoRef.value.play().catch((error) => {
+                    if (generation !== directStreamGeneration || isBenignPlayError(error)) return
+                    directStreamError.value = error?.message || 'WebRTC 播放失败'
+                })
+                directStreamReady.value = true
+                directStreamError.value = ''
+                startPreviewRenderer()
+            },
+        })
+    } catch (error: any) {
+        if (generation === directStreamGeneration) {
+            directStreamError.value = error?.message || 'WebRTC 播放失败'
+        }
+    }
+}
+
+const stopPipCanvasStream = () => {
+    if (pipFrameId !== null) {
+        window.cancelAnimationFrame(pipFrameId)
+        pipFrameId = null
+    }
+    if (pipCanvasStream) {
+        pipCanvasStream.getTracks().forEach((track) => track.stop())
+        pipCanvasStream = null
+    }
+    if (pipVideoRef.value) {
+        pipVideoRef.value.pause()
+        pipVideoRef.value.srcObject = null
+    }
+}
+
+const drawZoomedPipFrame = () => {
+    drawZoomedFrame(pipCanvasRef.value)
+    pipFrameId = window.requestAnimationFrame(drawZoomedPipFrame)
+}
+
+const toggleZoomedPictureInPicture = async () => {
+    const pipVideo = pipVideoRef.value
+    const canvas = pipCanvasRef.value
+    const source = liveVideoRef.value
+    if (!pipVideo || !canvas || !source || !canOpenZoomPip.value) return
+
+    try {
+        if (document.pictureInPictureElement === pipVideo) {
+            await document.exitPictureInPicture()
+            return
+        }
+        if (document.pictureInPictureElement) {
+            await document.exitPictureInPicture()
+        }
+        stopPipCanvasStream()
+        canvas.width = source.videoWidth || 1280
+        canvas.height = source.videoHeight || 720
+        pipCanvasStream = canvas.captureStream(24)
+        pipVideo.srcObject = pipCanvasStream
+        drawZoomedPipFrame()
+        await pipVideo.play()
+        await pipVideo.requestPictureInPicture()
+    } catch (error: any) {
+        alert(error?.message || '画中画打开失败')
+        stopPipCanvasStream()
+    }
+}
+
+const handlePipEnter = () => {
+    pipActive.value = true
+    if (pipFrameId === null) {
+        drawZoomedPipFrame()
+    }
+}
+
+const handlePipLeave = () => {
+    pipActive.value = false
+    stopPipCanvasStream()
+}
+
+watch(
+    [playerMode, () => stream.value?.webrtc_whep_url, () => stream.value?.token],
+    () => {
+        if (canUseDirectWebRtc.value) {
+            startDirectWebRtc()
+        } else {
+            stopDirectWebRtc()
+        }
+    },
+    { flush: 'post' }
+)
+
 watch(selectedId, () => {
     loadStream()
 })
@@ -273,6 +712,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
     clearPtzIdleTimer()
+    stopDirectWebRtc()
+    stopPipCanvasStream()
 })
 </script>
 
@@ -319,7 +760,32 @@ onBeforeUnmount(() => {
             <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Live</div>
             <h3 class="mt-1 truncate text-xl font-semibold text-slate-950">{{ selectedCamera?.name || '未选择摄像头' }}</h3>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="camera-live-controls flex flex-wrap items-center justify-end gap-2">
+            <div class="camera-zoom-control flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2" :class="{ 'opacity-50': !canUseDigitalZoom }">
+              <ZoomOut class="h-4 w-4 text-slate-400" />
+              <input
+                :value="digitalZoom"
+                class="camera-zoom-slider"
+                type="range"
+                :min="DIGITAL_ZOOM_MIN"
+                :max="DIGITAL_ZOOM_MAX"
+                :step="DIGITAL_ZOOM_STEP"
+                aria-label="数字变焦"
+                :disabled="!canUseDigitalZoom"
+                @input="setDigitalZoom(($event.target as HTMLInputElement).valueAsNumber)"
+              >
+              <ZoomIn class="h-4 w-4 text-slate-400" />
+              <span class="w-9 text-right text-xs font-semibold text-slate-600">{{ zoomLabel }}</span>
+            </div>
+            <button
+              class="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition"
+              :class="pipActive ? 'border-blue-200 bg-blue-50 text-blue-600' : 'border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:text-blue-600'"
+              :disabled="!canOpenZoomPip"
+              @click="toggleZoomedPictureInPicture"
+            >
+              <PictureInPicture2 class="h-4 w-4" />
+              画中画
+            </button>
             <button class="rounded-xl border px-3 py-2 text-sm" :class="playerMode === 'webrtc' ? 'border-blue-200 bg-blue-50 text-blue-600' : 'border-slate-200 bg-white text-slate-600'" @click="playerMode = 'webrtc'">WebRTC</button>
             <button class="rounded-xl border px-3 py-2 text-sm" :class="playerMode === 'hls' ? 'border-blue-200 bg-blue-50 text-blue-600' : 'border-slate-200 bg-white text-slate-600'" @click="playerMode = 'hls'">HLS</button>
             <button class="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:border-blue-200 hover:text-blue-600" @click="loadStream" :disabled="streamLoading || !selectedCamera">
@@ -340,20 +806,77 @@ onBeforeUnmount(() => {
             <Cctv class="h-16 w-16 text-slate-600" />
             <p>暂无摄像头</p>
           </div>
-          <iframe
-            v-else-if="playerMode === 'webrtc' && stream?.webrtc_url"
-            :key="stream.webrtc_url"
-            :src="stream.webrtc_url"
-            class="h-full w-full"
-            allow="autoplay; fullscreen; picture-in-picture"
-          />
-          <iframe
+          <div
+            v-else-if="playerMode === 'webrtc' && stream?.webrtc_whep_url"
+            class="camera-zoom-stage relative h-full w-full overflow-hidden"
+            @pointerdown.prevent="startZoomPan($event, 'main')"
+            @pointermove.prevent="moveZoomPan"
+            @pointerup.prevent="stopZoomPan"
+            @pointercancel.prevent="stopZoomPan"
+          >
+            <canvas ref="previewCanvasRef" class="camera-preview-canvas h-full w-full" />
+            <video
+              ref="liveVideoRef"
+              class="camera-source-video"
+              autoplay
+              muted
+              playsinline
+            />
+            <div v-if="!directStreamReady && !directStreamError" class="absolute inset-0 flex items-center justify-center text-slate-100">
+              <Loader2 class="h-8 w-8 animate-spin" />
+            </div>
+            <div v-if="directStreamError && !directStreamReady" class="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center text-slate-200">
+              <Video class="h-12 w-12 text-slate-500" />
+              <p>{{ directStreamError }}</p>
+            </div>
+            <div
+              v-if="digitalZoom > 1 && directStreamReady"
+              class="camera-overview"
+              @pointerdown.stop.prevent="startZoomPan($event, 'overview')"
+              @pointermove.stop.prevent="moveZoomPan"
+              @pointerup.stop.prevent="stopZoomPan"
+              @pointercancel.stop.prevent="stopZoomPan"
+            >
+              <canvas ref="overviewCanvasRef" class="h-full w-full" />
+              <div class="camera-overview-rect" :style="viewportRectStyle" />
+            </div>
+          </div>
+          <div
             v-else-if="playerMode === 'hls' && stream?.hls_page_url"
-            :key="stream.hls_page_url"
-            :src="stream.hls_page_url"
-            class="h-full w-full"
-            allow="autoplay; fullscreen; picture-in-picture"
+            class="camera-zoom-stage relative h-full w-full overflow-hidden"
+            @pointerdown.prevent="startZoomPan($event, 'main')"
+            @pointermove.prevent="moveZoomPan"
+            @pointerup.prevent="stopZoomPan"
+            @pointercancel.prevent="stopZoomPan"
+          >
+            <iframe
+              :key="stream.hls_page_url"
+              :src="stream.hls_page_url"
+              class="camera-hls-frame h-full w-full"
+              :class="{ 'camera-hls-frame--zoomed': digitalZoom > 1 }"
+              :style="zoomedMediaStyle"
+              allow="autoplay; fullscreen; picture-in-picture"
+            />
+            <div
+              v-if="digitalZoom > 1"
+              class="camera-overview camera-overview--placeholder"
+              @pointerdown.stop.prevent="startZoomPan($event, 'overview')"
+              @pointermove.stop.prevent="moveZoomPan"
+              @pointerup.stop.prevent="stopZoomPan"
+              @pointercancel.stop.prevent="stopZoomPan"
+            >
+              <div class="camera-overview-rect" :style="viewportRectStyle" />
+            </div>
+          </div>
+          <video
+            ref="pipVideoRef"
+            class="camera-pip-video"
+            muted
+            playsinline
+            @enterpictureinpicture="handlePipEnter"
+            @leavepictureinpicture="handlePipLeave"
           />
+          <canvas ref="pipCanvasRef" class="camera-pip-canvas" />
         </div>
       </section>
 
@@ -521,6 +1044,96 @@ onBeforeUnmount(() => {
   border: 0;
 }
 
+.camera-zoom-stage {
+  touch-action: none;
+  cursor: grab;
+}
+
+.camera-zoom-stage:active {
+  cursor: grabbing;
+}
+
+.camera-preview-canvas {
+  display: block;
+  object-fit: contain;
+  background: #020617;
+}
+
+.camera-source-video {
+  position: fixed;
+  left: -9999px;
+  top: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.camera-live-video {
+  transform-origin: center;
+  object-fit: contain;
+  background: #020617;
+}
+
+.camera-hls-frame {
+  transform-origin: center;
+}
+
+.camera-hls-frame--zoomed {
+  pointer-events: none;
+}
+
+.camera-overview {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 4;
+  width: min(220px, 28vw);
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid rgba(74, 222, 128, 0.9);
+  background: rgba(2, 6, 23, 0.78);
+  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.35);
+}
+
+.camera-overview canvas {
+  display: block;
+  object-fit: cover;
+}
+
+.camera-overview--placeholder {
+  background:
+    linear-gradient(135deg, rgba(148, 163, 184, 0.25), rgba(15, 23, 42, 0.86)),
+    rgba(2, 6, 23, 0.82);
+}
+
+.camera-overview-rect {
+  position: absolute;
+  border: 2px solid #22c55e;
+  box-shadow: 0 0 0 999px rgba(2, 6, 23, 0.32);
+}
+
+.camera-zoom-slider {
+  width: clamp(96px, 12vw, 150px);
+  accent-color: #2f7cf6;
+}
+
+.camera-pip-video,
+.camera-pip-canvas {
+  position: fixed;
+  left: -9999px;
+  top: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.camera-live-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .camera-speed-slider {
   accent-color: #2f7cf6;
 }
@@ -581,6 +1194,10 @@ onBeforeUnmount(() => {
   .camera-live-header {
     flex: 0 0 auto;
     padding: 10px 14px !important;
+  }
+
+  .camera-live-controls {
+    gap: 8px;
   }
 
   .camera-live-header h3 {
@@ -654,6 +1271,21 @@ onBeforeUnmount(() => {
     padding: 10px 12px;
   }
 
+  .camera-live-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .camera-zoom-control {
+    flex: 1 1 100%;
+  }
+
+  .camera-zoom-slider {
+    width: auto;
+    min-width: 0;
+    flex: 1;
+  }
+
   .camera-live-header h3 {
     max-width: 52vw;
     font-size: 1rem;
@@ -664,6 +1296,12 @@ onBeforeUnmount(() => {
     height: min(40svh, 320px);
     min-height: 180px;
     aspect-ratio: auto;
+  }
+
+  .camera-overview {
+    right: 10px;
+    bottom: 10px;
+    width: min(168px, 42vw);
   }
 
   .camera-summary,

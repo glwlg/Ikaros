@@ -468,6 +468,9 @@ def _set_visible_session(
     else:
         ctx.user_data.pop("codex_kernel_session_platform", None)
         ctx.user_data.pop("codex_kernel_session_user_id", None)
+        ctx.user_data.pop("scheduler_instruction", None)
+        ctx.user_data.pop("scheduler_rendered_instruction", None)
+        ctx.user_data.pop("routing_context", None)
     if platform and user_id:
         channel_runtime_store.set_session_id(
             session_id=safe_session_id,
@@ -514,6 +517,7 @@ async def handle_scheduler_session_callback(ctx: UnifiedContext) -> int:
         return CONVERSATION_END
 
     from core.channel_runtime_store import channel_runtime_store
+    from core.runtime_v2 import runtime_v2
     from extension.skills.builtin.scheduler_manager.scripts.store import (
         scheduler_task_session_id,
     )
@@ -538,6 +542,11 @@ async def handle_scheduler_session_callback(ctx: UnifiedContext) -> int:
         platform=platform,
         scheduler_session=True,
     )
+    job = runtime_v2.get_scheduler_job(scheduled_task_id)
+    instruction = str((job or {}).get("instruction") or "").strip()
+    if instruction:
+        ctx.user_data["scheduler_instruction"] = instruction
+        ctx.user_data["routing_context"] = f"定时任务原始描述：{instruction}"
     await _remember_visible_session_target(
         ctx,
         user_id=user_id,

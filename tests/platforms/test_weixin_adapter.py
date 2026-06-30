@@ -436,12 +436,61 @@ async def test_send_message_uses_scoped_context_token_and_session_account():
 
 
 @pytest.mark.asyncio
-async def test_reply_video_sends_mp4_as_file_attachment(monkeypatch, tmp_path):
+async def test_reply_video_sends_mp4_as_video_item(monkeypatch, tmp_path):
     adapter = WeixinAdapter()
     adapter._apply_runtime_sessions({"bot-1": _session("bot-1")})
     video_path = tmp_path / "clip.mp4"
     video_path.write_bytes(b"fake-video")
     sent_items: list[dict[str, object]] = []
+
+    async def _fake_upload_media_file(
+        *, file_path, user_id, media_kind, account_id=""
+    ):
+        assert file_path == video_path.resolve()
+        assert user_id == "wx-user-1"
+        assert media_kind == "video"
+        assert account_id == "bot-1"
+        return UploadedWeixinMedia(
+            filekey="fk-1",
+            download_encrypted_query_param="enc-1",
+            aes_key_hex="00112233445566778899aabbccddeeff",
+            plaintext_size=10,
+            ciphertext_size=16,
+        )
+
+    async def _fake_send_media_item_to_user(
+        *, user_id, context_token, media_item, caption="", account_id=""
+    ):
+        assert user_id == "wx-user-1"
+        assert context_token == "ctx-1"
+        assert caption == "请查收"
+        assert account_id == "bot-1"
+        sent_items.append(media_item)
+        return SimpleNamespace(id="media-1")
+
+    monkeypatch.setattr(adapter, "_upload_media_file", _fake_upload_media_file)
+    monkeypatch.setattr(adapter, "_send_media_item_to_user", _fake_send_media_item_to_user)
+
+    await adapter.reply_video(_build_context(), str(video_path), caption="请查收")
+
+    assert sent_items
+    assert sent_items[0]["type"] == 5
+    assert sent_items[0]["video_item"]["video_size"] == 16
+
+
+@pytest.mark.asyncio
+async def test_reply_video_can_fall_back_to_file_attachment(
+    monkeypatch, tmp_path
+):
+    adapter = WeixinAdapter()
+    adapter._apply_runtime_sessions({"bot-1": _session("bot-1")})
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fake-video")
+    sent_items: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "extension.channels.weixin.adapter.WEIXIN_SEND_VIDEO_AS_FILE", True
+    )
 
     async def _fake_upload_media_file(
         *, file_path, user_id, media_kind, account_id=""

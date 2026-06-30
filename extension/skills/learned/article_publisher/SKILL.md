@@ -59,6 +59,12 @@ input_schema:
     word_count:
       type: integer
       description: 正文目标字数，默认为 1000。
+    current_date:
+      type: string
+      description: 可选，本次执行日期，格式 YYYY-MM-DD；用于新闻/快讯标题和时效搜索锚定。
+    output_dir:
+      type: string
+      description: 可选，指定本次文章中间产物和附件输出目录。
   anyOf:
   - required:
     - topic
@@ -68,6 +74,68 @@ input_schema:
     - source_paths
   - required:
     - stage
+tool_exports:
+- name: article_publisher
+  description: 生成长文、公众号图文稿或小红书稿件，并可执行搜索、写作、配图和发布。
+  prompt_hint: 用户要求写文章、公众号文章、AI快讯、图文发布或发布到公众号/小红书时，直接调用 `article_publisher`；不要把 `article_publisher` 当作 shell 命令执行。
+  policy_groups:
+  - content
+  - research
+  parameters:
+    type: object
+    properties:
+      topic:
+        type: string
+        description: 文章主题、写作要求或新闻话题。定时任务中的完整写作要求应放在这里。
+      source_path:
+        type: string
+        description: 本地 md/txt 素材路径。提供后跳过搜索，直接基于素材写作。
+      source_paths:
+        type: array
+        items:
+          type: string
+        description: 多个本地 md/txt 素材路径。提供后跳过搜索，直接基于素材写作。
+      publish:
+        type: boolean
+        description: 是否发布到所选渠道。
+      publish_channel:
+        type: string
+        enum: [wechat, xiaohongshu]
+        description: 发布或导出渠道。
+      publish_channels:
+        type: array
+        items:
+          type: string
+          enum: [wechat, xiaohongshu]
+        description: 多个发布或导出渠道。
+      wechat_account:
+        type: string
+        description: 可选，指定用于发布的公众号凭据别名或 ID。
+      stage:
+        type: string
+        enum: [search, write, illustrate, publish]
+        description: 可选，指定单独执行某个阶段。不传则执行全流程。
+      source:
+        type: string
+        description: 单阶段模式下的输入文件路径（research.json / article.json / article_with_images.json）。
+      word_count:
+        type: integer
+        description: 正文目标字数，默认为 1000。
+      current_date:
+        type: string
+        description: 本次执行日期，格式 YYYY-MM-DD；新闻/快讯任务应传入调度器给出的日期。
+      output_dir:
+        type: string
+        description: 可选，指定本次文章中间产物和附件输出目录；定时任务不要复用旧稿目录。
+    anyOf:
+    - required:
+      - topic
+    - required:
+      - source_path
+    - required:
+      - source_paths
+    - required:
+      - stage
 permissions:
   filesystem: workspace
   shell: true

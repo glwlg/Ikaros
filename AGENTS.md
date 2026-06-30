@@ -42,6 +42,12 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
+### Temporary Artifacts
+
+- Do not write research notes, generated article drafts, search reports, screenshots, or other non-code scratch output into the repository root.
+- Use `/tmp`, `.codex_tmp/`, or another explicitly ignored directory for temporary artifacts.
+- If a task creates temporary files, delete them before handing work back unless the user explicitly asked to keep them.
+
 ## 4. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**

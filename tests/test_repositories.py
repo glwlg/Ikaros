@@ -111,6 +111,32 @@ class TestWatchlistRepo:
         watchlist = await get_user_watchlist(12345)
         assert len(watchlist) == 0
 
+    @pytest.mark.asyncio
+    async def test_last_stock_push_prices_roundtrip(self, mock_db):
+        """测试最近一次自选股推送价格快照"""
+        from core.state_io import init_db
+        from extension.skills.learned.stock_watch.scripts.store import (
+            get_last_stock_push_prices,
+            save_last_stock_push_prices,
+        )
+
+        await init_db()
+
+        await save_last_stock_push_prices(
+            12345,
+            [
+                {"code": "sh601006", "price": 7.88},
+                {"code": "sz000001", "price": "12.34"},
+                {"code": "bad", "price": "n/a"},
+                {"price": 1.23},
+            ],
+        )
+
+        assert await get_last_stock_push_prices(12345) == {
+            "sh601006": 7.88,
+            "sz000001": 12.34,
+        }
+
 
 class TestReminderRepo:
     """测试提醒 Repository"""
