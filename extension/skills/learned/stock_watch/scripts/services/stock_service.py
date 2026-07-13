@@ -8,8 +8,10 @@ import httpx
 logger = logging.getLogger(__name__)
 
 SINA_QUOTE_URL = "http://hq.sinajs.cn/list="
-SINA_SEARCH_URL = "https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key="
+SINA_SEARCH_URL = "https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15,22,25&key="
 HEADERS = {"Referer": "https://finance.sina.com.cn/"}
+STOCK_MARKET_TYPES = {"11": "沪A", "12": "深A"}
+ETF_MARKET_TYPES = {"22", "25"}
 
 
 async def fetch_stock_quotes(stock_codes: list[str]) -> list[dict]:
@@ -94,6 +96,88 @@ async def fetch_stock_quotes(stock_codes: list[str]) -> list[dict]:
     return results
 
 
+def _etf_exchange_code(raw_code: str) -> str:
+    code = str(raw_code or "").strip().lower()
+    if code.startswith(("sh", "sz")) and len(code) == 8:
+        return code
+    if code.startswith("of") and len(code) == 8:
+        code = code[2:]
+    if not re.fullmatch(r"\d{6}", code):
+        return ""
+    if code.startswith("5"):
+        return f"sh{code}"
+    if code.startswith(("15", "16", "18")):
+        return f"sz{code}"
+    return ""
+
+
+def _normalize_sina_search_item(parts: list[str]) -> dict | None:
+    if len(parts) < 4:
+        return None
+
+    market_type = str(parts[1] or "").strip()
+    stock_name = str(parts[4] if len(parts) > 4 and parts[4] else parts[0]).strip()
+    raw_code = str(parts[2] or "").strip()
+    full_code = str(parts[3] or "").strip().lower()
+
+    if market_type in STOCK_MARKET_TYPES:
+        return {
+            "code": full_code,
+            "name": stock_name,
+            "market": STOCK_MARKET_TYPES[market_type],
+            "_priority": 0,
+        }
+
+    if market_type in ETF_MARKET_TYPES and "ETF" in stock_name.upper():
+        code = _etf_exchange_code(raw_code or full_code)
+        if not code:
+            return None
+        return {
+            "code": code,
+            "name": stock_name,
+            "market": "ETF",
+            "_priority": 1 if market_type == "22" else 2,
+        }
+
+    return None
+
+
+def _parse_sina_search_results(content: str) -> list[dict]:
+    match = re.search(r'var suggestvalue="(.*)";?', content)
+    if not match:
+        return []
+
+    data = match.group(1)
+    if not data:
+        return []
+
+    indexed: dict[str, dict] = {}
+    order: list[str] = []
+    for item in data.split(";"):
+        normalized = _normalize_sina_search_item(item.split(","))
+        if not normalized:
+            continue
+
+        code_key = str(normalized.get("code") or "").strip().lower()
+        if not code_key:
+            continue
+        if code_key not in indexed:
+            order.append(code_key)
+            indexed[code_key] = normalized
+            continue
+        if int(normalized.get("_priority") or 99) < int(
+            indexed[code_key].get("_priority") or 99
+        ):
+            indexed[code_key] = normalized
+
+    results = []
+    for code_key in order:
+        item = dict(indexed[code_key])
+        item.pop("_priority", None)
+        results.append(item)
+    return results
+
+
 async def search_stock_by_name(keyword: str) -> list[dict]:
     """
     根据名称或代码模糊搜索股票
@@ -122,36 +206,7 @@ async def search_stock_by_name(keyword: str) -> list[dict]:
             
             content = response.content.decode("gbk", errors="ignore")
             
-            # 格式: var suggestvalue="名称,市场类型,纯代码,完整代码,名称,...;..."
-            match = re.search(r'var suggestvalue="(.*)";?', content)
-            if not match:
-                return []
-            
-            data = match.group(1)
-            if not data:
-                return []
-            
-            for item in data.split(";"):
-                parts = item.split(",")
-                if len(parts) < 4:
-                    continue
-                
-                # parts[0] = 名称, parts[1] = 市场类型, parts[2] = 纯代码, parts[3] = 完整代码
-                stock_name = parts[0]
-                market_type = parts[1]
-                full_code = parts[3]  # 使用 parts[3] 获取完整代码如 sh603733
-                
-                # 只保留 A 股（11=沪A, 12=深A）
-                if market_type not in ("11", "12"):
-                    continue
-                
-                market_name = "沪A" if market_type == "11" else "深A"
-                
-                results.append({
-                    "code": full_code,
-                    "name": stock_name,
-                    "market": market_name,
-                })
+            results = _parse_sina_search_results(content)
                 
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error searching stock: {e}")

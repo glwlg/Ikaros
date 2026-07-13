@@ -64,7 +64,17 @@ input_schema:
       description: 可选，本次执行日期，格式 YYYY-MM-DD；用于新闻/快讯标题和时效搜索锚定。
     output_dir:
       type: string
-      description: 可选，指定本次文章中间产物和附件输出目录。
+      description: 可选，仅指定中间产物和附件目录；最终草稿始终写入固定 drafts 目录。
+    action:
+      type: string
+      enum: [list_titles]
+      description: 查询历史文章标题；查询时不执行写作和发布流程。
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 100
+      default: 20
+      description: list_titles 返回数量，默认 20，最多 100。
   anyOf:
   - required:
     - topic
@@ -74,6 +84,8 @@ input_schema:
     - source_paths
   - required:
     - stage
+  - required:
+    - action
 tool_exports:
 - name: article_publisher
   description: 生成长文、公众号图文稿或小红书稿件，并可执行搜索、写作、配图和发布。
@@ -126,7 +138,17 @@ tool_exports:
         description: 本次执行日期，格式 YYYY-MM-DD；新闻/快讯任务应传入调度器给出的日期。
       output_dir:
         type: string
-        description: 可选，指定本次文章中间产物和附件输出目录；定时任务不要复用旧稿目录。
+        description: 可选，仅指定中间产物和附件目录；最终草稿始终写入固定 drafts 目录。
+      action:
+        type: string
+        enum: [list_titles]
+        description: 查询过去写过的文章标题；查询时不执行写作和发布流程。
+      limit:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+        description: list_titles 返回数量，默认 20，最多 100。
     anyOf:
     - required:
       - topic
@@ -136,6 +158,8 @@ tool_exports:
       - source_paths
     - required:
       - stage
+    - required:
+      - action
 permissions:
   filesystem: workspace
   shell: true
@@ -192,6 +216,7 @@ scripts/
 ### 机器调用
 
 - `python scripts/execute.py "OpenAI 最新模型发布" --raw-json`
+- `python scripts/execute.py --action list_titles --limit 20 --raw-json`
 
 ## Rules
 
@@ -216,6 +241,8 @@ scripts/
 - 微信公众号发布后会尽量通过 `draft/get` 回读正文，确认接口层是否保留 `style`；如果返回“样式回读已保留”，说明接口保存了排版，后台编辑器视图不渲染时以预览效果为准。
 - 如果通过 `bash` 让 bot 执行 CLI，优先追加 `--raw-json`；CLI 会用 `tool_result=...` 输出最终结构化结果，避免把进度文本误当成 shell 错误。
 - 支持通过 `--stage` 参数单独执行某个阶段，中间产物通过 JSON 文件传递，支持断点续跑。
+- 每次全流程成功生成后，最终草稿固定写入 `DATA_DIR/user/skills/article_publisher/drafts/`，返回结果中的 `data.draft_path` 是唯一可信草稿路径。调用方必须读取该路径，不要自行创建或搬运草稿文件。
+- 写作前先调用 `action=list_titles` 检查历史标题；`limit` 默认 20，允许 1-100。历史详情与写作阶段使用同一份固定留档文件，禁止从当前工作目录猜测历史路径。
 
 ### 新闻请求硬闸门 SOP
 
@@ -255,7 +282,7 @@ scripts/
 
 ## Output
 
-- 成功时返回文章正文、生成的图片文件，以及可选的多渠道发布结果。
+- 成功时返回文章正文、固定草稿路径 `data.draft_path`、生成的图片文件，以及可选的多渠道发布结果。
 - 当选择 `xiaohongshu` 渠道时，会额外生成 `xiaohongshu_note.txt` 和 `xiaohongshu_note.json` 作为发布草稿附件。
 - CLI 会把附件写到默认输出目录或 `--output-dir` 指定目录，并输出 `saved_file=<绝对路径>`。
 - 中间产物存放在 `{DATA_DIR}/user/skills/article_publisher/articles/{topic_slug}/` 下。

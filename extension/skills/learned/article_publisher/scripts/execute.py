@@ -68,6 +68,13 @@ from ap_utils.xiaohongshu import (
     fallback_xiaohongshu_note,
     generate_xiaohongshu_note_json,
 )
+from ap_utils.history import (
+    DEFAULT_TITLE_LIMIT,
+    MAX_TITLE_LIMIT,
+    list_office_practice_titles,
+    office_practice_history_path,
+    save_article_draft,
+)
 
 logger = logging.getLogger(__name__)
 TIME_TEXT_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
@@ -255,6 +262,56 @@ def _resolve_wechat_account_selector(params: dict[str, Any], topic: str) -> str:
         if candidate not in GENERIC_WECHAT_ACCOUNT_NAMES:
             return candidate
     return ""
+
+
+def _append_office_practice_history(
+    *,
+    topic: str,
+    article_data: dict[str, Any],
+    publish_statuses: list[str],
+    current_date: str,
+) -> None:
+    """Persist office-practice column history for future de-duplication."""
+    requirements = derive_topic_requirements(topic, current_date=current_date)
+    if not requirements.get("practical_office"):
+        return
+
+    title = str(article_data.get("title") or "").strip()
+    sections = list(article_data.get("sections") or [])
+    body_text = " ".join(str(sec.get("content") or "") for sec in sections if isinstance(sec, dict))
+    lower = f"{topic} {title} {body_text}"
+
+    scenario_candidates = [
+        "会议纪要", "周报", "日报", "邮件回复", "客户回复", "Excel数据说明", "PPT汇报结构",
+        "Word文档归纳", "长文档摘要", "知识库整理", "客服话术", "商品文案", "跨境电商Listing",
+        "多语言文案润色", "资料整理", "数据说明",
+    ]
+    tool_candidates = ["ChatGPT", "Copilot", "WPS AI", "飞书", "钉钉", "腾讯文档", "Kimi", "豆包", "通义千问", "Excel"]
+    scenarios = [item for item in scenario_candidates if item in lower]
+    tools = [item for item in tool_candidates if item.lower() in lower.lower()]
+    image_themes = [
+        str(article_data.get("cover_prompt") or "").strip(),
+        *[str(sec.get("image_prompt") or "").strip() for sec in sections if isinstance(sec, dict)],
+    ]
+    image_themes = [item for item in image_themes if item]
+
+    record = {
+        "published_date": current_date or datetime.now().strftime("%Y-%m-%d"),
+        "title": title,
+        "core_tool": "、".join(tools[:4]) or "通用AI助手/办公软件AI功能",
+        "office_scenario": "、".join(scenarios[:4]) or str(requirements.get("subject") or topic),
+        "target_reader": "普通职场人、小团队运营、行政、销售、客服、电商运营、数据分析人员",
+        "keywords": "、".join([*scenarios[:5], *tools[:3]]) or "AI办公效率、办公自动化、实操经验",
+        "summary": str(article_data.get("digest") or "").strip(),
+        "image_theme": " | ".join(image_themes[:4]),
+        "published": bool(publish_statuses) and not any("发布失败" in s for s in publish_statuses),
+        "publish_status": "\n".join(publish_statuses) if publish_statuses else "未发布或仅生成草稿",
+    }
+
+    history_path = office_practice_history_path()
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    with history_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def _resolve_news_rejection_message(topic: str, research_data: dict[str, Any]) -> str:
@@ -460,9 +517,32 @@ async def _run_full_flow(
     if publish_statuses:
         final_text = f"{final_text}\n\n---\n" + "\n".join(publish_statuses)
 
+    try:
+        draft_path = save_article_draft(dict(illust_result.data or article_data))
+    except Exception as exc:
+        logger.warning("Failed to save article draft: %s", exc)
+        yield {
+            "ok": False,
+            "failure_mode": "recoverable",
+            "text": f"❌ 草稿保存失败: {exc}",
+            "ui": {},
+        }
+        return
+
+    try:
+        _append_office_practice_history(
+            topic=topic,
+            article_data=article_data,
+            publish_statuses=publish_statuses,
+            current_date=current_date,
+        )
+    except Exception as exc:
+        logger.warning("Failed to append office practice history: %s", exc)
+
     yield {
         "ok": True,
-        "text": final_text,
+        "text": f"{final_text}\n\n草稿路径: {draft_path}",
+        "data": {"draft_path": str(draft_path)},
         "files": generated_files,
         "ui": {},
         "task_outcome": "done",
@@ -597,6 +677,26 @@ async def execute(ctx: UnifiedContext, params: dict[str, Any], runtime=None):
     publish = as_bool(params.get("publish"), default=False)
     publish_channels = resolve_publish_channels(params)
     stage = str(params.get("stage") or "").strip().lower()
+    action = str(params.get("action") or "").strip().lower()
+
+    if action == "list_titles":
+        try:
+            limit = int(params.get("limit", DEFAULT_TITLE_LIMIT) or DEFAULT_TITLE_LIMIT)
+        except (TypeError, ValueError):
+            limit = DEFAULT_TITLE_LIMIT
+        limit = max(1, min(limit, MAX_TITLE_LIMIT))
+        titles = list_office_practice_titles(limit=limit)
+        yield {
+            "ok": True,
+            "text": "\n".join(
+                f"{item['published_date']} {item['title']}".strip() for item in titles
+            ) or "暂无历史文章标题。",
+            "data": {"titles": titles, "limit": limit},
+            "ui": {},
+            "task_outcome": "done",
+            "terminal": True,
+        }
+        return
 
     try:
         word_count = int(params.get("word_count", 1000) or 1000)
@@ -708,6 +808,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Article topic. If omitted, --message-text or ctx.message.text is used.",
     )
     parser.add_argument(
+        "--action",
+        choices=["list_titles"],
+        default=None,
+        help="Run a metadata action instead of the article pipeline.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_TITLE_LIMIT,
+        help=f"Maximum history titles to return (1-{MAX_TITLE_LIMIT}).",
+    )
+    parser.add_argument(
         "--stage",
         choices=["search", "write", "illustrate", "publish"],
         default=None,
@@ -764,6 +876,8 @@ def _params_from_args(args: argparse.Namespace) -> dict[str, Any]:
     ]
     explicit = {
         "topic": topic or None,
+        "action": getattr(args, "action", None),
+        "limit": getattr(args, "limit", DEFAULT_TITLE_LIMIT),
         "publish": bool(getattr(args, "publish", False)),
         "publish_channels": publish_channels or None,
         "wechat_account": str(getattr(args, "wechat_account", "") or "").strip() or None,

@@ -22,6 +22,7 @@ from ap_utils import (
     read_local_material_context,
     topic_slug,
 )
+from ap_utils.history import load_office_practice_records
 from ap_stages import StageResult
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ async def write_stage(
             search_context,
             word_count,
             current_date=current_date,
+            office_history_context=_load_office_practice_history_context(current_date=current_date),
         )
     except Exception as exc:
         logger.error("Article generation failed: %s", exc, exc_info=True)
@@ -161,12 +163,43 @@ async def write_stage(
 # LLM call
 # ---------------------------------------------------------------------------
 
+def _load_office_practice_history_context(*, current_date: str = "") -> str:
+    """Load recent office-practice column history for topic de-duplication."""
+    try:
+        records = load_office_practice_records(
+            limit=20,
+            current_date=current_date,
+            days=30,
+        )
+    except Exception:
+        return "最近30天历史留档：读取失败，仍需主动避免与常见办公选题重复。"
+
+    if not records:
+        return "最近30天历史留档：暂无。"
+
+    lines = ["最近30天历史留档（写作时必须避开标题、场景、案例、结论和配图主题重复）："]
+    for item in records[-20:]:
+        parts = [
+            f"日期：{item.get('published_date') or item.get('date') or ''}",
+            f"标题：{item.get('title') or ''}",
+            f"核心工具：{item.get('core_tool') or ''}",
+            f"场景：{item.get('office_scenario') or ''}",
+            f"读者：{item.get('target_reader') or ''}",
+            f"关键词：{item.get('keywords') or ''}",
+            f"摘要：{item.get('summary') or ''}",
+            f"配图：{item.get('image_theme') or ''}",
+        ]
+        lines.append("；".join(str(part) for part in parts if str(part).strip()))
+    return "\n".join(lines)
+
+
 async def _generate_article_json(
     topic: str,
     search_context: str,
     word_count: int = 1000,
     *,
     current_date: str = "",
+    office_history_context: str = "",
 ) -> dict[str, Any]:
     requirements = derive_topic_requirements(topic, current_date=current_date)
     subject = str(requirements["subject"] or topic).strip()
@@ -200,31 +233,59 @@ async def _generate_article_json(
             + "。"
         )
 
+    is_practical_office = bool(requirements.get("practical_office"))
+    if is_practical_office:
+        brief_lines.extend([
+            "- 本文必须是办公实操经验分享，不要写成概念分析、行业评论、新闻解读或工具清单合集。",
+            "- 只聚焦一个具体办公场景，并写出可复制的输入材料、提示词、输出格式、复核点和修正步骤。",
+            "- 用户没有提供素材时，可以基于公开资料和常见办公流程构造脱敏模拟案例，但不得编造具体工具不存在的功能。",
+        ])
+    persona = "你是一名长期做办公效率实操经验分享的中文公众号作者，熟悉普通职场人的会议、邮件、表格、PPT、客服和电商运营工作流。"
+    office_extra_prompt = ""
+    if is_practical_office:
+        office_extra_prompt = (
+            "\n\n**办公实操栏目硬性要求**：\n"
+            "- 这不是行业评论、新闻解读或概念科普；必须写成一篇可长期连载的办公实操经验分享。\n"
+            "- 写作前先在脑中完成选题收窄：从素材和历史留档中选择一个具体办公任务，只写一个主场景，不要写成AI办公能力合集。\n"
+            "- 如果主题范围很宽，优先从邮件回复效率、客服话术整理、Excel数据说明、会议录音转待办、商品文案批量改写、跨境电商标题优化、PPT汇报结构整理、周报素材归纳、文档摘要与风险点提取、多语言办公翻译与润色中自动选择一个不重复角度。\n"
+            "- 必须包含一个完整但脱敏的模拟办公案例：原始材料片段、第一次让AI处理的任务、AI应输出的格式、人工复核点、二次修改方向、最后可用结果。\n"
+            "- 案例里的原始材料要具体到可读：例如3-6条会议记录、5行表格数据、3封邮件要点、6条客服问答或一段商品卖点；不得只写‘把资料给AI’。\n"
+            "- 必须给出可复制的提示词或任务说明，使用普通人能照着改的中文表达。\n"
+            "- 每个关键步骤都要写清楚输入是什么、输出是什么、人要检查什么；不要只写原则。\n"
+            "- 文章标题不要带日期、快讯、日报、最新、重磅、炸裂、颠覆、风口、财富密码、躺赚、不学就晚了；标题必须像正常实用文，突出具体办公场景或具体收益。\n"
+            "- 语言要像有实际办公经验的人复盘方法，少写‘提升效率、释放生产力、重塑流程’等抽象词。\n"
+            "- 结尾强调AI只是先做初稿、整理和改写，人负责确认、选择和沟通。\n"
+            "- 配图至少覆盖：办公痛点、AI工作流、案例结果整理；现代、干净、专业，不要科幻机器人、金融暴涨、K线或虚拟货币元素。\n"
+            f"\n{office_history_context}\n"
+        )
+
     structure_prompt = (
-        "你是一名资深中文公众号编辑，也是一位擅长制造阅读停留和分享欲的爆款文章策划者。"
-        f"请基于以下素材，围绕主题「{subject}」完成写作。\n\n"
+        persona
+        + f"请基于以下素材，围绕主题「{subject}」完成写作。\n\n"
         "写作要求：\n"
         + "\n".join(brief_lines)
         + "\n\n"
-        f"素材内容：\n{search_context[:MAX_SEARCH_CONTEXT_CHARS]}\n\n"
-        "**风格要求**：\n"
-        "- 用中文写作，语气清楚、自然、克制，同时要有轻松幽默的故事感，避免生硬报告腔。\n"
-        "- 可以借用国内营销号的注意力机制：大数字、强反差、反常识、悬念问题、具体公司或具体动作；但正文必须用真实事实和经济逻辑兑现，禁止空心标题党。\n"
-        "- 从读者的痛点、好奇心和实际需求切入，用具体场景让读者觉得“这和我有关”。\n"
-        "- 每一段都要传达一个清楚信息点，少写空泛形容，多写事实、判断、案例和影响。\n"
-        "- 可以使用高级中文词汇和生动比喻，但逻辑必须清晰，不要为了煽情牺牲准确性。\n"
-        "- 观点可以有，但必须建立在素材事实之上，不要脱离素材做空泛延展。\n"
-        "- 标题必须优先使用素材里的大金额、大数字、强冲突或明确公司动作；当有募资额、订单数、合作意向、增长率等数字时，不要用“进账本 / 排队 / 上桌”等抽象词替代标题钩子。\n"
-        "- 开头第一屏要先兑现标题承诺：用 3-5 个短段落写出“为什么这个数字/冲突值得点开”，不要用“过去三天的主线是...”这类报告腔开场。\n"
-        "- 小标题要像信息流里的二级钩子，优先用具体冲突或动作，例如“机器人还没进家门，先冲进交易所”；不要使用 emoji 堆砌。\n"
-        "- 结尾必须是非对话式分析收束，不要向读者提问，不要写“你觉得 / 你所在 / 不妨问一句 / 欢迎留言”。\n\n"
-        "**篇幅要求**：\n"
+        f"素材内容：\n{search_context[:MAX_SEARCH_CONTEXT_CHARS]}\n"
+        + office_extra_prompt
+        + "\n如通用写作要求与办公实操栏目硬性要求冲突，以办公实操栏目硬性要求为准。\n\n"
+        + "**风格要求**：\n"
+        + "- 用中文写作，语气清楚、自然、克制，同时要有轻松幽默的故事感，避免生硬报告腔。\n"
+        + ("- 不使用营销号式表达，不追求强刺激标题；用具体办公问题、具体材料和具体输出建立阅读价值。\n" if is_practical_office else "- 可以借用国内营销号的注意力机制：大数字、强反差、反常识、悬念问题、具体公司或具体动作；但正文必须用真实事实和经济逻辑兑现，禁止空心标题党。\n")
+        + "- 从读者的痛点、好奇心和实际需求切入，用具体场景让读者觉得“这和我有关”。\n"
+        + "- 每一段都要传达一个清楚信息点，少写空泛形容，多写事实、判断、案例和影响。\n"
+        + "- 可以使用高级中文词汇和生动比喻，但逻辑必须清晰，不要为了煽情牺牲准确性。\n"
+        + "- 观点可以有，但必须建立在素材事实之上，不要脱离素材做空泛延展。\n"
+        + ("- 标题必须像正常实用文章，直接说明办公场景和收益，例如‘把客服聊天记录整理成一套标准回复’；不得使用日期、快讯、日报、最新、重磅、炸裂、颠覆等词。\n" if is_practical_office else "- 标题必须优先使用素材里的大金额、大数字、强冲突或明确公司动作；当有募资额、订单数、合作意向、增长率等数字时，不要用“进账本 / 排队 / 上桌”等抽象词替代标题钩子。\n")
+        + ("- 开头第一屏直接进入真实办公痛点：谁在什么场景卡住、原来怎么做、为什么耗时间；不要写宏观背景。\n" if is_practical_office else "- 开头第一屏要先兑现标题承诺：用 3-5 个短段落写出“为什么这个数字/冲突值得点开”，不要用“过去三天的主线是...”这类报告腔开场。\n")
+        + ("- 小标题要像操作步骤或经验节点，例如‘先别让AI直接写结论，先让它拆字段’；不要使用 emoji 堆砌。\n" if is_practical_office else "- 小标题要像信息流里的二级钩子，优先用具体冲突或动作，例如“机器人还没进家门，先冲进交易所”；不要使用 emoji 堆砌。\n")
+        + "- 结尾必须是非对话式分析收束，不要向读者提问，不要写“你觉得 / 你所在 / 不妨问一句 / 欢迎留言”。\n\n"
+        + "**篇幅要求**：\n"
         f"- 正文总字数要求约 {word_count} 字；不要在正文里暴露字数要求。\n"
         "- 拆分为 4 到 6 个 section，每个 section 有独立小标题。\n"
         "- 每段控制在 2-3 句话（约 80-120 字），然后换段，保持阅读节奏。\n"
-        "- 结尾要收束全文，点明这些新闻反映出的变化、影响或趋势，不要写空泛口号。\n\n"
-        "**正文结构建议**：\n"
-        "- 引言：用问题、反差或痛点场景开场，引发读者继续读下去。\n"
+        + ("- 结尾收束到方法价值：AI先承担归纳、改写和整理，人负责确认、选择和沟通；不要写趋势预测。\n\n" if is_practical_office else "- 结尾要收束全文，点明这些新闻反映出的变化、影响或趋势，不要写空泛口号。\n\n")
+        + "**正文结构建议**：\n"
+        + "- 引言：用问题、反差或痛点场景开场，引发读者继续读下去。\n"
         "- 可信依据：如素材中有权威人物、机构、公司或数据，可引用其观点或事实增强可信度；没有依据时不要编造。\n"
         "- 案例支撑：用具体案例说明主题，不要只讲抽象趋势。\n"
         "- 理论解释：用简明语言解释背后的技术、商业或产业逻辑。\n"

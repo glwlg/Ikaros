@@ -18,6 +18,30 @@ SUPPORTED_LOCAL_MATERIAL_SUFFIXES = {".md", ".markdown", ".txt"}
 AUTHOR_ACCOUNT_KEYS = ("author", "auther", "article_author")
 SUPPORTED_PUBLISH_CHANNELS = ("wechat", "xiaohongshu")
 NEWS_TOPIC_KEYWORDS = ("新闻", "快讯", "资讯", "时讯", "要闻", "报道", "动态")
+PRACTICAL_OFFICE_KEYWORDS = (
+    "AI办公效率",
+    "职场效率",
+    "办公自动化",
+    "实操经验",
+    "经验分享",
+    "会议纪要",
+    "周报",
+    "日报",
+    "邮件",
+    "客户回复",
+    "Excel",
+    "PPT",
+    "Word",
+    "文档归纳",
+    "长文档摘要",
+    "知识库",
+    "客服话术",
+    "商品文案",
+    "Listing",
+    "多语言文案",
+    "资料整理",
+    "数据说明",
+)
 SAME_DAY_NEWS_PATTERNS = (
     r"当天的?新闻",
     r"今天的?新闻",
@@ -238,9 +262,16 @@ def derive_topic_requirements(topic: str, *, current_date: str = "") -> dict[str
     prefer_news = explicit_news_request or same_day_only
     public_readers = any(keyword in raw for keyword in PUBLIC_READER_KEYWORDS)
     body_only = any(keyword in raw for keyword in BODY_ONLY_KEYWORDS)
+    practical_office = any(keyword in raw for keyword in PRACTICAL_OFFICE_KEYWORDS)
 
     effective_current_date = str(current_date or explicit_date or "").strip()
     search_parts = [subject]
+    if practical_office:
+        search_parts.extend([
+            "AI 办公 实操 案例",
+            "会议纪要 周报 邮件 Excel PPT 自动化",
+            "最近7天 AI工具 办公软件 更新",
+        ])
     if same_day_only and effective_current_date:
         search_parts.append(effective_current_date)
     search_query = " ".join(part for part in search_parts if str(part).strip()).strip()
@@ -256,6 +287,7 @@ def derive_topic_requirements(topic: str, *, current_date: str = "") -> dict[str
         "body_only": body_only,
         "forbidden_terms": forbidden_terms,
         "current_date": effective_current_date,
+        "practical_office": practical_office,
     }
 
 

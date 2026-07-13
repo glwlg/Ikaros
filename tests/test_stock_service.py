@@ -1,4 +1,5 @@
 from extension.skills.learned.stock_watch.scripts.services.stock_service import (
+    _parse_sina_search_results,
     format_stock_message,
 )
 
@@ -57,3 +58,36 @@ def test_format_stock_message_adds_direction_against_previous_push_prices():
     assert "平安银行 12.1 -1.63% ↓" in message
     assert "浦发银行 8.0 0%" in message
     assert "浦发银行 8.0 0% →" not in message
+
+
+def test_parse_sina_search_results_keeps_a_share_results():
+    results = _parse_sina_search_results(
+        'var suggestvalue="仙鹤股份,11,603733,sh603733,仙鹤股份,,仙鹤股份,99,1,,,";'
+    )
+
+    assert results == [
+        {"code": "sh603733", "name": "仙鹤股份", "market": "沪A"},
+    ]
+
+
+def test_parse_sina_search_results_normalizes_etf_to_quote_code():
+    results = _parse_sina_search_results(
+        'var suggestvalue="of159509,25,159509,of159509,景顺长城纳斯达克科技ETF(QDII),,'
+        '景顺长城纳斯达克科技ETF(QDII),99,1,,,;of159509,22,159509,of159509,'
+        '纳指科技ETF景顺,,纳指科技ETF景顺,99,1,,,";'
+    )
+
+    assert results == [
+        {"code": "sz159509", "name": "纳指科技ETF景顺", "market": "ETF"},
+    ]
+
+
+def test_parse_sina_search_results_normalizes_shanghai_etf_to_quote_code():
+    results = _parse_sina_search_results(
+        'var suggestvalue="of510300,22,510300,of510300,沪深300ETF华泰柏瑞,,'
+        '沪深300ETF华泰柏瑞,99,1,,,";'
+    )
+
+    assert results == [
+        {"code": "sh510300", "name": "沪深300ETF华泰柏瑞", "market": "ETF"},
+    ]
