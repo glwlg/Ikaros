@@ -15,6 +15,7 @@ from core.platform.registry import adapter_manager
 from core.platform.models import UnifiedContext
 from core.proactive_delivery import resolve_proactive_target
 from core.runtime_v2 import runtime_event_bus, runtime_v2
+from core.scheduler_display import format_scheduler_report
 from core.state_paths import SINGLE_USER_SCOPE
 from shared.contracts.proactive_delivery_target import normalize_proactive_platform
 
@@ -576,11 +577,7 @@ async def run_skill_cron_job(
                     final_output.append(chunk)
 
             full_response = "".join(final_output).strip()
-        report_text = (
-            f"⏰ **定时任务执行报告 ({rendered_instruction})**\n\n{full_response}"
-            if full_response
-            else ""
-        )
+        report_text = format_scheduler_report(rendered_instruction, full_response)
         if run_session_id and report_text:
             await save_message(user_id_text, "model", report_text, run_session_id)
         if run_session_id and runtime_turn_id:

@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
 from core.platform.models import UnifiedContext
+from core.scheduler_display import summarize_scheduler_instruction
 from core.skill_menu import make_callback, parse_callback
 from core.skill_cli import (
     add_common_arguments,
@@ -306,7 +307,8 @@ async def list_tasks_command(
     for t in all_sorted:
         msg += f"🕒 **ID: {t['id']}**\n"
         msg += f"   Cron: `{t['crontab']}`\n"
-        msg += f"   Desc: `{t['instruction']}`\n"
+        instruction_preview = summarize_scheduler_instruction(t["instruction"])
+        msg += f"   Desc: `{instruction_preview}`\n"
         msg += f"   Push: {t.get('need_push', True)}\n\n"
         msg += f"   Channel: `{_format_delivery_target(t)}`\n\n"
 
