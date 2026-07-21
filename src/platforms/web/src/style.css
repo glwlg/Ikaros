@@ -20,18 +20,205 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 确保 body 和 #app 正确填充视口 */
+/* 确保 body 和 #app 正确填充视口（优先 dvh，兼容旧浏览器） */
 html, body, #app {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
 }
 
 body {
   min-width: 320px;
+  /* 避免 iOS 橡皮筋把整页拖出 */
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ========================================
+   移动端安全区 / 触控辅助（记账与全屏模块共用）
+   ======================================== */
+
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.safe-x {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* 主 Tab 内容区底部留白：底栏 + FAB + 安全区 */
+.accounting-page-pad {
+  padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* 子页滚动区底部安全留白 */
+.accounting-subpage-pad {
+  padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* 全屏壳：避开移动浏览器 100vh 地址栏跳动 */
+.accounting-fullscreen {
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* 移动端输入框 ≥16px，防止 iOS 聚焦自动放大 */
+@media (max-width: 768px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* 触控目标更易点 */
+  .accounting-touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* 横向滤镜条隐藏滚动条 */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* 移动滚动更顺滑 */
+.accounting-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* ── 记账表单控件（统一圆角/内边距/对齐，避免图标压字、select 裁切） ── */
+.accounting-field {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 44px;
+  /* auto height + padding: avoid WebKit select text vertically clipped / invisible */
+  height: auto;
+  padding: 11px 12px;
+  border: 1px solid var(--color-border-secondary, #e8e8ec);
+  border-radius: 12px;
+  background-color: var(--color-bg-elevated, #ffffff);
+  color: var(--color-text-primary, #1c2024);
+  -webkit-text-fill-color: var(--color-text-primary, #1c2024);
+  font-size: 15px;
+  line-height: 1.25;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.accounting-field:focus {
+  border-color: var(--color-accounting-brand, var(--color-primary-500, #0090ff));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accounting-brand, #0090ff) 18%, transparent);
+}
+
+select.accounting-field {
+  padding-right: 36px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  background-color: var(--color-bg-elevated, #ffffff);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238b8d98' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px;
+}
+
+select.accounting-field option {
+  color: #1c2024;
+  background: #ffffff;
+}
+
+/* 带左侧图标的搜索框：给足左内边距，去掉 WebKit 原生 search 装饰 */
+.accounting-search {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.accounting-search > svg,
+.accounting-search > .accounting-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  transform: translateY(-50%);
+  color: var(--color-text-muted, #8b8d98);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.accounting-search > input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  height: 44px;
+  /* 12 + 18 + 10 间距，避免图标压住 placeholder 首字 */
+  padding: 0 12px 0 40px;
+  border: 1px solid var(--color-border-secondary, #e8e8ec);
+  border-radius: 12px;
+  background: var(--color-bg-secondary, #f9f9fb);
+  color: var(--color-text-primary, #1c2024);
+  font-size: 15px;
+  line-height: 44px;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.accounting-search > input:focus {
+  border-color: var(--color-accounting-brand, var(--color-primary-500, #0090ff));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accounting-brand, #0090ff) 18%, transparent);
+}
+
+.accounting-search > input[type="search"]::-webkit-search-decoration,
+.accounting-search > input[type="search"]::-webkit-search-cancel-button,
+.accounting-search > input[type="search"]::-webkit-search-results-button,
+.accounting-search > input[type="search"]::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
+.accounting-field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-muted, #8b8d98);
+}
+
+.accounting-filter-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.accounting-filter-grid .span-2 {
+  grid-column: span 2;
 }
 
 /* ========================================

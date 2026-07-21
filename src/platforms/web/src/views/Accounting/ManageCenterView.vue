@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import {
     createBook,
@@ -13,7 +13,8 @@ import {
     updateCategory,
     type CategoryItem,
 } from '@/api/accounting'
-import { ChevronLeft, Loader2, Trash2, Pencil, Check } from 'lucide-vue-next'
+import { Loader2, Trash2, Pencil, Check } from 'lucide-vue-next'
+import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
 import {
     addNamedItem,
     appendOperationLog,
@@ -21,12 +22,12 @@ import {
     removeNamedItem,
     type NamedItem,
 } from '@/utils/accountingLocal'
+import { accountingConfirm } from '@/utils/accountingDialog'
 
 type ManageKind = 'category' | 'project' | 'merchant' | 'tag' | 'book'
 type CategoryType = '支出' | '收入' | '转账'
 
 const route = useRoute()
-const router = useRouter()
 const store = useAccountingStore()
 
 const loading = ref(false)
@@ -196,7 +197,7 @@ const saveEditCategory = async () => {
 
 const removeCategory = async (item: CategoryItem) => {
     if (!store.currentBookId) return
-    if (!confirm(`确认删除分类「${item.name}」吗？`)) return
+    if (!await accountingConfirm(`确认删除分类「${item.name}」吗？`)) return
 
     operating.value = true
     try {
@@ -218,8 +219,8 @@ const addLocalEntry = () => {
     newLocalName.value = ''
 }
 
-const removeLocalEntry = (item: NamedItem) => {
-    if (!confirm(`确认删除「${item.name}」吗？`)) return
+const removeLocalEntry = async (item: NamedItem) => {
+    if (!await accountingConfirm(`确认删除「${item.name}」吗？`)) return
     const next = removeNamedItem(store.currentBookId, localSection.value, item.id)
     localItems.value = next
     appendOperationLog(store.currentBookId, '删除条目', `${pageTitle.value} / ${item.name}`)
@@ -268,7 +269,7 @@ const saveBook = async () => {
 }
 
 const removeBook = async (id: number, name: string) => {
-    if (!confirm(`确认删除账本「${name}」吗？该账本下数据会一并删除。`)) return
+    if (!await accountingConfirm(`确认删除账本「${name}」吗？该账本下数据会一并删除。`)) return
 
     operating.value = true
     try {
@@ -306,20 +307,12 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-50 dark:bg-slate-900 absolute inset-0 z-50">
-    <header class="bg-white dark:bg-slate-800 shadow-sm relative z-10 safe-top">
-      <div class="flex items-center justify-between h-14 px-4">
-        <button @click="router.back()" class="p-2 -ml-2 text-slate-600 dark:text-slate-300">
-          <ChevronLeft class="w-6 h-6" />
-        </button>
-        <h1 class="text-lg font-bold text-slate-800 dark:text-white">{{ pageTitle }}</h1>
-        <div class="w-8"></div>
-      </div>
-    </header>
+  <div class="accounting-fullscreen bg-theme-primary">
+    <AccountingPageHeader :title="pageTitle" />
 
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
       <div v-if="loading" class="py-12 flex justify-center">
-        <Loader2 class="w-6 h-6 animate-spin text-indigo-500" />
+        <Loader2 class="w-6 h-6 animate-spin text-accounting-brand" />
       </div>
 
       <div v-else-if="!hasBookContext" class="bg-white dark:bg-slate-800 rounded-2xl p-6 text-center text-slate-500 text-sm">
@@ -333,12 +326,12 @@ onMounted(() => {
               v-model="newCategoryName"
               type="text"
               placeholder="输入分类名称"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white"
+              class="accounting-field"
             />
             <div class="flex gap-2">
               <select
                 v-model="newCategoryType"
-                class="flex-1 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white"
+                class="accounting-field flex-1"
               >
                 <option value="支出">支出</option>
                 <option value="收入">收入</option>
@@ -369,12 +362,12 @@ onMounted(() => {
                 <input
                   v-model="editingCategoryName"
                   type="text"
-                  class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm"
+                  class="accounting-field"
                 />
                 <div class="flex gap-2">
                   <select
                     v-model="editingCategoryType"
-                    class="flex-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm"
+                    class="accounting-field flex-1"
                   >
                     <option value="支出">支出</option>
                     <option value="收入">收入</option>
@@ -394,7 +387,7 @@ onMounted(() => {
               v-model="newBookName"
               type="text"
               placeholder="输入新账本名称"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white"
+              class="accounting-field"
             />
             <button
               @click="addBook"
@@ -426,7 +419,7 @@ onMounted(() => {
                 <input
                   v-model="editingBookName"
                   type="text"
-                  class="flex-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm"
+                  class="accounting-field flex-1"
                 />
                 <button @click="saveBook" class="px-3 py-2 rounded-lg bg-indigo-500 text-white text-sm"><Check class="w-4 h-4" /></button>
                 <button @click="cancelEditBook" class="px-3 py-2 rounded-lg bg-slate-200 text-slate-700 text-sm">取消</button>
@@ -441,7 +434,7 @@ onMounted(() => {
               v-model="newLocalName"
               type="text"
               :placeholder="localPlaceholder"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white"
+              class="accounting-field"
             />
             <button @click="addLocalEntry" class="w-full py-2.5 rounded-xl bg-indigo-500 text-white font-medium">新增</button>
           </div>

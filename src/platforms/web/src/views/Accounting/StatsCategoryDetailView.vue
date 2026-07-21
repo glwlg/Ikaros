@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
 import { useRoute, useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import { getCategories, getCategorySummaryByRange, type CategorySummaryItem } from '@/api/accounting'
-import { ChevronLeft, Loader2 } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-vue-next'
 import * as echarts from 'echarts'
 import { getStatsPanel } from '@/utils/accountingLocal'
 import {
@@ -14,6 +15,7 @@ import {
     toIsoLocal,
     type RangePreset,
 } from './statsRange'
+import { buildRecordListQuery } from '@/utils/accountingNavigation'
 
 type StatType = '支出' | '收入'
 
@@ -42,8 +44,6 @@ const detailRangeOptions = rangeOptions.filter(item =>
 
 const timeWindow = computed(() => getRangeWindow(rangePreset.value, customRange.value, now))
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const totalAmount = computed(() => categoryData.value.reduce((sum, item) => sum + item.amount, 0))
 
@@ -51,6 +51,28 @@ const indigoColors = [
     '#14b8a6', '#06b6d4', '#0ea5e9', '#6366f1', '#8b5cf6',
     '#d946ef', '#f43f5e', '#f97316', '#eab308', '#22c55e',
 ]
+
+const openCategoryRecords = (categoryName: string) => {
+    const name = (categoryName || '').trim()
+    if (!name || name === '暂无') return
+    const query = buildRecordListQuery({
+        type: statType.value,
+        category: name === '全部分类' ? undefined : name,
+        start: timeWindow.value.start,
+        end: timeWindow.value.end,
+        label: `${timeWindow.value.label} · ${statType.value}${name && name !== '全部分类' ? ` · ${name}` : ''}`,
+    })
+    router.push({ name: 'RecordList', query })
+}
+
+const bindChartClick = () => {
+    if (!chart) return
+    chart.off('click')
+    chart.on('click', (params: any) => {
+        const name = params?.name
+        if (typeof name === 'string') openCategoryRecords(name)
+    })
+}
 
 const renderChart = () => {
     if (!chartRef.value || chartRef.value.clientWidth <= 0 || chartRef.value.clientHeight <= 0) return false
@@ -63,7 +85,10 @@ const renderChart = () => {
     }))
 
     chart.setOption({
-        tooltip: { trigger: 'item', formatter: '{b}: ¥{c} ({d}%)' },
+        tooltip: {
+            trigger: 'item',
+            formatter: (params: any) => `${params.name}: ${formatAccountingMoney(Number(params.value) || 0)} (${params.percent}%)`,
+        },
         series: [{
             type: 'pie',
             radius: ['52%', '80%'],
@@ -80,10 +105,11 @@ const renderChart = () => {
             type: 'text',
             left: 'center',
             top: '52%',
-            style: { text: `¥${formatMoney(totalAmount.value)}`, fill: '#111827', fontSize: 16, fontWeight: 'bold' },
+            style: { text: formatAccountingMoney(totalAmount.value), fill: '#111827', fontSize: 16, fontWeight: 'bold' },
         }],
     })
 
+    bindChartClick()
     chart.resize()
     return true
 }
@@ -219,7 +245,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-50 dark:bg-slate-900 absolute inset-0 z-50">
+  <div class="accounting-fullscreen bg-theme-primary relative z-50">
     <header class="bg-white dark:bg-slate-800 shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-slate-600 dark:text-slate-300">
@@ -230,20 +256,26 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
       <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 shadow-sm p-4 space-y-3">
-        <div class="grid grid-cols-2 gap-2">
-          <select v-model="rangePreset" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm">
-            <option v-for="item in detailRangeOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
-          </select>
-          <select v-model="selectedCategory" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm">
-            <option v-for="name in categories" :key="name" :value="name">{{ name }}</option>
-          </select>
+        <div class="accounting-filter-grid">
+          <div>
+            <label class="accounting-field-label">日期范围</label>
+            <select v-model="rangePreset" class="accounting-field">
+              <option v-for="item in detailRangeOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="accounting-field-label">分类</label>
+            <select v-model="selectedCategory" class="accounting-field">
+              <option v-for="name in categories" :key="name" :value="name">{{ name }}</option>
+            </select>
+          </div>
         </div>
 
         <div v-if="rangePreset === 'day_range'" class="grid grid-cols-2 gap-2">
-          <input v-model="customRange.dayStart" type="date" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm" />
-          <input v-model="customRange.dayEnd" type="date" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm" />
+          <input v-model="customRange.dayStart" type="date" class="accounting-field" />
+          <input v-model="customRange.dayEnd" type="date" class="accounting-field" />
         </div>
 
         <div class="flex gap-2">
@@ -266,13 +298,21 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <ul class="space-y-2">
-          <li v-for="(cat, i) in categoryData" :key="cat.category" class="flex items-center gap-3">
-            <div :style="{ backgroundColor: indigoColors[i % indigoColors.length] }" class="w-3 h-3 rounded-full flex-shrink-0" />
-            <span class="flex-1 text-sm text-theme-primary">{{ cat.category }}</span>
-            <span class="text-sm font-medium text-theme-primary">¥{{ formatMoney(cat.amount) }}</span>
+        <ul class="space-y-1">
+          <li v-for="(cat, i) in categoryData" :key="cat.category">
+            <button
+              type="button"
+              class="w-full flex items-center gap-3 min-h-[48px] px-1 py-2 rounded-xl active:bg-theme-secondary text-left"
+              @click="openCategoryRecords(cat.category)"
+            >
+              <div :style="{ backgroundColor: indigoColors[i % indigoColors.length] }" class="w-3 h-3 rounded-full flex-shrink-0" />
+              <span class="flex-1 text-sm text-theme-primary">{{ cat.category }}</span>
+              <span class="text-sm font-medium text-theme-primary tabular-nums">{{ formatAccountingMoney(cat.amount) }}</span>
+              <ChevronRight class="w-4 h-4 text-theme-muted flex-shrink-0" />
+            </button>
           </li>
         </ul>
+        <p v-if="categoryData.length" class="text-[11px] text-theme-muted text-center pt-1">点击分类或饼图可查看明细</p>
       </div>
     </main>
   </div>

@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted, type Component } from 'vue'
+import { formatAccountingMoney, formatCompactAccountingMoney } from '@/utils/accountingFormat'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAccountingStore } from '@/stores/accounting'
 import { exportRecordsCsv, getStatsOverview, importCsv, type StatsOverview } from '@/api/accounting'
-import { appendOperationLog } from '@/utils/accountingLocal'
+import { appendOperationLog, loadExtensionSettings } from '@/utils/accountingLocal'
 import {
     Grid2x2, ListOrdered, Store, Tag,
     Download, Upload, Share2, BookOpen,
-    Bot, Puzzle, ScrollText,
+    Bot, ScrollText,
     ChevronRight, User, Settings
 } from 'lucide-vue-next'
+import QuickAddFab from '@/components/accounting/QuickAddFab.vue'
 
 const authStore = useAuthStore()
 const store = useAccountingStore()
@@ -26,7 +28,7 @@ const actionMessage = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 
 type ManagementAction = 'category' | 'project' | 'merchant' | 'tag' | 'import' | 'export' | 'share' | 'book'
-type SettingsAction = 'global' | 'auto' | 'extensions' | 'logs'
+type SettingsAction = 'global' | 'auto' | 'logs'
 
 interface ManagementItem {
     icon: Component
@@ -42,24 +44,24 @@ interface SettingsItem {
     action: SettingsAction
 }
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
+const quickImportEnabled = loadExtensionSettings().quick_import_enabled !== false
 
 const managementItems: ManagementItem[] = [
-    { icon: Grid2x2, label: '分类', color: 'bg-indigo-500', action: 'category' },
-    { icon: ListOrdered, label: '项目', color: 'bg-indigo-500', action: 'project' },
-    { icon: Store, label: '商家', color: 'bg-indigo-500', action: 'merchant' },
-    { icon: Tag, label: '标签', color: 'bg-indigo-500', action: 'tag' },
-    { icon: Download, label: '导入', color: 'bg-indigo-500', action: 'import' },
-    { icon: Upload, label: '导出', color: 'bg-indigo-500', action: 'export' },
-    { icon: Share2, label: '共享', color: 'bg-indigo-500', action: 'share' },
-    { icon: BookOpen, label: '账本', color: 'bg-indigo-500', action: 'book' },
+    { icon: Grid2x2, label: '分类', color: 'bg-accounting-brand', action: 'category' },
+    { icon: ListOrdered, label: '项目', color: 'bg-accounting-brand', action: 'project' },
+    { icon: Store, label: '商家', color: 'bg-accounting-brand', action: 'merchant' },
+    { icon: Tag, label: '标签', color: 'bg-accounting-brand', action: 'tag' },
+    ...(quickImportEnabled
+        ? [{ icon: Download, label: '导入', color: 'bg-accounting-brand', action: 'import' as const }]
+        : []),
+    { icon: Upload, label: '导出', color: 'bg-accounting-brand', action: 'export' },
+    { icon: Share2, label: '共享', color: 'bg-accounting-brand', action: 'share' },
+    { icon: BookOpen, label: '账本', color: 'bg-accounting-brand', action: 'book' },
 ]
 
 const settingsItems: SettingsItem[] = [
     { icon: Settings, label: '全局设置', desc: '显示/通用设置', action: 'global' },
-    { icon: Bot, label: '自动记账', desc: '自动化规则', action: 'auto' },
-    { icon: Puzzle, label: '扩展组件', desc: '', action: 'extensions' },
+    { icon: Bot, label: '自动记账', desc: '周期计划', action: 'auto' },
     { icon: ScrollText, label: '操作日志', desc: '查看与撤回操作', action: 'logs' },
 ]
 
@@ -134,7 +136,7 @@ const handleShare = async () => {
         `用户：${userName}`,
         `记账天数：${overview.value.days}`,
         `交易笔数：${overview.value.transactions}`,
-        `净资产：${formatMoney(overview.value.net_assets)}`,
+        `净资产：${formatAccountingMoney(overview.value.net_assets)}`,
     ].join('\n')
 
     sharing.value = true
@@ -205,9 +207,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="accounting-page-pad">
     <!-- User Card -->
-    <div class="mx-4 mt-4 rounded-2xl bg-gradient-to-r from-indigo-500 to-indigo-400 dark:from-indigo-700 dark:to-indigo-600 p-5 text-white shadow-lg">
+    <div class="mx-4 mt-4 rounded-2xl bg-accounting-brand p-5 text-white shadow-lg">
       <div class="flex items-center gap-4 mb-4">
         <div class="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center">
           <User class="w-8 h-8 text-white" />
@@ -217,25 +219,30 @@ onMounted(async () => {
           <p class="text-sm opacity-80">ID: {{ authStore.user?.id }}</p>
         </div>
       </div>
-      <div class="grid grid-cols-3 text-center">
-        <div>
-          <p class="text-2xl font-bold">{{ overview.days }}</p>
-          <p class="text-xs opacity-80">记账天数</p>
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="min-w-0">
+          <p class="text-xl sm:text-2xl font-bold tabular-nums leading-none">{{ overview.days }}</p>
+          <p class="text-[11px] sm:text-xs opacity-80 mt-1">记账天数</p>
         </div>
-        <div>
-          <p class="text-2xl font-bold">{{ overview.transactions }}</p>
-          <p class="text-xs opacity-80">交易笔数</p>
+        <div class="min-w-0">
+          <p class="text-xl sm:text-2xl font-bold tabular-nums leading-none">{{ overview.transactions }}</p>
+          <p class="text-[11px] sm:text-xs opacity-80 mt-1">交易笔数</p>
         </div>
-        <div>
-          <p class="text-2xl font-bold">{{ formatMoney(overview.net_assets) }}</p>
-          <p class="text-xs opacity-80">净资产</p>
+        <div class="min-w-0">
+          <p
+            class="text-xl sm:text-2xl font-bold tabular-nums leading-none truncate"
+            :title="formatAccountingMoney(overview.net_assets)"
+          >
+            {{ formatCompactAccountingMoney(overview.net_assets) }}
+          </p>
+          <p class="text-[11px] sm:text-xs opacity-80 mt-1">净资产</p>
         </div>
       </div>
     </div>
 
     <!-- Management Grid -->
-    <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
-      <p v-if="actionMessage" class="text-xs text-indigo-600 mb-2 text-center">{{ actionMessage }}</p>
+    <div class="mx-4 mt-4 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary p-4">
+      <p v-if="actionMessage" class="text-xs text-accounting-brand mb-2 text-center">{{ actionMessage }}</p>
       <div class="grid grid-cols-4 gap-4">
         <button
           v-for="item in managementItems"
@@ -243,7 +250,7 @@ onMounted(async () => {
           type="button"
           @click="handleItemClick(item)"
           :disabled="uploading || exporting || sharing"
-          class="flex flex-col items-center gap-1.5 py-2 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-xl transition"
+          class="flex flex-col items-center gap-1.5 py-2 hover:bg-theme-secondary rounded-xl transition"
         >
           <div :class="['w-10 h-10 rounded-xl flex items-center justify-center', item.color]">
             <component :is="item.icon" class="w-5 h-5 text-white" />
@@ -254,13 +261,13 @@ onMounted(async () => {
     </div>
 
     <!-- Settings -->
-    <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 overflow-hidden">
+    <div class="mx-4 mt-4 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary overflow-hidden">
       <button
         v-for="item in settingsItems"
         :key="item.label"
         type="button"
         @click="handleSettingsClick(item)"
-        class="w-full text-left flex items-center gap-3 px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-700 transition cursor-pointer border-b border-gray-50 dark:border-slate-700/50 last:border-b-0"
+        class="w-full text-left flex items-center gap-3 px-4 py-3 hover:bg-theme-secondary transition cursor-pointer border-b border-theme-secondary last:border-b-0"
       >
         <component :is="item.icon" class="w-5 h-5 text-theme-muted" />
         <span class="flex-1 font-medium text-theme-primary text-sm">{{ item.label }}</span>
@@ -269,7 +276,6 @@ onMounted(async () => {
       </button>
     </div>
 
-    <!-- Hidden file input for CSV import -->
     <input
       type="file"
       ref="fileInput"
@@ -277,5 +283,7 @@ onMounted(async () => {
       class="hidden"
       @change="handleFileUpload"
     />
+
+    <QuickAddFab :book-id="store.currentBookId" />
   </div>
 </template>

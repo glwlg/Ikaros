@@ -133,10 +133,21 @@ export const getRecords = (
     keyword?: string,
     start_date?: string,
     end_date?: string,
-    type?: string
+    type?: string,
+    category?: string,
+    account?: string,
 ) =>
     request.get<RecordItem[]>('/accounting/records', {
-        params: { book_id: bookId, limit, keyword, start_date, end_date, type }
+        params: {
+            book_id: bookId,
+            limit,
+            keyword,
+            start_date,
+            end_date,
+            type,
+            category,
+            account,
+        },
     })
 
 export const createRecord = (bookId: number, data: {

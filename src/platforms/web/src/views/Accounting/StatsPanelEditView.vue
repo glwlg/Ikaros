@@ -21,6 +21,8 @@ import {
     rangeOptions,
     toIsoLocal,
 } from './statsRange'
+import { accountingAlert } from '@/utils/accountingDialog'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
 
 const router = useRouter()
 const route = useRoute()
@@ -138,8 +140,6 @@ const previewBars = computed(() => {
     }))
 })
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const formatPeriod = (period: string) => {
     return period.replace(/^\d{4}-/, '')
@@ -209,7 +209,7 @@ const savePanel = async () => {
     if (!store.currentBookId) return
     const name = panel.value.name.trim()
     if (!name) {
-        alert('统计名称不能为空')
+        await accountingAlert('统计名称不能为空')
         return
     }
 
@@ -283,7 +283,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-100 dark:bg-slate-900 absolute inset-0 z-50">
+  <div class="accounting-fullscreen bg-theme-secondary relative z-50">
     <header class="bg-indigo-500 dark:bg-indigo-700 text-white shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-white/90">
@@ -296,7 +296,7 @@ onMounted(async () => {
       </div>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom space-y-4">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad space-y-4">
       <p class="text-sm text-rose-400 leading-relaxed">
         本页面是用来定义统计的结构和过滤条件，不是筛选数据。点我了解如何自定义统计。
       </p>
@@ -322,13 +322,13 @@ onMounted(async () => {
         </div>
 
         <div v-if="panel.default_range === 'day_range'" class="grid grid-cols-2 gap-2 mb-3">
-          <input v-model="customRange.dayStart" type="date" class="h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm" />
-          <input v-model="customRange.dayEnd" type="date" class="h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm" />
+          <input v-model="customRange.dayStart" type="date" class="accounting-field" />
+          <input v-model="customRange.dayEnd" type="date" class="accounting-field" />
         </div>
 
         <p class="text-5xl font-semibold mb-4" :class="panel.default_type === '支出' ? 'text-rose-500' : 'text-indigo-500'">
           {{ panel.default_type === '支出' ? '-' : '+' }}
-          {{ panel.metric === 'count' ? previewValue : `¥${formatMoney(previewValue)}` }}
+          {{ panel.metric === 'count' ? previewValue : formatAccountingMoney(previewValue) }}
         </p>
 
         <div class="h-40 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-700 px-3 py-4 flex items-end gap-3">

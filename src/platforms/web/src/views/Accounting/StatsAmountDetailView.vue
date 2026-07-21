@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
 import { useRoute, useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import { getRangeSummary, type PeriodSummaryItem } from '@/api/accounting'
-import { ChevronLeft, Loader2, TrendingUp, TrendingDown } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Loader2, TrendingUp, TrendingDown } from 'lucide-vue-next'
 import * as echarts from 'echarts'
 import {
     createDefaultCustomRangeState,
@@ -12,6 +13,7 @@ import {
     toIsoLocal,
     type RangePreset,
 } from './statsRange'
+import { buildRecordListQuery, periodBounds } from '@/utils/accountingNavigation'
 
 type StatType = '支出' | '收入' | '结余' | '转账'
 
@@ -41,8 +43,6 @@ const detailRangeOptions = rangeOptions.filter(item =>
 const timeWindow = computed(() => getRangeWindow(rangePreset.value, customRange.value, now))
 const isCustomRange = computed(() => ['year_range', 'quarter_range', 'month_range', 'week_range', 'day_range'].includes(rangePreset.value))
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const formatPercent = (n: number) => {
     if (!Number.isFinite(n)) return '0%'
@@ -90,6 +90,21 @@ const formatPeriodLabel = (period: string) => {
     if (g === 'week') return period.replace(/^\d{4}-/, '')
     if (g === 'month') return period.replace('-', '/')
     return period
+}
+
+const openPeriodRecords = (period: string) => {
+    const bounds = periodBounds(period, timeWindow.value.granularity)
+    if (!bounds) return
+    const type = statType.value === '支出' || statType.value === '收入' || statType.value === '转账'
+        ? statType.value
+        : undefined
+    const query = buildRecordListQuery({
+        type,
+        start: bounds.start,
+        end: bounds.end,
+        label: `${formatPeriodLabel(period)} · ${statType.value}`,
+    })
+    router.push({ name: 'RecordList', query })
 }
 
 const getPreviousWindow = () => {
@@ -276,7 +291,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-900 pb-20">
+  <div class="accounting-fullscreen bg-theme-primary">
     <header class="bg-white dark:bg-slate-800 shadow-sm sticky top-0 z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-slate-600 dark:text-slate-300">
@@ -287,21 +302,22 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-4">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
       <!-- Filters -->
       <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 shadow-sm p-4 space-y-3">
         <!-- Time Range Selector -->
         <div>
           <label class="text-xs text-gray-500 mb-1 block">时间范围</label>
-          <select v-model="rangePreset" class="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm">
+          <label class="accounting-field-label">日期范围</label>
+          <select v-model="rangePreset" class="accounting-field">
             <option v-for="item in detailRangeOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
           </select>
         </div>
 
         <!-- Custom Range Inputs -->
         <div v-if="isCustomRange && rangePreset === 'day_range'" class="grid grid-cols-2 gap-2">
-          <input v-model="customRange.dayStart" type="date" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm" />
-          <input v-model="customRange.dayEnd" type="date" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm" />
+          <input v-model="customRange.dayStart" type="date" class="accounting-field" />
+          <input v-model="customRange.dayEnd" type="date" class="accounting-field" />
         </div>
 
         <!-- Type Tabs -->
@@ -335,7 +351,7 @@ onBeforeUnmount(() => {
               statType === '收入' ? 'text-teal-500' :
               statType === '结余' ? 'text-indigo-500' : 'text-purple-500'
             ]">
-              ¥{{ formatMoney(currentTotal) }}
+              {{ formatAccountingMoney(currentTotal) }}
             </p>
             <!-- YoY Comparison -->
             <div v-if="yoyChange !== null" class="mt-2 flex items-center gap-1">
@@ -347,7 +363,7 @@ onBeforeUnmount(() => {
                 </span>
               </template>
               <span v-else class="text-xs text-gray-400">同比持平</span>
-              <span class="text-xs text-gray-400 ml-1">环比 ¥{{ formatMoney(previousTotal) }}</span>
+              <span class="text-xs text-gray-400 ml-1">环比 {{ formatAccountingMoney(previousTotal) }}</span>
             </div>
           </div>
         </div>
@@ -364,19 +380,29 @@ onBeforeUnmount(() => {
       <!-- Detail List -->
       <div class="mt-4 rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 shadow-sm p-4">
         <h3 class="font-semibold text-theme-primary mb-3">按{{ granularityLabel }}明细</h3>
-        <ul v-if="currentData.length > 0" class="space-y-2">
-          <li v-for="item in currentData" :key="item.period" class="flex items-center justify-between py-2 border-b border-gray-50 dark:border-slate-700/50 last:border-b-0">
-            <span class="text-sm text-theme-secondary">{{ formatPeriodLabel(item.period) }}</span>
-            <div class="text-right">
-              <p class="text-sm font-medium text-theme-primary">
-                ¥{{ formatMoney(statType === '支出' ? item.expense : statType === '收入' ? item.income : item.income - item.expense) }}
-              </p>
-              <p class="text-xs text-theme-muted">
-                {{ item.expense_count || 0 }}笔支出 · {{ item.income_count || 0 }}笔收入
-              </p>
-            </div>
+        <ul v-if="currentData.length > 0" class="space-y-1">
+          <li v-for="item in currentData" :key="item.period">
+            <button
+              type="button"
+              class="w-full flex items-center justify-between gap-2 min-h-[52px] py-2 px-1 rounded-xl active:bg-theme-secondary text-left"
+              @click="openPeriodRecords(item.period)"
+            >
+              <span class="text-sm text-theme-secondary">{{ formatPeriodLabel(item.period) }}</span>
+              <div class="text-right flex items-center gap-1">
+                <div>
+                  <p class="text-sm font-medium text-theme-primary tabular-nums">
+                    {{ formatAccountingMoney(statType === '支出' ? item.expense : statType === '收入' ? item.income : item.income - item.expense) }}
+                  </p>
+                  <p class="text-xs text-theme-muted">
+                    {{ item.expense_count || 0 }}笔支出 · {{ item.income_count || 0 }}笔收入
+                  </p>
+                </div>
+                <ChevronRight class="w-4 h-4 text-theme-muted flex-shrink-0" />
+              </div>
+            </button>
           </li>
         </ul>
+        <p v-if="currentData.length" class="text-[11px] text-theme-muted text-center pt-2">点击时段可查看明细</p>
         <p v-else-if="!loading" class="text-center text-theme-muted text-sm py-8">暂无数据</p>
       </div>
     </main>

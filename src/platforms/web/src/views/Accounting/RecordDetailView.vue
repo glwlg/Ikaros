@@ -18,6 +18,7 @@ import {
     formatRecordTimeForInput,
     serializeRecordTimeInput,
 } from '@/utils/accountingDateTime'
+import { accountingAlert, accountingConfirm } from '@/utils/accountingDialog'
 
 const router = useRouter()
 const route = useRoute()
@@ -120,7 +121,7 @@ const handleSave = async () => {
 
     const amount = Number(form.value.amount)
     if (!amount || amount <= 0) {
-        alert('请输入正确的金额')
+        await accountingAlert('请输入正确的金额')
         return
     }
 
@@ -144,11 +145,11 @@ const handleSave = async () => {
             '更新交易',
             `ID ${recordId} · ${form.value.type} · ¥${amount.toFixed(2)}`,
         )
-        alert('保存成功')
+        await accountingAlert('保存成功')
         await loadData()
     } catch (e) {
         console.error('Failed to update record', e)
-        alert('保存失败，请稍后重试')
+        await accountingAlert('保存失败，请稍后重试')
     } finally {
         saving.value = false
     }
@@ -156,7 +157,7 @@ const handleSave = async () => {
 
 const handleDelete = async () => {
     if (!store.currentBookId || !recordId) return
-    if (!confirm('确定删除这条记录吗？删除后可在操作日志里回滚。')) return
+    if (!await accountingConfirm('确定删除这条记录吗？删除后可在操作日志里回滚。')) return
 
     const snapshot = originalRecord.value
     deleting.value = true
@@ -187,11 +188,11 @@ const handleDelete = async () => {
         } else {
             appendOperationLog(store.currentBookId, '删除交易', `ID ${recordId}`)
         }
-        alert('删除成功')
+        await accountingAlert('删除成功')
         router.replace('/accounting/records')
     } catch (e) {
         console.error('Failed to delete record', e)
-        alert('删除失败，请稍后重试')
+        await accountingAlert('删除失败，请稍后重试')
     } finally {
         deleting.value = false
     }
@@ -203,7 +204,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-50 dark:bg-slate-900 absolute inset-0 z-50">
+  <div class="accounting-fullscreen bg-theme-primary relative z-50">
     <header class="bg-white dark:bg-slate-800 shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-slate-600 dark:text-slate-300">
@@ -221,7 +222,7 @@ onMounted(() => {
       </div>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
       <div v-if="loading" class="flex justify-center py-10">
         <Loader2 class="w-6 h-6 animate-spin text-indigo-500" />
       </div>
@@ -258,7 +259,7 @@ onMounted(() => {
               type="number"
               step="0.01"
               min="0"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              class="accounting-field"
             />
           </div>
 
@@ -266,7 +267,7 @@ onMounted(() => {
             <label class="block text-xs text-slate-500 mb-1">分类</label>
             <select
               v-model="form.category_name"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none"
+              class="accounting-field"
             >
               <option v-for="name in displayCategories" :key="name" :value="name">{{ name }}</option>
             </select>
@@ -276,7 +277,7 @@ onMounted(() => {
             <label class="block text-xs text-slate-500 mb-1">账户</label>
             <select
               v-model="form.account_name"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none"
+              class="accounting-field"
             >
               <option value="">未指定</option>
               <option v-for="acc in accounts" :key="acc.id" :value="acc.name">{{ acc.name }} ({{ acc.type }})</option>
@@ -287,7 +288,7 @@ onMounted(() => {
             <label class="block text-xs text-slate-500 mb-1">转入账户</label>
             <select
               v-model="form.target_account_name"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none"
+              class="accounting-field"
             >
               <option value="">未指定</option>
               <option v-for="acc in accounts" :key="acc.id" :value="acc.name">{{ acc.name }}</option>
@@ -300,7 +301,7 @@ onMounted(() => {
               v-model="form.payee"
               type="text"
               placeholder="例如：超市、公司、朋友"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              class="accounting-field"
             />
           </div>
 
@@ -310,7 +311,7 @@ onMounted(() => {
               v-model="form.remark"
               rows="3"
               placeholder="可选备注"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              class="accounting-field"
             />
           </div>
 
@@ -319,7 +320,7 @@ onMounted(() => {
             <input
               v-model="form.record_time"
               type="datetime-local"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              class="accounting-field"
             />
           </div>
         </div>

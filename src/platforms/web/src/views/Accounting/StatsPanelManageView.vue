@@ -10,6 +10,7 @@ import {
     setStatsPanelEnabled,
     type StatsPanelConfig,
 } from '@/utils/accountingLocal'
+import { accountingConfirm } from '@/utils/accountingDialog'
 
 const router = useRouter()
 const store = useAccountingStore()
@@ -41,7 +42,7 @@ const goAddPanel = () => {
 
 const deletePanel = async (panel: StatsPanelConfig) => {
     if (!store.currentBookId || !panel.is_custom) return
-    if (!confirm(`确认删除统计模板「${panel.name}」吗？`)) return
+    if (!await accountingConfirm(`确认删除统计模板「${panel.name}」吗？`)) return
     panels.value = await removeStatsPanel(store.currentBookId, panel.id)
     appendOperationLog(store.currentBookId, '删除自定义统计', panel.name)
 }
@@ -60,7 +61,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-100 dark:bg-slate-900 absolute inset-0 z-50">
+  <div class="accounting-fullscreen bg-theme-secondary relative z-50">
     <header class="bg-indigo-500 dark:bg-indigo-700 text-white shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-white/90">
@@ -74,7 +75,7 @@ onMounted(async () => {
       </div>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom space-y-4">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad space-y-4">
       <div v-if="loading" class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-6 text-sm text-theme-muted text-center">
         正在加载账本...
       </div>

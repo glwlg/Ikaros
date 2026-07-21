@@ -19,6 +19,12 @@ import {
 import * as echarts from 'echarts'
 import { toIsoLocal } from './statsRange'
 import netWorthBg from '@/assets/net-worth-ocean.svg'
+import { accountingAlert, accountingConfirm } from '@/utils/accountingDialog'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
+import QuickAddFab from '@/components/accounting/QuickAddFab.vue'
+import PullRefreshIndicator from '@/components/accounting/PullRefreshIndicator.vue'
+
+
 
 const router = useRouter()
 
@@ -84,8 +90,6 @@ const totalAssets = computed(() => {
     return { assets, debts, net: assets + debts }
 })
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const typeIcon = (type: string) => {
     switch (type) {
@@ -266,7 +270,7 @@ const handleCreateAccount = async () => {
         appendOperationLog(
             store.currentBookId,
             '新增账户',
-            `${res.data.name} · ${res.data.type} · ¥${res.data.balance.toFixed(2)}`,
+            `${res.data.name} · ${res.data.type} · ${formatAccountingMoney(res.data.balance)}`,
         )
         await loadNetTrend()
         newAccName.value = ''
@@ -296,7 +300,7 @@ const handleMergeAccount = async () => {
     const target = accounts.value.find(account => account.id === mergeTargetAccountId.value)
     if (!target) return
 
-    const confirmed = confirm(
+    const confirmed = await accountingConfirm(
         `确认将「${source.name}」合并到账户「${target.name}」吗？合并后原账户会删除，原名称会作为别名保留。`
     )
     if (!confirmed) return
@@ -308,7 +312,7 @@ const handleMergeAccount = async () => {
         await loadData()
         closeMergeAccount()
     } catch (error: any) {
-        alert(error?.response?.data?.detail || '合并失败，请稍后重试')
+        await accountingAlert(error?.response?.data?.detail || '合并失败，请稍后重试')
     } finally {
         mergingAccount.value = false
     }
@@ -406,30 +410,30 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="pageRef"
-    class="pb-4"
+    class="accounting-page-pad"
     @touchstart="handleTouchStart"
     @touchmove="handleTouchMove"
     @touchend="handleTouchEnd"
     @touchcancel="handleTouchEnd"
   >
-    <div class="overflow-hidden transition-[height] duration-150" :style="{ height: `${Math.round(pullDistance)}px` }">
-      <div class="h-full flex items-end justify-center pb-2 text-xs text-slate-500 gap-1">
-        <Loader2 v-if="refreshing" class="w-3 h-3 animate-spin" />
-        <span>{{ pullHint }}</span>
-      </div>
-    </div>
+    <PullRefreshIndicator :distance="pullDistance" :hint="pullHint" :refreshing="refreshing" />
 
     <!-- Header -->
-    <div class="flex items-center justify-between px-4 pt-4 pb-2">
+    <div class="flex items-center justify-between px-4 pt-3 pb-2">
       <h2 class="text-lg font-bold text-theme-primary">净资产</h2>
-      <button @click="showAddAccount = true" class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-800 transition">
+      <button
+        type="button"
+        class="accounting-touch-target inline-flex items-center justify-center rounded-xl p-2 active:bg-theme-secondary"
+        aria-label="添加账户"
+        @click="showAddAccount = true"
+      >
         <Plus class="w-5 h-5 text-theme-muted" />
       </button>
     </div>
 
     <!-- Net Worth Card -->
     <div
-      class="mx-4 rounded-3xl p-5 text-white shadow-lg relative overflow-hidden cursor-pointer"
+      class="mx-3 sm:mx-4 rounded-3xl p-4 sm:p-5 text-white shadow-lg relative overflow-hidden cursor-pointer"
       :style="{
         backgroundColor: '#0b5d8f',
         backgroundImage: `linear-gradient(135deg, rgba(6, 30, 78, 0.55), rgba(8, 95, 150, 0.38)), url('${netWorthBg}')`,
@@ -440,42 +444,50 @@ onBeforeUnmount(() => {
     >
       <div class="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_20%_20%,rgba(255,255,255,0.35),transparent_45%),radial-gradient(circle_at_80%_70%,rgba(255,255,255,0.18),transparent_45%)]" />
       <div class="relative z-10">
-        <div class="flex items-center justify-between gap-3 mb-1">
-          <div class="flex items-center gap-2">
-            <span class="text-4xl font-bold tracking-tight drop-shadow-[0_2px_8px_rgba(0,0,0,0.35)]">
-              {{ showAmount ? `¥${formatMoney(totalAssets.net)}` : '****' }}
+        <div class="flex items-start justify-between gap-2 mb-1">
+          <div class="flex items-center gap-2 min-w-0 flex-1">
+            <span class="text-2xl sm:text-4xl font-bold tracking-tight tabular-nums break-all leading-tight drop-shadow-[0_2px_8px_rgba(0,0,0,0.35)]">
+              {{ showAmount ? formatAccountingMoney(totalAssets.net) : '****' }}
             </span>
-            <button @click.stop="showAmount = !showAmount" class="opacity-85 hover:opacity-100 transition">
+            <button
+              type="button"
+              class="accounting-touch-target inline-flex items-center justify-center opacity-85 active:opacity-100 flex-shrink-0"
+              aria-label="显示或隐藏金额"
+              @click.stop="showAmount = !showAmount"
+            >
               <EyeOff v-if="showAmount" class="w-5 h-5" />
               <Eye v-else class="w-5 h-5" />
             </button>
           </div>
 
           <button
+            type="button"
+            class="px-2.5 py-1.5 rounded-full border border-white/50 text-xs bg-white/15 active:bg-white/25 transition flex-shrink-0"
             @click.stop="goBalanceTrend('net')"
-            class="px-3 py-1.5 rounded-full border border-white/50 text-xs bg-white/15 hover:bg-white/20 transition"
           >
-            余额趋势
+            趋势
           </button>
         </div>
 
-        <div class="flex gap-3 text-sm mt-2">
+        <div class="flex flex-wrap gap-2 text-sm mt-2">
           <button
+            type="button"
+            class="px-3 py-1.5 rounded-xl bg-white/18 active:bg-white/28 transition min-h-[36px]"
             @click.stop="goBalanceTrend('assets')"
-            class="px-3 py-1.5 rounded-xl bg-white/18 hover:bg-white/28 transition"
           >
-            资产 {{ showAmount ? `¥${formatMoney(totalAssets.assets)}` : '****' }}
+            资产 {{ showAmount ? formatAccountingMoney(totalAssets.assets) : '****' }}
           </button>
           <button
+            type="button"
+            class="px-3 py-1.5 rounded-xl bg-white/18 active:bg-white/28 transition min-h-[36px]"
             @click.stop="goBalanceTrend('liabilities')"
-            class="px-3 py-1.5 rounded-xl bg-white/18 hover:bg-white/28 transition"
           >
-            负债 {{ showAmount ? (totalAssets.debts < 0 ? `-¥${formatMoney(Math.abs(totalAssets.debts))}` : '¥0') : '****' }}
+            负债 {{ showAmount ? formatAccountingMoney(totalAssets.debts) : '****' }}
           </button>
         </div>
       </div>
 
-      <div ref="chartRef" class="h-[76px] mt-4 relative z-10"></div>
+      <div ref="chartRef" class="h-[64px] sm:h-[76px] mt-3 relative z-10"></div>
       <div v-if="netTrendLoading" class="absolute inset-0 z-20 flex items-center justify-center bg-black/10">
         <Loader2 class="w-4 h-4 animate-spin text-white" />
       </div>
@@ -488,30 +500,32 @@ onBeforeUnmount(() => {
 
     <!-- Account Groups -->
     <template v-else>
-      <div v-for="(items, type) in grouped" :key="type" class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 overflow-hidden">
+      <div v-for="(items, type) in grouped" :key="type" class="mx-3 sm:mx-4 mt-3 sm:mt-4 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary overflow-hidden">
         <!-- Group Header -->
-        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-50 dark:border-slate-700/50">
+        <div class="flex items-center justify-between px-3 sm:px-4 py-2.5 border-b border-theme-secondary">
           <button
+            type="button"
+            class="text-sm text-theme-muted font-medium active:text-accounting-brand transition"
             @click="goBalanceTrend('account_type', { accountType: type as string })"
-            class="text-sm text-theme-muted font-medium hover:text-teal-600 dark:hover:text-teal-400 transition"
           >
             {{ type }}
           </button>
           <button
+            type="button"
+            class="text-sm text-theme-muted tabular-nums active:text-accounting-brand transition"
             @click="goBalanceTrend('account_type', { accountType: type as string })"
-            class="text-sm text-theme-muted hover:text-teal-600 dark:hover:text-teal-400 transition"
           >
-            {{ showAmount ? `¥${formatMoney(groupTotal(items))}` : '****' }}
+            {{ showAmount ? formatAccountingMoney(groupTotal(items)) : '****' }}
           </button>
         </div>
         <!-- Account Items -->
         <div
           v-for="acc in items"
           :key="acc.id"
+          class="flex items-center gap-2.5 sm:gap-3 px-3 sm:px-4 py-3 min-h-[56px] active:bg-theme-secondary/70 transition cursor-pointer"
           @click="router.push(`/accounting/account/${acc.id}`)"
-          class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700/50 transition"
         >
-          <div :class="['w-9 h-9 rounded-xl flex items-center justify-center', typeColor(type as string)]">
+          <div :class="['w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0', typeColor(type as string)]">
             <component :is="typeIcon(type as string)" class="w-4 h-4 text-white" />
           </div>
           <div class="flex-1 min-w-0">
@@ -520,20 +534,20 @@ onBeforeUnmount(() => {
               别名：{{ acc.aliases.join(' / ') }}
             </div>
           </div>
-          <button
-            v-if="accounts.length > 1"
-            @click.stop="openMergeAccount(acc)"
-            class="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-600 text-xs text-theme-muted hover:text-teal-600 hover:border-teal-300 dark:hover:border-teal-500 transition"
-          >
-            合并
-          </button>
-          <button
-            @click.stop="goBalanceTrend('account', { accountId: acc.id })"
-            class="text-teal-500 font-semibold text-sm hover:text-teal-600 transition"
-          >
-            {{ showAmount ? `¥${formatMoney(acc.balance)}` : '****' }}
-          </button>
-          <ChevronRight class="w-4 h-4 text-theme-muted" />
+          <div class="flex flex-col items-end gap-1 flex-shrink-0">
+            <span class="text-accounting-brand font-semibold text-sm tabular-nums">
+              {{ showAmount ? formatAccountingMoney(acc.balance) : '****' }}
+            </span>
+            <button
+              v-if="accounts.length > 1"
+              type="button"
+              class="px-2 py-0.5 rounded-md border border-theme-primary text-[11px] text-theme-muted active:text-accounting-brand active:border-accounting-brand"
+              @click.stop="openMergeAccount(acc)"
+            >
+              合并
+            </button>
+          </div>
+          <ChevronRight class="w-4 h-4 text-theme-muted flex-shrink-0" />
         </div>
       </div>
 
@@ -545,10 +559,10 @@ onBeforeUnmount(() => {
     <!-- Add Account Modal -->
     <div
       v-if="showAddAccount"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4"
       @click.self="showAddAccount = false"
     >
-      <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[320px] shadow-xl">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[360px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold text-theme-primary">添加账户</h3>
           <button @click="showAddAccount = false"><X class="w-5 h-5 text-theme-muted" /></button>
@@ -556,22 +570,22 @@ onBeforeUnmount(() => {
         <form @submit.prevent="handleCreateAccount" class="space-y-3">
           <div>
             <label class="text-xs text-theme-muted font-medium">账户名称</label>
-            <input v-model="newAccName" type="text" placeholder="如：招商银行-陈" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" autofocus />
+            <input v-model="newAccName" type="text" placeholder="如：招商银行-陈" class="accounting-field mt-1" autofocus />
           </div>
           <div>
             <label class="text-xs text-theme-muted font-medium">类型</label>
-            <select v-model="newAccType" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <select v-model="newAccType" class="accounting-field mt-1">
               <option v-for="t in accountTypes" :key="t" :value="t">{{ t }}</option>
             </select>
           </div>
           <div>
             <label class="text-xs text-theme-muted font-medium">余额</label>
-            <input v-model.number="newAccBalance" type="number" step="0.01" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <input v-model.number="newAccBalance" type="number" step="0.01" class="accounting-field mt-1" />
           </div>
           <button
             type="submit"
             :disabled="creatingAcc || !newAccName.trim()"
-            class="w-full py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50"
+            class="w-full py-2.5 bg-accounting-brand hover:opacity-90 text-white font-medium rounded-xl transition disabled:opacity-50"
           >
             <Loader2 v-if="creatingAcc" class="w-4 h-4 animate-spin mx-auto" />
             <span v-else>添加</span>
@@ -582,10 +596,10 @@ onBeforeUnmount(() => {
 
     <div
       v-if="showMergeAccount && mergeSourceAccount"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4"
       @click.self="closeMergeAccount"
     >
-      <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[340px] shadow-xl">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[360px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold text-theme-primary">合并账户</h3>
           <button @click="closeMergeAccount"><X class="w-5 h-5 text-theme-muted" /></button>
@@ -602,7 +616,7 @@ onBeforeUnmount(() => {
             <label class="text-xs text-theme-muted font-medium">合并到</label>
             <select
               v-model.number="mergeTargetAccountId"
-              class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              class="accounting-field mt-1"
             >
               <option v-for="account in mergeCandidates" :key="account.id" :value="account.id">
                 {{ account.name }}
@@ -616,7 +630,7 @@ onBeforeUnmount(() => {
             type="button"
             :disabled="mergingAccount || !mergeTargetAccountId"
             @click="handleMergeAccount"
-            class="w-full py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-xl transition disabled:opacity-50"
+            class="w-full py-2.5 bg-accounting-brand hover:opacity-90 text-white font-medium rounded-xl transition disabled:opacity-50"
           >
             <Loader2 v-if="mergingAccount" class="w-4 h-4 animate-spin mx-auto" />
             <span v-else>确认合并</span>
@@ -624,5 +638,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <QuickAddFab :book-id="store.currentBookId" @saved="loadData" />
   </div>
 </template>

@@ -64,6 +64,13 @@
     --color-chart-4: #6e56cf;
     --color-chart-5: #d6409f;
     --color-chart-6: #12a594;
+
+    /* 记账语义色（与主色品牌一致，避免 indigo/teal 混用） */
+    --color-accounting-brand: var(--color-primary-500);
+    --color-accounting-brand-strong: var(--color-primary-600);
+    --color-accounting-expense: #e5484d;
+    --color-accounting-income: #30a46c;
+    --color-accounting-transfer: #ab6400;
     
     /* 阴影 */
     --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
@@ -127,6 +134,13 @@
     --color-chart-4: #8b7eff;
     --color-chart-5: #ff92ad;
     --color-chart-6: #4ccce6;
+
+    /* 记账语义色 */
+    --color-accounting-brand: var(--color-primary-500);
+    --color-accounting-brand-strong: var(--color-primary-600);
+    --color-accounting-expense: #ff9592;
+    --color-accounting-income: #3dd68c;
+    --color-accounting-transfer: #ffca16;
     
     /* 阴影（在暗色模式下减弱） */
     --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
@@ -190,6 +204,18 @@
 /* 边框色类 */
 .border-theme-primary { border-color: var(--color-border-primary); }
 .border-theme-secondary { border-color: var(--color-border-secondary); }
+
+/* 记账语义色类 */
+.text-accounting-brand { color: var(--color-accounting-brand); }
+.text-accounting-expense { color: var(--color-accounting-expense); }
+.text-accounting-income { color: var(--color-accounting-income); }
+.text-accounting-transfer { color: var(--color-accounting-transfer); }
+.bg-accounting-brand { background-color: var(--color-accounting-brand); }
+.bg-accounting-expense { background-color: var(--color-accounting-expense); }
+.bg-accounting-income { background-color: var(--color-accounting-income); }
+.bg-accounting-transfer { background-color: var(--color-accounting-transfer); }
+.border-accounting-brand { border-color: var(--color-accounting-brand); }
+.border-accounting-expense { border-color: var(--color-accounting-expense); }
 
 /* 阴影类 */
 .shadow-theme-sm { box-shadow: var(--shadow-sm); }

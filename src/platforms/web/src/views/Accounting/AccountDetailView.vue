@@ -8,10 +8,16 @@ import {
     type AccountItem, type RecordItem, type BalanceTrendItem
 } from '@/api/accounting'
 import {
-    ArrowLeft, Trash2, Pencil, X, Loader2, ChevronRight, Plus
+    ArrowLeft, Trash2, Pencil, X, Loader2, Plus
 } from 'lucide-vue-next'
 import * as echarts from 'echarts'
 import { appendOperationLog } from '@/utils/accountingLocal'
+import { accountingAlert } from '@/utils/accountingDialog'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
+import { buildRecordListQuery } from '@/utils/accountingNavigation'
+import AddRecordDialog from '@/components/accounting/AddRecordDialog.vue'
+
+
 
 const router = useRouter()
 const route = useRoute()
@@ -37,6 +43,21 @@ const adjusting = ref(false)
 
 // Delete confirmation
 const showDeleteConfirm = ref(false)
+const showAddRecord = ref(false)
+
+const openAllRecords = () => {
+    if (!account.value) return
+    const query = buildRecordListQuery({
+        account: account.value.name,
+        label: account.value.name,
+    })
+    router.push({ name: 'RecordList', query })
+}
+
+const onRecordSaved = () => {
+    showAddRecord.value = false
+    void loadData()
+}
 
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
@@ -68,14 +89,12 @@ const handleToggleAssets = async () => {
             `${account.value.name} · 计入资产 ${newVal ? '开启' : '关闭'}`,
         )
     } catch (e: any) {
-        alert(e.response?.data?.detail || '状态更新失败')
+        await accountingAlert(e.response?.data?.detail || '状态更新失败')
     } finally {
         togglingAssets.value = false
     }
 }
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const formatDate = (iso: string) => {
     const d = new Date(iso)
@@ -208,12 +227,12 @@ const handleAdjust = async () => {
         appendOperationLog(
             resolveLogBookId(),
             '更新账户余额',
-            `${account.value?.name || '账户'} · ${adjustMethod.value} · ¥${adjustTarget.value.toFixed(2)}`,
+            `${account.value?.name || '账户'} · ${adjustMethod.value} · ${formatAccountingMoney(adjustTarget.value)}`,
         )
         await loadData()
         showAdjust.value = false
     } catch (e: any) {
-        alert(e.response?.data?.detail || '调整失败')
+        await accountingAlert(e.response?.data?.detail || '调整失败')
     } finally {
         adjusting.value = false
     }
@@ -227,7 +246,7 @@ const handleDelete = async () => {
             appendOperationLog(
                 resolveLogBookId(),
                 '删除账户',
-                `${snapshot.name} · ${snapshot.type} · ¥${snapshot.balance.toFixed(2)}`,
+                `${snapshot.name} · ${snapshot.type} · ${formatAccountingMoney(snapshot.balance)}`,
                 {
                     rollback: {
                         kind: 'account',
@@ -245,7 +264,7 @@ const handleDelete = async () => {
         }
         router.push('/accounting/assets')
     } catch (e: any) {
-        alert(e.response?.data?.detail || '删除失败')
+        await accountingAlert(e.response?.data?.detail || '删除失败')
     }
 }
 
@@ -253,7 +272,7 @@ onMounted(loadData)
 </script>
 
 <template>
-  <div class="pb-4">
+  <div class="accounting-subpage-pad min-h-full">
     <!-- Custom Header (override AccountingLayout) -->
     <div class="sticky top-0 z-20 bg-gradient-to-r from-indigo-500 to-indigo-400 px-4 py-3 flex items-center justify-between shadow-sm">
       <button @click="router.push('/accounting/assets')" class="flex items-center gap-1.5 text-white/90 hover:text-white transition">
@@ -278,7 +297,7 @@ onMounted(loadData)
         </div>
         <div class="flex items-center gap-3">
           <span :class="['text-3xl font-bold', account.balance >= 0 ? 'text-indigo-500' : 'text-rose-500']">
-            ¥{{ formatMoney(account.balance) }}
+            {{ formatAccountingMoney(account.balance) }}
           </span>
           <button @click="openAdjust" class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700 transition">
             <Pencil class="w-4 h-4 text-theme-muted" />
@@ -291,10 +310,7 @@ onMounted(loadData)
       <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
         <div class="flex items-center justify-between mb-2">
           <h3 class="font-semibold text-theme-primary">余额趋势</h3>
-          <div class="flex gap-1 text-xs">
-            <span class="px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-900/30 text-indigo-500 font-medium">日</span>
-            <span class="px-2 py-0.5 rounded text-theme-muted">月</span>
-          </div>
+          <span class="text-xs text-theme-muted">近 30 日</span>
         </div>
         <div ref="chartRef" class="w-full h-[160px]"></div>
       </div>
@@ -303,7 +319,14 @@ onMounted(loadData)
       <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700">
         <div class="flex items-center justify-between p-4 pb-2">
           <h3 class="font-semibold text-theme-primary">最近交易</h3>
-          <Plus class="w-5 h-5 text-theme-muted" />
+          <button
+            type="button"
+            class="accounting-touch-target inline-flex items-center justify-center p-1.5 rounded-lg active:bg-theme-secondary text-accounting-brand"
+            aria-label="记一笔"
+            @click="showAddRecord = true"
+          >
+            <Plus class="w-5 h-5" />
+          </button>
         </div>
 
         <div v-if="records.length === 0" class="p-6 text-center text-theme-muted text-sm">暂无交易记录</div>
@@ -320,14 +343,18 @@ onMounted(loadData)
               </div>
               <div class="text-right">
                 <span :class="['font-semibold text-sm', isPositiveRecord(rec) ? 'text-indigo-500' : 'text-rose-500']">
-                  {{ isPositiveRecord(rec) ? '+' : '-' }}¥{{ formatMoney(Math.abs(getRecordDelta(rec))) }}
+                  {{ formatAccountingMoney(getRecordDelta(rec), { signed: true }) }}
                 </span>
               </div>
             </RouterLink>
           </li>
         </ul>
 
-        <button class="w-full p-3 text-sm text-indigo-500 font-medium border-t border-gray-50 dark:border-slate-700/50">
+        <button
+          type="button"
+          class="w-full p-3 text-sm text-accounting-brand font-medium border-t border-gray-50 dark:border-slate-700/50 min-h-[48px] active:bg-theme-secondary"
+          @click="openAllRecords"
+        >
           所有交易
         </button>
       </div>
@@ -368,8 +395,8 @@ onMounted(loadData)
     </template>
 
     <!-- Edit Account Modal -->
-    <div v-if="showEdit" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showEdit = false">
-      <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[320px] shadow-xl">
+    <div v-if="showEdit" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" @click.self="showEdit = false">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[360px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold text-theme-primary">编辑账户</h3>
           <button @click="showEdit = false"><X class="w-5 h-5 text-theme-muted" /></button>
@@ -377,11 +404,11 @@ onMounted(loadData)
         <form @submit.prevent="handleSaveEdit" class="space-y-3">
           <div>
             <label class="text-xs text-theme-muted font-medium">名称</label>
-            <input v-model="editName" type="text" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <input v-model="editName" type="text" class="accounting-field mt-1" />
           </div>
           <div>
             <label class="text-xs text-theme-muted font-medium">类型</label>
-            <select v-model="editType" class="w-full mt-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <select v-model="editType" class="accounting-field mt-1">
               <option v-for="t in accountTypes" :key="t" :value="t">{{ t }}</option>
             </select>
           </div>
@@ -394,14 +421,14 @@ onMounted(loadData)
     </div>
 
     <!-- Balance Adjust Modal -->
-    <div v-if="showAdjust" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showAdjust = false">
-      <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[340px] shadow-xl">
+    <div v-if="showAdjust" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" @click.self="showAdjust = false">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[360px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom">
         <h3 class="text-lg font-semibold text-theme-primary mb-4">余额校正</h3>
         <input
           v-model.number="adjustTarget"
           type="number"
           step="0.01"
-          class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary text-lg font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
+          class="accounting-field mb-4 text-lg font-bold"
         />
         <div class="space-y-3 mb-5">
           <label
@@ -440,8 +467,8 @@ onMounted(loadData)
     </div>
 
     <!-- Delete Confirm -->
-    <div v-if="showDeleteConfirm" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showDeleteConfirm = false">
-      <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[300px] shadow-xl text-center">
+    <div v-if="showDeleteConfirm" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" @click.self="showDeleteConfirm = false">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[340px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom text-center">
         <h3 class="text-lg font-semibold text-theme-primary mb-2">删除账户</h3>
         <p class="text-sm text-theme-muted mb-5">确定要删除「{{ account?.name }}」吗？删除后可在操作日志里回滚。</p>
         <div class="flex gap-3">
@@ -450,5 +477,12 @@ onMounted(loadData)
         </div>
       </div>
     </div>
+
+    <AddRecordDialog
+      v-if="showAddRecord && store.currentBookId"
+      :book-id="store.currentBookId"
+      @close="showAddRecord = false"
+      @saved="onRecordSaved"
+    />
   </div>
 </template>

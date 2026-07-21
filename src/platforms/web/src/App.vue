@@ -15,8 +15,8 @@ const isFullscreen = computed(() =>
   <div v-if="isPublicLayout" class="w-full min-h-screen">
     <RouterView />
   </div>
-  <!-- Fullscreen modules (accounting etc) — no sidebar -->
-  <div v-else-if="isFullscreen" class="h-screen w-full">
+  <!-- Fullscreen modules (accounting etc) — no sidebar; use dvh-friendly height -->
+  <div v-else-if="isFullscreen" class="accounting-fullscreen w-full">
     <RouterView />
   </div>
   <!-- Normal pages with sidebar -->

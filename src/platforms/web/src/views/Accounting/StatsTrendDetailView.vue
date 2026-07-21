@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
 import { useRoute, useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import { getCategories, getRangeSummary, type PeriodSummaryItem } from '@/api/accounting'
@@ -16,6 +17,7 @@ import {
     type RangePreset,
     type Granularity,
 } from './statsRange'
+import { buildRecordListQuery, periodBounds } from '@/utils/accountingNavigation'
 
 type StatType = '支出' | '收入'
 
@@ -109,8 +111,6 @@ const granularityLabel = computed(() => {
     return '年'
 })
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const totalAmount = computed(() => {
     const amounts = periodData.value.map(item => statType.value === '支出' ? item.expense : item.income)
@@ -210,7 +210,7 @@ const renderChart = () => {
             markLine: {
                 symbol: 'none',
                 label: {
-                    formatter: `平均 ${formatMoney(avg)}`,
+                    formatter: `平均 ${formatAccountingMoney(avg)}`,
                     color: '#94a3b8',
                 },
                 lineStyle: {
@@ -282,6 +282,19 @@ const loadData = async () => {
 const setType = (nextType: StatType) => {
     statType.value = nextType
     router.replace({ query: { ...route.query, type: nextType } })
+}
+
+const openPeriodRecords = (period: string) => {
+    const bounds = periodBounds(period, granularity.value)
+    if (!bounds) return
+    const query = buildRecordListQuery({
+        type: statType.value,
+        category: selectedCategory.value === '全部分类' ? undefined : selectedCategory.value,
+        start: bounds.start,
+        end: bounds.end,
+        label: `${period} · ${statType.value}`,
+    })
+    router.push({ name: 'RecordList', query })
 }
 
 const goEditPanel = () => {
@@ -392,7 +405,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-100 dark:bg-slate-900 absolute inset-0 z-50">
+  <div class="accounting-fullscreen bg-theme-secondary relative z-50">
     <header class="bg-indigo-500 dark:bg-indigo-700 text-white shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-white/90">
@@ -403,55 +416,64 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom space-y-4">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad space-y-4">
       <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-3 shadow-sm space-y-3">
-        <div class="flex items-center gap-2">
-          <button @click="moveRange(-1)" class="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center justify-center">
-            <ChevronLeft class="w-5 h-5" />
-          </button>
-
-          <select
-            v-model="rangePreset"
-            class="flex-1 h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm"
-          >
-            <option v-for="item in detailRangeOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
-          </select>
-
-          <button @click="moveRange(1)" class="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center justify-center">
-            <ChevronRight class="w-5 h-5" />
-          </button>
-
-          <select
-            v-model="statType"
-            class="h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm min-w-[82px]"
-          >
-            <option value="支出">支出</option>
-            <option value="收入">收入</option>
-          </select>
+        <div>
+          <label class="accounting-field-label">时间范围</label>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="w-11 h-11 shrink-0 rounded-xl bg-theme-secondary text-theme-secondary flex items-center justify-center"
+              aria-label="上一区间"
+              @click="moveRange(-1)"
+            >
+              <ChevronLeft class="w-5 h-5" />
+            </button>
+            <select v-model="rangePreset" class="accounting-field flex-1 min-w-0">
+              <option v-for="item in detailRangeOptions" :key="item.key" :value="item.key">
+                {{ item.label }}
+              </option>
+            </select>
+            <button
+              type="button"
+              class="w-11 h-11 shrink-0 rounded-xl bg-theme-secondary text-theme-secondary flex items-center justify-center"
+              aria-label="下一区间"
+              @click="moveRange(1)"
+            >
+              <ChevronRight class="w-5 h-5" />
+            </button>
+          </div>
+          <p class="mt-1.5 text-xs text-theme-muted px-0.5">
+            当前：{{ currentWindow.label }} · 按{{ granularityLabel }}
+          </p>
         </div>
 
-        <div class="flex items-center gap-2">
-          <select
-            v-model="selectedCategory"
-            class="h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm flex-1"
-          >
-            <option v-for="name in categories" :key="name" :value="name">{{ name }}</option>
-          </select>
-          <button
-            type="button"
-            @click="setType(statType === '支出' ? '收入' : '支出')"
-            class="h-9 px-3 rounded-xl text-sm border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
-          >
-            切换 {{ statType === '支出' ? '收入' : '支出' }}
-          </button>
+        <div class="accounting-filter-grid">
+          <div>
+            <label class="accounting-field-label">类型</label>
+            <select v-model="statType" class="accounting-field" @change="setType(statType)">
+              <option value="支出">支出</option>
+              <option value="收入">收入</option>
+            </select>
+          </div>
+          <div>
+            <label class="accounting-field-label">分类</label>
+            <select v-model="selectedCategory" class="accounting-field">
+              <option v-for="name in categories" :key="name" :value="name">{{ name }}</option>
+            </select>
+          </div>
         </div>
 
-        <div v-if="rangePreset === 'day_range'" class="grid grid-cols-2 gap-2">
-          <input v-model="customRange.dayStart" type="date" class="h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm" />
-          <input v-model="customRange.dayEnd" type="date" class="h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm" />
+        <div v-if="rangePreset === 'day_range'" class="accounting-filter-grid">
+          <div>
+            <label class="accounting-field-label">开始</label>
+            <input v-model="customRange.dayStart" type="date" class="accounting-field" />
+          </div>
+          <div>
+            <label class="accounting-field-label">结束</label>
+            <input v-model="customRange.dayEnd" type="date" class="accounting-field" />
+          </div>
         </div>
-
-        <p class="text-xs text-theme-muted">{{ currentWindow.label }} · 按{{ granularityLabel }}</p>
       </div>
 
       <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-4 shadow-sm">
@@ -461,7 +483,7 @@ onBeforeUnmount(() => {
               {{ totalAmount }}
             </template>
             <template v-else>
-              {{ statType === '支出' ? '-' : '+' }}¥{{ formatMoney(totalAmount) }}
+              {{ formatAccountingMoney(statType === '支出' ? -Math.abs(totalAmount) : Math.abs(totalAmount), { signed: true }) }}
             </template>
           </p>
           <p class="text-sm text-indigo-500">{{ metricLabel }} · 总笔数 {{ totalCount }}</p>
@@ -479,23 +501,30 @@ onBeforeUnmount(() => {
         <div
           v-for="row in periodRows"
           :key="row.period"
-          class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-4 shadow-sm flex items-center justify-between"
+          role="button"
+          tabindex="0"
+          class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-4 shadow-sm flex items-center justify-between active:opacity-90 cursor-pointer"
+          @click="openPeriodRecords(row.period)"
+          @keydown.enter="openPeriodRecords(row.period)"
         >
-          <div class="flex items-center gap-3">
-            <div class="w-3 h-3 rounded-full" :class="statType === '支出' ? 'bg-rose-400' : 'bg-indigo-500'"></div>
-            <div>
-              <p class="text-xl text-theme-primary">{{ formatPeriodLabel(row.period) }}</p>
-              <p class="text-sm text-theme-muted">{{ row.ratio.toFixed(1) }}% · {{ row.count }}笔</p>
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-3 h-3 rounded-full flex-shrink-0" :class="statType === '支出' ? 'bg-rose-400' : 'bg-indigo-500'"></div>
+            <div class="min-w-0">
+              <p class="text-base sm:text-xl text-theme-primary">{{ formatPeriodLabel(row.period) }}</p>
+              <p class="text-sm text-theme-muted">{{ row.ratio.toFixed(1) }}% · {{ row.count }}笔 · 查看明细</p>
             </div>
           </div>
-          <p class="text-4xl font-semibold" :class="statType === '支出' ? 'text-rose-500' : 'text-indigo-500'">
-            <template v-if="panelMetric === 'count'">
-              {{ row.amount }}
-            </template>
-            <template v-else>
-              {{ statType === '支出' ? '-' : '+' }}¥{{ formatMoney(row.amount) }}
-            </template>
-          </p>
+          <div class="flex items-center gap-1 flex-shrink-0">
+            <p class="text-2xl sm:text-4xl font-semibold tabular-nums" :class="statType === '支出' ? 'text-rose-500' : 'text-indigo-500'">
+              <template v-if="panelMetric === 'count'">
+                {{ row.amount }}
+              </template>
+              <template v-else>
+                {{ formatAccountingMoney(statType === '支出' ? -Math.abs(row.amount) : Math.abs(row.amount), { signed: true }) }}
+              </template>
+            </p>
+            <ChevronRight class="w-5 h-5 text-theme-muted" />
+          </div>
         </div>
       </div>
     </main>

@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import { getBudgets, createOrUpdateBudget, getRecordsSummary, getCategorySummary, getCategories, type Budget, type CategoryItem } from '@/api/accounting'
-import { Loader2, Plus, ArrowLeft, Target, Wallet } from 'lucide-vue-next'
+import { Loader2, Plus, ArrowLeft, Target, Wallet, Pencil, ChevronRight } from 'lucide-vue-next'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
+import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
+import { buildRecordListQuery, monthWindow } from '@/utils/accountingNavigation'
+
+const router = useRouter()
+
 
 const store = useAccountingStore()
 const loading = ref(false)
@@ -26,8 +33,6 @@ const showCategoryDialog = ref(false)
 const inputCategoryId = ref<number | ''>('')
 const inputCategoryAmount = ref<number | ''>('')
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const monthLabel = computed(() => `${selectedYear.value}-${String(selectedMonth.value).padStart(2, '0')}`)
 
@@ -126,6 +131,19 @@ const openCategoryEdit = (budget: Budget) => {
     showCategoryDialog.value = true
 }
 
+const openCategoryRecords = (budget: Budget) => {
+    if (!budget.category_name) return
+    const w = monthWindow(selectedYear.value, selectedMonth.value)
+    const query = buildRecordListQuery({
+        type: '支出',
+        category: budget.category_name,
+        start: w.start,
+        end: w.end,
+        label: `${w.label} · ${budget.category_name}`,
+    })
+    router.push({ name: 'RecordList', query })
+}
+
 const getCategorySpent = (categoryName: string | null) => {
     if (!categoryName) return 0
     return categorySpentMap.value[categoryName] || 0
@@ -154,9 +172,11 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="pb-10 pt-4">
+  <div class="accounting-fullscreen bg-theme-primary">
+    <AccountingPageHeader title="预算管理" />
+    <div class="flex-1 min-h-0 overflow-y-auto accounting-scroll accounting-subpage-pad">
     <!-- Month Navigation -->
-    <div class="flex items-center justify-between px-6 mb-6">
+    <div class="flex items-center justify-between px-6 mb-6 pt-4">
       <button @click="prevMonth" class="p-2 border border-gray-200 dark:border-slate-700 rounded-full hover:bg-gray-50 dark:hover:bg-slate-800 transition">
         <ArrowLeft class="w-4 h-4 text-theme-secondary" />
       </button>
@@ -180,7 +200,7 @@ onMounted(async () => {
           <div>
             <p class="text-sm font-medium text-theme-secondary mb-1">当月剩余预算</p>
             <div class="text-3xl font-bold text-theme-primary flex items-baseline gap-1">
-              <span class="text-xl">¥</span>{{ formatMoney(remainingBudget) }}
+              {{ formatAccountingMoney(remainingBudget) }}
             </div>
           </div>
           <button @click="showEditDialog = true; inputAmount = globalBudgetAmount || ''" class="flex flex-col items-center justify-center w-10 h-10 rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-500 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition">
@@ -199,8 +219,8 @@ onMounted(async () => {
           </div>
           
           <div class="flex justify-between text-xs font-medium text-theme-muted">
-            <p>已支出 ¥{{ formatMoney(amountSpent) }}</p>
-            <p>总预算 ¥{{ formatMoney(globalBudgetAmount) }}</p>
+            <p>已支出 {{ formatAccountingMoney(amountSpent) }}</p>
+            <p>总预算 {{ formatAccountingMoney(globalBudgetAmount) }}</p>
           </div>
         </div>
         
@@ -223,27 +243,42 @@ onMounted(async () => {
             <div 
                 v-for="b in categoryBudgets" 
                 :key="b.id"
-                class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-slate-700 hover:border-indigo-100 dark:hover:border-indigo-900/50 transition cursor-pointer group"
-                @click="openCategoryEdit(b)"
+                class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-slate-700 transition"
             >
-                <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-xl bg-orange-50 dark:bg-orange-500/20 text-orange-500 flex items-center justify-center font-bold">
-                        <Wallet class="w-5 h-5" />
-                    </div>
-                    <div class="flex-1">
-                        <div class="flex justify-between items-end mb-1">
-                            <h4 class="font-bold text-theme-primary text-sm">{{ b.category_name }}</h4>
-                            <div class="text-xs font-medium" :class="getCategoryPercent(getCategorySpent(b.category_name), b.total_amount) > 90 ? 'text-rose-500' : 'text-indigo-500'">
-                                ¥{{ getCategorySpent(b.category_name) }} / ¥{{ b.total_amount }}
-                            </div>
-                        </div>
-                        <div class="w-full h-1.5 bg-gray-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                            <div class="h-full rounded-full transition-all duration-500"
-                                 :class="getCategoryPercent(getCategorySpent(b.category_name), b.total_amount) > 90 ? 'bg-rose-500' : 'bg-indigo-500'"
-                                 :style="{ width: `${getCategoryPercent(getCategorySpent(b.category_name), b.total_amount)}%` }">
-                            </div>
-                        </div>
-                    </div>
+                <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="flex-1 flex items-center gap-3 min-w-0 text-left active:opacity-80"
+                      @click="openCategoryRecords(b)"
+                    >
+                      <div class="w-10 h-10 rounded-xl bg-orange-50 dark:bg-orange-500/20 text-orange-500 flex items-center justify-center font-bold flex-shrink-0">
+                          <Wallet class="w-5 h-5" />
+                      </div>
+                      <div class="flex-1 min-w-0">
+                          <div class="flex justify-between items-end mb-1 gap-2">
+                              <h4 class="font-bold text-theme-primary text-sm truncate">{{ b.category_name }}</h4>
+                              <div class="text-xs font-medium tabular-nums flex-shrink-0" :class="getCategoryPercent(getCategorySpent(b.category_name), b.total_amount) > 90 ? 'text-rose-500' : 'text-indigo-500'">
+                                  {{ formatAccountingMoney(getCategorySpent(b.category_name)) }} / {{ formatAccountingMoney(b.total_amount) }}
+                              </div>
+                          </div>
+                          <div class="w-full h-1.5 bg-gray-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                              <div class="h-full rounded-full transition-all duration-500"
+                                   :class="getCategoryPercent(getCategorySpent(b.category_name), b.total_amount) > 90 ? 'bg-rose-500' : 'bg-indigo-500'"
+                                   :style="{ width: `${getCategoryPercent(getCategorySpent(b.category_name), b.total_amount)}%` }">
+                              </div>
+                          </div>
+                          <p class="text-[10px] text-theme-muted mt-1">点此查看明细</p>
+                      </div>
+                      <ChevronRight class="w-4 h-4 text-theme-muted flex-shrink-0" />
+                    </button>
+                    <button
+                      type="button"
+                      class="p-2 rounded-xl active:bg-theme-secondary text-theme-muted"
+                      aria-label="编辑预算"
+                      @click="openCategoryEdit(b)"
+                    >
+                      <Pencil class="w-4 h-4" />
+                    </button>
                 </div>
             </div>
             <div v-if="categoryBudgets.length === 0" class="text-center text-sm text-theme-muted py-8 bg-white/50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-gray-200 dark:border-slate-700">
@@ -254,11 +289,11 @@ onMounted(async () => {
     </template>
     
     <!-- Set Category Budget Dialog -->
-    <div v-if="showCategoryDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showCategoryDialog = false">
+    <div v-if="showCategoryDialog" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" @click.self="showCategoryDialog = false">
       <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[320px] shadow-xl animate-in fade-in zoom-in-95 duration-200">
         <h3 class="text-lg font-semibold text-theme-primary mb-4">{{ inputCategoryId ? '修改' : '设置' }}分类预算</h3>
         <!-- Category Selector -->
-        <select v-model="inputCategoryId" class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-3 appearance-none">
+        <select v-model="inputCategoryId" class="accounting-field mb-3">
             <option value="" disabled>选择支出分类</option>
             <option v-for="cat in allCategories" :key="cat.id" :value="cat.id">{{ cat.name }}</option>
         </select>
@@ -266,7 +301,7 @@ onMounted(async () => {
             v-model.number="inputCategoryAmount"
             type="number"
             placeholder="预算金额(¥)，设为0即删除"
-            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
+            class="accounting-field mb-4"
         />
         <div class="flex gap-3">
           <button @click="showCategoryDialog = false" type="button" class="flex-1 py-2.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-medium">取消</button>
@@ -279,14 +314,14 @@ onMounted(async () => {
     </div>
 
     <!-- Set Budget Dialog -->
-    <div v-if="showEditDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showEditDialog = false">
-      <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[320px] shadow-xl">
+    <div v-if="showEditDialog" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" @click.self="showEditDialog = false">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[360px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom">
         <h3 class="text-lg font-semibold text-theme-primary mb-4">设置 {{ selectedMonth }} 月总预算</h3>
         <input
             v-model.number="inputAmount"
             type="number"
             placeholder="输入预算金额(¥)"
-            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
+            class="accounting-field mb-4"
             autofocus
         />
         <div class="flex gap-3">
@@ -297,6 +332,7 @@ onMounted(async () => {
           </button>
         </div>
       </div>
+    </div>
     </div>
   </div>
 </template>

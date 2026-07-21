@@ -2,8 +2,11 @@
 import { ref, computed, onMounted } from 'vue'
 import { createRecord, getCategories, getAccounts, type CategoryItem, type AccountItem } from '@/api/accounting'
 import { X, Delete, Loader2, ChevronRight } from 'lucide-vue-next'
-import { appendOperationLog } from '@/utils/accountingLocal'
+import { appendOperationLog, loadNamedItems, type NamedItem } from '@/utils/accountingLocal'
 import { toLocalIsoString } from '@/utils/accountingDateTime'
+import { accountingAlert } from '@/utils/accountingDialog'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
+import { moneyTypeTextClass } from '@/utils/accountingMoney'
 
 const props = defineProps<{
     bookId: number
@@ -37,6 +40,12 @@ const selectedTargetAccount = ref('')
 
 // Other fields
 const remark = ref('')
+const payee = ref('')
+const selectedProject = ref('')
+const selectedTag = ref('')
+const projects = ref<NamedItem[]>([])
+const tags = ref<NamedItem[]>([])
+const merchants = ref<NamedItem[]>([])
 const saving = ref(false)
 
 // Date time selection
@@ -309,9 +318,23 @@ const handleKeyPress = (key: string) => {
     }
 }
 
+const buildRemarkWithDimensions = () => {
+    const parts: string[] = []
+    if (selectedProject.value) parts.push(`项目:${selectedProject.value}`)
+    if (selectedTag.value) parts.push(`标签:${selectedTag.value}`)
+    if (remark.value.trim()) parts.push(remark.value.trim())
+    return parts.join(' · ')
+}
+
 const handleSave = async () => {
     const amount = parseFloat(amountStr.value)
     if (!amount || amount <= 0) return
+
+    if (activeTab.value === '转账' && selectedAccount.value && selectedTargetAccount.value
+        && selectedAccount.value === selectedTargetAccount.value) {
+        await accountingAlert('转入账户不能与转出账户相同')
+        return
+    }
 
     saving.value = true
     try {
@@ -321,18 +344,19 @@ const handleSave = async () => {
             category_name: selectedCategory.value || '未分类',
             account_name: selectedAccount.value,
             target_account_name: selectedTargetAccount.value,
-            remark: remark.value,
+            payee: payee.value.trim() || undefined,
+            remark: buildRemarkWithDimensions(),
             record_time: buildRecordTime(),
         })
         appendOperationLog(
             props.bookId,
             '新增交易',
-            `${activeTab.value} · ¥${amount.toFixed(2)} · ${selectedCategory.value || '未分类'}`,
+            `${activeTab.value} · ${formatAccountingMoney(amount)} · ${selectedCategory.value || '未分类'}`,
         )
         emit('saved')
     } catch (e) {
         console.error('Failed to save', e)
-        alert('保存失败')
+        await accountingAlert('保存失败')
     } finally {
         saving.value = false
     }
@@ -340,6 +364,9 @@ const handleSave = async () => {
 
 onMounted(async () => {
     initDateTime()
+    projects.value = loadNamedItems(props.bookId, 'projects')
+    tags.value = loadNamedItems(props.bookId, 'tags')
+    merchants.value = loadNamedItems(props.bookId, 'merchants-custom')
     try {
         const [catRes, accRes] = await Promise.all([
             getCategories(props.bookId),
@@ -362,30 +389,36 @@ const keyRows = [
 </script>
 
 <template>
-  <!-- Full screen overlay -->
-  <div class="fixed inset-0 z-50 flex flex-col bg-gradient-to-b from-indigo-50 to-white dark:from-slate-900 dark:to-slate-950">
+  <!-- Full screen overlay (mobile-first, safe areas) -->
+  <div class="fixed inset-0 z-50 flex flex-col bg-theme-primary accounting-fullscreen">
     <!-- Header -->
-    <div class="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-indigo-500 to-indigo-400 text-white">
-      <button @click="emit('close')" class="p-1">
+    <div class="flex items-center justify-between px-3 sm:px-4 py-2.5 sm:py-3 bg-accounting-brand text-white safe-top safe-x flex-shrink-0">
+      <button
+        type="button"
+        class="accounting-touch-target inline-flex items-center justify-center rounded-xl p-2 -ml-1 active:bg-white/15"
+        aria-label="关闭"
+        @click="emit('close')"
+      >
         <X class="w-5 h-5" />
       </button>
       <span class="font-semibold">记一笔</span>
-      <span class="text-sm opacity-80">设置</span>
+      <span class="w-10" />
     </div>
 
     <!-- Scrollable Content -->
-    <div class="flex-1 overflow-auto">
+    <div class="flex-1 min-h-0 overflow-auto accounting-scroll safe-x">
       <!-- Type Tabs -->
-      <div class="flex px-4 pt-4 gap-2">
+      <div class="flex px-4 pt-3 gap-2 overflow-x-auto no-scrollbar">
         <button
           v-for="tab in tabs"
           :key="tab"
+          type="button"
           @click="activeTab = tab; selectedCategory = ''"
           :class="[
-            'px-6 py-2 rounded-full text-sm font-medium transition',
+            'px-5 py-2.5 rounded-full text-sm font-medium transition flex-shrink-0 min-h-[40px]',
             activeTab === tab
-              ? 'bg-indigo-500 text-white shadow-sm'
-              : 'bg-gray-100 dark:bg-slate-800 text-theme-secondary'
+              ? 'bg-accounting-brand text-white shadow-sm'
+              : 'bg-theme-secondary text-theme-secondary'
           ]"
         >
           {{ tab }}
@@ -393,16 +426,13 @@ const keyRows = [
       </div>
 
       <!-- Amount -->
-      <div class="px-4 py-4">
-        <p :class="[
-          'text-4xl font-bold',
-          activeTab === '支出' ? 'text-rose-500' : 'text-indigo-500'
-        ]">
-          {{ activeTab === '支出' ? '-' : activeTab === '收入' ? '+' : '' }}¥{{ amountStr }}
+      <div class="px-4 py-3">
+        <p :class="['text-3xl sm:text-4xl font-bold tabular-nums break-all leading-tight', moneyTypeTextClass(activeTab)]">
+          {{ activeTab === '支出' ? '-' : activeTab === '收入' ? '+' : '' }}{{ amountStr }}
         </p>
       </div>
 
-      <div class="border-t border-gray-100 dark:border-slate-800" />
+      <div class="border-t border-theme-secondary" />
 
       <!-- Categories Grid -->
       <div class="px-4 py-3">
@@ -410,20 +440,21 @@ const keyRows = [
           <button
             v-for="cat in displayCategories"
             :key="cat"
+            type="button"
             @click="selectedCategory = cat"
             :class="[
               'py-2.5 rounded-xl text-sm font-medium border transition',
               selectedCategory === cat
-                ? 'border-rose-300 dark:border-rose-700 text-rose-500 bg-rose-50 dark:bg-rose-900/20'
-                : 'border-gray-200 dark:border-slate-700 text-theme-secondary hover:bg-gray-50 dark:hover:bg-slate-800'
+                ? 'border-accounting-brand text-accounting-brand bg-theme-secondary'
+                : 'border-theme-primary text-theme-secondary hover:bg-theme-secondary'
             ]"
           >
             {{ cat }}
           </button>
-          <!-- 全部按钮 -->
           <button
+            type="button"
             @click="showCategoryPopup = true"
-            class="py-2.5 rounded-xl text-sm font-medium border border-gray-200 dark:border-slate-700 text-indigo-500 hover:bg-gray-50 dark:hover:bg-slate-800 transition flex items-center justify-center gap-1"
+            class="py-2.5 rounded-xl text-sm font-medium border border-theme-primary text-accounting-brand hover:bg-theme-secondary transition flex items-center justify-center gap-1"
           >
             全部 <ChevronRight class="w-3 h-3" />
           </button>
@@ -436,10 +467,10 @@ const keyRows = [
         class="fixed inset-0 z-[60] bg-black/45 flex items-end justify-center"
         @click.self="showCategoryPopup = false"
       >
-        <div class="w-full max-h-[70vh] bg-white dark:bg-slate-800 rounded-t-3xl shadow-xl p-4 overflow-y-auto">
+        <div class="w-full max-h-[75dvh] bg-theme-elevated rounded-t-3xl shadow-xl p-4 overflow-y-auto accounting-scroll safe-bottom">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-lg font-semibold text-theme-primary">选择分类</h3>
-            <button @click="showCategoryPopup = false" class="p-1 text-theme-secondary">
+            <button type="button" class="accounting-touch-target inline-flex items-center justify-center p-2 text-theme-secondary" @click="showCategoryPopup = false">
               <X class="w-5 h-5" />
             </button>
           </div>
@@ -447,12 +478,13 @@ const keyRows = [
             <button
               v-for="cat in allDisplayCategories"
               :key="cat"
+              type="button"
               @click="selectedCategory = cat; showCategoryPopup = false"
               :class="[
                 'py-2.5 rounded-xl text-sm font-medium border transition',
                 selectedCategory === cat
-                  ? 'border-rose-300 dark:border-rose-700 text-rose-500 bg-rose-50 dark:bg-rose-900/20'
-                  : 'border-gray-200 dark:border-slate-700 text-theme-secondary hover:bg-gray-50 dark:hover:bg-slate-800'
+                  ? 'border-accounting-brand text-accounting-brand bg-theme-secondary'
+                  : 'border-theme-primary text-theme-secondary hover:bg-theme-secondary'
               ]"
             >
               {{ cat }}
@@ -462,11 +494,11 @@ const keyRows = [
       </div>
 
       <!-- Account Selector -->
-      <div class="px-4 py-2 border-t border-gray-100 dark:border-slate-800">
-        <label class="text-xs text-indigo-500 font-medium">账户</label>
+      <div class="px-4 py-2 border-t border-theme-secondary">
+        <label class="text-xs text-accounting-brand font-medium">账户</label>
         <select
           v-model="selectedAccount"
-          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          class="accounting-field mt-1"
         >
           <option value="">未指定</option>
           <option v-for="acc in accounts" :key="acc.id" :value="acc.name">
@@ -477,10 +509,10 @@ const keyRows = [
 
       <!-- Target account (for transfer) -->
       <div v-if="activeTab === '转账'" class="px-4 py-2">
-        <label class="text-xs text-indigo-500 font-medium">转入账户</label>
+        <label class="text-xs text-accounting-brand font-medium">转入账户</label>
         <select
           v-model="selectedTargetAccount"
-          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          class="accounting-field mt-1"
         >
           <option value="">未指定</option>
           <option v-for="acc in accounts" :key="acc.id" :value="acc.name">
@@ -489,46 +521,86 @@ const keyRows = [
         </select>
       </div>
 
+      <!-- Payee / merchant -->
+      <div v-if="activeTab !== '转账'" class="px-4 py-2 border-t border-theme-secondary">
+        <label class="text-xs text-accounting-brand font-medium">商家 / 付款对象</label>
+        <input
+          v-model="payee"
+          type="text"
+          list="accounting-merchant-list"
+          placeholder="可选，如超市、公司"
+          class="accounting-field mt-1"
+        />
+        <datalist id="accounting-merchant-list">
+          <option v-for="m in merchants" :key="m.id" :value="m.name" />
+        </datalist>
+      </div>
+
+      <!-- Project & tag -->
+      <div class="px-4 py-2 grid grid-cols-2 gap-2 border-t border-theme-secondary">
+        <div>
+          <label class="text-xs text-accounting-brand font-medium">项目</label>
+          <select
+            v-model="selectedProject"
+            class="accounting-field mt-1"
+          >
+            <option value="">无</option>
+            <option v-for="p in projects" :key="p.id" :value="p.name">{{ p.name }}</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-accounting-brand font-medium">标签</label>
+          <select
+            v-model="selectedTag"
+            class="accounting-field mt-1"
+          >
+            <option value="">无</option>
+            <option v-for="t in tags" :key="t.id" :value="t.name">{{ t.name }}</option>
+          </select>
+        </div>
+      </div>
+
       <!-- Remark -->
-      <div class="px-4 py-2 border-t border-gray-100 dark:border-slate-800">
-        <label class="text-xs text-indigo-500 font-medium">备注</label>
+      <div class="px-4 py-2 border-t border-theme-secondary">
+        <label class="text-xs text-accounting-brand font-medium">备注</label>
         <input
           v-model="remark"
           type="text"
           placeholder="点击添加备注"
-          class="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          class="accounting-field mt-1"
         />
       </div>
 
       <!-- Date Time Selector -->
-      <div class="px-4 py-2 border-t border-gray-100 dark:border-slate-800">
-        <label class="text-xs text-indigo-500 font-medium">日期时间</label>
+      <div class="px-4 py-2 border-t border-theme-secondary">
+        <label class="text-xs text-accounting-brand font-medium">日期时间</label>
         <div class="grid grid-cols-2 gap-2 mt-1">
           <input
             v-model="selectedDate"
             type="date"
-            class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            class="accounting-field"
           />
           <input
             v-model="selectedTime"
             type="time"
-            class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            class="accounting-field"
           />
         </div>
       </div>
     </div>
 
     <!-- Calculator Keyboard -->
-    <div class="bg-white dark:bg-slate-900 border-t border-gray-200 dark:border-slate-700">
+    <div class="bg-theme-elevated border-t border-theme-secondary flex-shrink-0 safe-x safe-bottom">
       <div class="grid grid-cols-4">
         <template v-for="(row, ri) in keyRows" :key="ri">
           <template v-for="key in row" :key="key">
             <!-- OK button spans 2 rows -->
             <button
               v-if="key === 'OK_TOP'"
+              type="button"
               @click="handleKeyPress('OK')"
               :disabled="saving"
-              class="row-span-2 bg-indigo-500 hover:bg-indigo-600 text-white text-lg font-bold py-4 transition active:bg-indigo-700 disabled:opacity-50 col-start-4 row-start-4 row-end-6"
+              class="row-span-2 bg-accounting-brand text-white text-lg font-bold min-h-[96px] transition active:opacity-90 disabled:opacity-50 col-start-4 row-start-4 row-end-6"
               style="grid-row: span 2"
             >
               <Loader2 v-if="saving" class="w-5 h-5 animate-spin mx-auto" />
@@ -540,36 +612,41 @@ const keyRows = [
             />
             <button
               v-else-if="key === '⌫'"
+              type="button"
               @click="handleKeyPress('⌫')"
-              class="py-4 text-lg font-medium text-theme-primary hover:bg-gray-100 dark:hover:bg-slate-800 transition active:bg-gray-200"
+              class="min-h-[48px] text-lg font-medium text-theme-primary active:bg-theme-secondary transition"
             >
               <Delete class="w-5 h-5 mx-auto" />
             </button>
             <button
               v-else-if="key === 'C'"
+              type="button"
               @click="handleKeyPress('C')"
-              class="py-4 text-lg font-medium text-theme-secondary hover:bg-gray-100 dark:hover:bg-slate-800 transition"
+              class="min-h-[48px] text-lg font-medium text-theme-secondary active:bg-theme-secondary transition"
             >
               C
             </button>
             <button
               v-else-if="['÷', '×', '-', '+'].includes(key)"
+              type="button"
               @click="handleKeyPress(key)"
-              class="py-4 text-lg font-medium text-theme-secondary hover:bg-gray-100 dark:hover:bg-slate-800 transition"
+              class="min-h-[48px] text-lg font-medium text-theme-secondary active:bg-theme-secondary transition"
             >
               {{ key }}
             </button>
             <button
               v-else-if="key === '()'"
+              type="button"
               @click="handleKeyPress(key)"
-              class="py-4 text-lg font-medium text-theme-secondary hover:bg-gray-100 dark:hover:bg-slate-800 transition"
+              class="min-h-[48px] text-lg font-medium text-theme-secondary active:bg-theme-secondary transition"
             >
               ( )
             </button>
             <button
               v-else
+              type="button"
               @click="handleKeyPress(key)"
-              class="py-4 text-xl font-medium text-theme-primary hover:bg-gray-100 dark:hover:bg-slate-800 transition active:bg-gray-200"
+              class="min-h-[48px] text-xl font-medium text-theme-primary active:bg-theme-secondary transition"
             >
               {{ key }}
             </button>

@@ -17,6 +17,7 @@ import {
     type GlobalSettingsState,
     type OperationLogEntry,
 } from '@/utils/accountingLocal'
+import { accountingAlert, accountingConfirm } from '@/utils/accountingDialog'
 
 type SettingsKind = 'global' | 'extensions' | 'logs'
 
@@ -89,7 +90,7 @@ const handleRollback = async (log: OperationLogEntry) => {
     if (!store.currentBookId || !log.rollback || log.rolled_back) return
 
     const targetText = log.rollback.kind === 'record' ? '这条交易' : '这个账户'
-    if (!confirm(`确认回滚并恢复${targetText}吗？`)) return
+    if (!await accountingConfirm(`确认回滚并恢复${targetText}吗？`)) return
 
     rollbackingLogId.value = log.id
     try {
@@ -113,7 +114,7 @@ const handleRollback = async (log: OperationLogEntry) => {
         showSavedHint('回滚成功')
     } catch (error) {
         console.error('rollback operation failed', error)
-        alert('回滚失败，请稍后重试')
+        await accountingAlert('回滚失败，请稍后重试')
     } finally {
         rollbackingLogId.value = ''
     }
@@ -179,7 +180,7 @@ const handleSaveExtensions = () => {
 }
 
 const handleClearLogs = async () => {
-    if (!confirm('确认清空操作日志吗？')) return
+    if (!await accountingConfirm('确认清空操作日志吗？')) return
     await clearOperationLogs(store.currentBookId)
     await refreshLogs()
 }
@@ -202,20 +203,20 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-50 dark:bg-slate-900 absolute inset-0 z-50">
-    <header class="bg-white dark:bg-slate-800 shadow-sm relative z-10 safe-top">
+  <div class="accounting-fullscreen bg-theme-primary">
+    <header class="bg-theme-elevated border-b border-theme-secondary shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
-        <button @click="router.back()" class="p-2 -ml-2 text-slate-600 dark:text-slate-300">
+        <button type="button" @click="router.back()" class="p-2 -ml-2 text-theme-secondary">
           <ChevronLeft class="w-6 h-6" />
         </button>
-        <h1 class="text-lg font-bold text-slate-800 dark:text-white">{{ pageTitle }}</h1>
-        <span class="text-xs text-indigo-600 w-20 text-right">{{ savedHint }}</span>
+        <h1 class="text-lg font-bold text-theme-primary">{{ pageTitle }}</h1>
+        <span class="text-xs text-accounting-brand w-20 text-right">{{ savedHint }}</span>
       </div>
     </header>
 
     <main
       ref="mainRef"
-      class="flex-1 overflow-y-auto p-4 safe-bottom"
+      class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad"
       @touchstart="handleMainTouchStart"
       @touchmove="handleMainTouchMove"
       @touchend="handleMainTouchEnd"
@@ -227,7 +228,7 @@ onMounted(async () => {
             <label class="block text-xs text-slate-500 mb-1">货币符号</label>
             <select
               v-model="globalSettings.currency_symbol"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900"
+              class="accounting-field"
             >
               <option value="¥">人民币 (¥)</option>
               <option value="$">美元 ($)</option>
@@ -242,7 +243,7 @@ onMounted(async () => {
               type="number"
               min="0"
               max="4"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900"
+              class="accounting-field"
             />
           </div>
 
@@ -250,7 +251,7 @@ onMounted(async () => {
             <label class="block text-xs text-slate-500 mb-1">周起始日</label>
             <select
               v-model="globalSettings.week_start"
-              class="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900"
+              class="accounting-field"
             >
               <option value="周一">周一</option>
               <option value="周日">周日</option>
@@ -265,36 +266,23 @@ onMounted(async () => {
 
         <button
           @click="handleSaveGlobal"
-          class="w-full py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-medium"
+          class="w-full py-3 rounded-xl bg-accounting-brand hover:opacity-90 text-white font-medium"
         >保存设置</button>
       </div>
 
       <div v-else-if="kind === 'extensions'" class="space-y-4">
-        <div class="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-100 dark:border-slate-700 shadow-sm space-y-3">
-          <label class="flex items-center justify-between rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3 py-2.5">
-            <span class="text-sm text-slate-700 dark:text-slate-200">智能分类建议</span>
-            <input v-model="extensionSettings.smart_category_enabled" type="checkbox" class="w-4 h-4" />
-          </label>
-
-          <label class="flex items-center justify-between rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3 py-2.5">
-            <span class="text-sm text-slate-700 dark:text-slate-200">周期任务提醒</span>
-            <input v-model="extensionSettings.recurring_reminder_enabled" type="checkbox" class="w-4 h-4" />
-          </label>
-
-          <label class="flex items-center justify-between rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3 py-2.5">
-            <span class="text-sm text-slate-700 dark:text-slate-200">往来到期提醒</span>
-            <input v-model="extensionSettings.debt_reminder_enabled" type="checkbox" class="w-4 h-4" />
-          </label>
-
-          <label class="flex items-center justify-between rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3 py-2.5">
-            <span class="text-sm text-slate-700 dark:text-slate-200">快捷导入助手</span>
+        <div class="bg-theme-elevated rounded-2xl p-4 border border-theme-secondary shadow-sm space-y-3">
+          <p class="text-xs text-theme-muted">仅展示已接入真实行为的扩展开关；未实现的提醒/智能分类已隐藏。</p>
+          <label class="flex items-center justify-between rounded-xl bg-theme-secondary border border-theme-primary px-3 py-2.5">
+            <span class="text-sm text-theme-primary">快捷导入助手</span>
             <input v-model="extensionSettings.quick_import_enabled" type="checkbox" class="w-4 h-4" />
           </label>
         </div>
 
         <button
+          type="button"
           @click="handleSaveExtensions"
-          class="w-full py-3 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-medium"
+          class="w-full py-3 rounded-xl bg-accounting-brand hover:opacity-90 text-white font-medium"
         >保存扩展设置</button>
       </div>
 

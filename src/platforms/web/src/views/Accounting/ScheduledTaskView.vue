@@ -1,42 +1,66 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, ref, computed } from 'vue'
 import { useAccountingStore } from '@/stores/accounting'
-import { getScheduledTasks, createScheduledTask, deleteScheduledTask, type ScheduledTask } from '@/api/accounting'
-import { 
-    ChevronLeft, Plus, CalendarClock, Trash2, ArrowRightLeft, ArrowRight
+import {
+    getScheduledTasks,
+    createScheduledTask,
+    deleteScheduledTask,
+    getAccounts,
+    getCategories,
+    type ScheduledTask,
+    type AccountItem,
+    type CategoryItem,
+} from '@/api/accounting'
+import {
+    Plus, CalendarClock, Trash2, ArrowRightLeft, ArrowRight,
 } from 'lucide-vue-next'
+import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import { accountingAlert, accountingConfirm } from '@/utils/accountingDialog'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
+import { moneyTypeTextClass } from '@/utils/accountingMoney'
 
-const router = useRouter()
 const store = useAccountingStore()
 
-// State
 const tasks = ref<ScheduledTask[]>([])
+const accounts = ref<AccountItem[]>([])
+const categories = ref<CategoryItem[]>([])
 const loading = ref(false)
 const showCreateDialog = ref(false)
+const saving = ref(false)
 
-// Form
 const createForm = ref({
     name: '',
     frequency: '每月',
     type: '支出',
     amount: '',
-    account_id: '' as unknown as number,
-    target_account_id: '' as unknown as number,
-    category_id: '' as unknown as number,
+    account_id: '' as number | '',
+    target_account_id: '' as number | '',
+    category_id: '' as number | '',
     payee: '',
-    remark: ''
+    remark: '',
 })
 
 const frequencies = ['每天', '每周', '每月', '每年']
 const types = ['支出', '收入', '转账']
 
+const filteredCategories = computed(() =>
+    categories.value.filter(c => c.type === createForm.value.type),
+)
+
 const loadData = async () => {
     if (!store.currentBookId) return
     loading.value = true
     try {
-        const res = await getScheduledTasks(store.currentBookId)
-        tasks.value = res.data
+        const [taskRes, accRes, catRes] = await Promise.all([
+            getScheduledTasks(store.currentBookId),
+            getAccounts(store.currentBookId),
+            getCategories(store.currentBookId),
+        ])
+        tasks.value = taskRes.data
+        accounts.value = accRes.data
+        categories.value = catRes.data
     } catch (e) {
         console.error(e)
     } finally {
@@ -50,11 +74,11 @@ const openCreate = () => {
         frequency: '每月',
         type: '支出',
         amount: '',
-        account_id: '' as unknown as number,
-        target_account_id: '' as unknown as number,
-        category_id: '' as unknown as number,
+        account_id: accounts.value[0]?.id ?? '',
+        target_account_id: '',
+        category_id: '',
         payee: '',
-        remark: ''
+        remark: '',
     }
     showCreateDialog.value = true
 }
@@ -70,41 +94,74 @@ const getNextRunDate = (freq: string) => {
 
 const saveTask = async () => {
     if (!store.currentBookId) return
-    if (!createForm.value.name || !createForm.value.amount) return
-    
+    if (!createForm.value.name.trim() || !createForm.value.amount) {
+        await accountingAlert('请填写计划名称和金额')
+        return
+    }
+    if (!createForm.value.account_id) {
+        await accountingAlert('请选择账户')
+        return
+    }
+    if (createForm.value.type !== '转账' && !createForm.value.category_id) {
+        await accountingAlert('请选择分类')
+        return
+    }
+    if (createForm.value.type === '转账' && !createForm.value.target_account_id) {
+        await accountingAlert('转账请选择转入账户')
+        return
+    }
+    if (
+        createForm.value.type === '转账'
+        && createForm.value.account_id === createForm.value.target_account_id
+    ) {
+        await accountingAlert('转入账户不能与转出账户相同')
+        return
+    }
+
+    saving.value = true
     try {
         const next_run = getNextRunDate(createForm.value.frequency)
         await createScheduledTask(store.currentBookId, {
-            ...createForm.value,
+            name: createForm.value.name.trim(),
+            frequency: createForm.value.frequency,
+            type: createForm.value.type,
             amount: Number(createForm.value.amount),
             next_run,
-            account_id: createForm.value.account_id || undefined,
-            target_account_id: createForm.value.target_account_id || undefined,
-            category_id: createForm.value.category_id || undefined,
+            account_id: Number(createForm.value.account_id),
+            target_account_id: createForm.value.type === '转账'
+                ? Number(createForm.value.target_account_id)
+                : undefined,
+            category_id: createForm.value.category_id
+                ? Number(createForm.value.category_id)
+                : undefined,
             payee: createForm.value.payee || undefined,
-            remark: createForm.value.remark || undefined
+            remark: createForm.value.remark || undefined,
         })
         showCreateDialog.value = false
-        loadData()
-    } catch (e) {
+        await loadData()
+    } catch (e: any) {
         console.error(e)
+        await accountingAlert(e?.response?.data?.detail || '保存失败')
+    } finally {
+        saving.value = false
     }
 }
 
 const handleDelete = async (id: number) => {
     if (!store.currentBookId) return
-    if(!confirm('确定要删除该周期计划吗？')) return
-    
+    const ok = await accountingConfirm('确定要删除该周期计划吗？', { title: '删除计划' })
+    if (!ok) return
     try {
         await deleteScheduledTask(store.currentBookId, id)
-        loadData()
-    } catch (e) {
-        console.error(e)
+        await loadData()
+    } catch (e: any) {
+        await accountingAlert(e?.response?.data?.detail || '删除失败')
     }
 }
 
-onMounted(() => {
-    loadData()
+onMounted(async () => {
+    if (!store.currentBookId) await store.fetchBooks()
+    await loadData()
 })
 
 const formatDate = (dateString: string | null) => {
@@ -113,118 +170,193 @@ const formatDate = (dateString: string | null) => {
 }
 
 const getIconColor = (type: string) => {
-  if (type === '支出') return 'bg-rose-100 text-rose-500 dark:bg-rose-500/20'
-  if (type === '收入') return 'bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20'
-  return 'bg-blue-100 text-blue-500 dark:bg-blue-500/20'
+    if (type === '支出') return 'bg-accounting-expense/15 text-accounting-expense'
+    if (type === '收入') return 'bg-accounting-income/15 text-accounting-income'
+    return 'bg-accounting-transfer/15 text-accounting-transfer'
 }
-
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-50 dark:bg-slate-900 absolute inset-0 z-50">
-    <!-- Header -->
-    <header class="bg-white dark:bg-slate-800 shadow-sm relative z-10 safe-top">
-      <div class="flex items-center justify-between h-14 px-4">
-        <button @click="router.back()" class="p-2 -ml-2 text-slate-600 dark:text-slate-300">
-          <ChevronLeft class="w-6 h-6" />
-        </button>
-        <h1 class="text-lg font-bold text-slate-800 dark:text-white">计划管理</h1>
-        <button @click="openCreate" class="p-2 -mr-2 text-indigo-600 dark:text-indigo-400">
+  <div class="accounting-fullscreen bg-theme-primary">
+    <AccountingPageHeader title="计划管理">
+      <template #actions>
+        <button type="button" class="p-2 text-accounting-brand" @click="openCreate">
           <Plus class="w-6 h-6" />
         </button>
-      </div>
-    </header>
+      </template>
+    </AccountingPageHeader>
 
-    <!-- Content -->
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom">
-      <div v-if="loading" class="flex justify-center py-8">
-        <div class="w-8 h-8 rounded-full border-4 border-indigo-500/30 border-t-indigo-500 animate-spin"></div>
-      </div>
-      
-      <div v-else-if="tasks.length === 0" class="flex flex-col items-center justify-center py-20 text-slate-400">
-        <CalendarClock class="w-16 h-16 mb-4 text-slate-300" />
-        <p>暂无周期计划</p>
-      </div>
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
+      <AccountingLoadingState v-if="loading" />
+      <AccountingEmptyState
+        v-else-if="tasks.length === 0"
+        title="暂无周期计划"
+        description="添加房租、工资等自动计划"
+      >
+        <template #icon>
+          <CalendarClock class="w-7 h-7" />
+        </template>
+        <template #action>
+          <button
+            type="button"
+            class="px-4 py-2 rounded-xl bg-accounting-brand text-white text-sm"
+            @click="openCreate"
+          >
+            新增计划
+          </button>
+        </template>
+      </AccountingEmptyState>
 
       <div v-else class="space-y-4">
-        <div 
-            v-for="task in tasks" 
-            :key="task.id"
-            class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-slate-100 dark:border-slate-700"
-            :class="{'opacity-60': !task.is_active}"
+        <div
+          v-for="task in tasks"
+          :key="task.id"
+          class="bg-theme-elevated rounded-2xl p-4 shadow-sm border border-theme-secondary"
+          :class="{ 'opacity-60': !task.is_active }"
         >
-            <div class="flex items-start justify-between">
-                <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-xl flex items-center justify-center" :class="getIconColor(task.type)">
-                        <ArrowRightLeft v-if="task.type === '转账'" class="w-5 h-5 flex-shrink-0" />
-                        <ArrowRight v-else class="w-5 h-5 flex-shrink-0" :class="task.type === '支出' ? 'rotate-45' : '-rotate-45'" />
-                    </div>
-                    <div>
-                        <div class="flex items-center gap-2">
-                            <h3 class="font-bold text-slate-800 dark:text-white">{{ task.name }}</h3>
-                            <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 dark:bg-slate-700 text-slate-500">
-                                {{ task.frequency }}
-                            </span>
-                        </div>
-                        <div class="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
-                            <span>下次执行: {{ formatDate(task.next_run) }}</span>
-                        </div>
-                    </div>
+          <div class="flex items-start justify-between">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-xl flex items-center justify-center" :class="getIconColor(task.type)">
+                <ArrowRightLeft v-if="task.type === '转账'" class="w-5 h-5 flex-shrink-0" />
+                <ArrowRight
+                  v-else
+                  class="w-5 h-5 flex-shrink-0"
+                  :class="task.type === '支出' ? 'rotate-45' : '-rotate-45'"
+                />
+              </div>
+              <div>
+                <div class="flex items-center gap-2">
+                  <h3 class="font-bold text-theme-primary">{{ task.name }}</h3>
+                  <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-theme-secondary text-theme-muted">
+                    {{ task.frequency }}
+                  </span>
                 </div>
-                
-                <div class="text-right">
-                    <div class="text-base font-bold" :class="task.type === '支出' ? 'text-rose-500' : 'text-indigo-500'">
-                        {{ task.type === '支出' ? '-' : (task.type === '收入' ? '+' : '') }}¥{{ task.amount }}
-                    </div>
-                    <div class="mt-1 flex justify-end">
-                        <button @click="handleDelete(task.id)" class="text-slate-400 hover:text-rose-500 transition border border-transparent hover:border-rose-100 rounded-md p-1">
-                            <Trash2 class="w-4 h-4" />
-                        </button>
-                    </div>
+                <div class="text-xs text-theme-muted mt-0.5">
+                  下次执行: {{ formatDate(task.next_run) }}
                 </div>
+              </div>
             </div>
+
+            <div class="text-right">
+              <div class="text-base font-bold tabular-nums" :class="moneyTypeTextClass(task.type)">
+                {{ task.type === '支出' ? '-' : (task.type === '收入' ? '+' : '') }}{{ formatAccountingMoney(task.amount) }}
+              </div>
+              <div class="mt-1 flex justify-end">
+                <button
+                  type="button"
+                  class="text-theme-muted hover:text-accounting-expense transition rounded-md p-1"
+                  @click="handleDelete(task.id)"
+                >
+                  <Trash2 class="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </main>
 
-    <!-- Create Dialog -->
-    <div v-if="showCreateDialog" class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-      <div class="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-        <div class="p-4 border-b border-slate-100 dark:border-slate-700">
-          <h2 class="text-lg font-bold text-center">新增周期计划</h2>
+    <div v-if="showCreateDialog" class="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm overflow-hidden safe-bottom">
+        <div class="p-4 border-b border-theme-secondary">
+          <h2 class="text-lg font-bold text-center text-theme-primary">新增周期计划</h2>
         </div>
-        <div class="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+        <div class="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
           <div>
-            <label class="block text-sm text-slate-500 mb-1">计划名称</label>
-            <input v-model="createForm.name" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="房租/工资/还款">
+            <label class="block text-sm text-theme-muted mb-1">计划名称</label>
+            <input
+              v-model="createForm.name"
+              type="text"
+              class="accounting-field"
+              placeholder="房租/工资/还款"
+            >
           </div>
-          <div class="flex gap-4">
-             <div class="flex-1">
-                 <label class="block text-sm text-slate-500 mb-1">执行周期</label>
-                 <select v-model="createForm.frequency" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none">
-                     <option v-for="freq in frequencies" :key="freq" :value="freq">{{ freq }}</option>
-                 </select>
-             </div>
-             <div class="flex-1">
-                 <label class="block text-sm text-slate-500 mb-1">交易类型</label>
-                 <select v-model="createForm.type" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none">
-                     <option v-for="t in types" :key="t" :value="t">{{ t }}</option>
-                 </select>
-             </div>
+          <div class="flex gap-3">
+            <div class="flex-1">
+              <label class="block text-sm text-theme-muted mb-1">执行周期</label>
+              <select
+                v-model="createForm.frequency"
+                class="accounting-field"
+              >
+                <option v-for="freq in frequencies" :key="freq" :value="freq">{{ freq }}</option>
+              </select>
+            </div>
+            <div class="flex-1">
+              <label class="block text-sm text-theme-muted mb-1">交易类型</label>
+              <select
+                v-model="createForm.type"
+                class="accounting-field"
+                @change="createForm.category_id = ''"
+              >
+                <option v-for="t in types" :key="t" :value="t">{{ t }}</option>
+              </select>
+            </div>
           </div>
           <div>
-            <label class="block text-sm text-slate-500 mb-1">金额</label>
-            <input v-model="createForm.amount" type="number" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="0.00">
+            <label class="block text-sm text-theme-muted mb-1">金额</label>
+            <input
+              v-model="createForm.amount"
+              type="number"
+              class="accounting-field"
+              placeholder="0.00"
+            >
           </div>
-          <!-- 简单化处理，如果是实际应用，这里应该有完善的选择器，为了避免过度复杂，这里只保留备注等基础信息 -->
           <div>
-            <label class="block text-sm text-slate-500 mb-1">备注 (选填)</label>
-            <input v-model="createForm.remark" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="添加备注...">
+            <label class="block text-sm text-theme-muted mb-1">账户 <span class="text-accounting-expense">*</span></label>
+            <select
+              v-model="createForm.account_id"
+              class="accounting-field"
+            >
+              <option value="">请选择账户</option>
+              <option v-for="acc in accounts" :key="acc.id" :value="acc.id">{{ acc.name }}</option>
+            </select>
+          </div>
+          <div v-if="createForm.type === '转账'">
+            <label class="block text-sm text-theme-muted mb-1">转入账户 <span class="text-accounting-expense">*</span></label>
+            <select
+              v-model="createForm.target_account_id"
+              class="accounting-field"
+            >
+              <option value="">请选择转入账户</option>
+              <option v-for="acc in accounts" :key="acc.id" :value="acc.id">{{ acc.name }}</option>
+            </select>
+          </div>
+          <div v-if="createForm.type !== '转账'">
+            <label class="block text-sm text-theme-muted mb-1">分类 <span class="text-accounting-expense">*</span></label>
+            <select
+              v-model="createForm.category_id"
+              class="accounting-field"
+            >
+              <option value="">请选择分类</option>
+              <option v-for="cat in filteredCategories" :key="cat.id" :value="cat.id">{{ cat.name }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-theme-muted mb-1">备注 (选填)</label>
+            <input
+              v-model="createForm.remark"
+              type="text"
+              class="accounting-field"
+              placeholder="添加备注..."
+            >
           </div>
         </div>
-        <div class="p-4 flex gap-3 border-t border-slate-100 dark:border-slate-700">
-          <button @click="showCreateDialog = false" class="flex-1 py-3 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-medium">取消</button>
-          <button @click="saveTask" class="flex-1 py-3 bg-indigo-500 text-white rounded-xl font-medium shadow-lg shadow-indigo-500/30">保存</button>
+        <div class="p-4 flex gap-3 border-t border-theme-secondary">
+          <button
+            type="button"
+            class="flex-1 py-3 bg-theme-secondary text-theme-secondary rounded-xl font-medium"
+            @click="showCreateDialog = false"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            class="flex-1 py-3 bg-accounting-brand text-white rounded-xl font-medium disabled:opacity-50"
+            :disabled="saving"
+            @click="saveTask"
+          >
+            保存
+          </button>
         </div>
       </div>
     </div>

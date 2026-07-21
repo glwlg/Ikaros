@@ -376,6 +376,9 @@ async def _serialize_record(session: AsyncSession, record: Record) -> dict:
         category = await session.get(Category, record.category_id)
         if category:
             category_name = category.name
+    # Normalize empty/missing to 未分类 so UI and filters share one label
+    if not (category_name or "").strip():
+        category_name = "未分类"
 
     account_name = ""
     if record.account_id:
@@ -933,9 +936,17 @@ async def get_records(
     start_date: str = None,
     end_date: str = None,
     type: str = None,
+    category: str = None,
+    account: str = None,
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
+    """List book records.
+
+    Date window is half-open ``[start_date, end_date)`` when ``end_date`` includes a
+    time component (stats drill-down). Bare ``YYYY-MM-DD`` end dates are treated as
+    inclusive calendar days (converted to exclusive next midnight).
+    """
     await _get_book(book_id, user, session)
 
     query = select(Record).where(Record.book_id == book_id)
@@ -943,16 +954,57 @@ async def get_records(
     if start_date:
         query = query.where(Record.record_time >= datetime.fromisoformat(start_date))
     if end_date:
-        query = query.where(Record.record_time <= datetime.fromisoformat(end_date))
+        end_raw = end_date.strip()
+        end_dt = datetime.fromisoformat(end_raw)
+        # Date-only picker: inclusive day → exclusive next day
+        if len(end_raw) <= 10:
+            end_dt = end_dt + timedelta(days=1)
+        query = query.where(Record.record_time < end_dt)
     if type:
         query = query.where(Record.type == type)
     if keyword:
-        # Search in remark, payee or through category join
-        # For simplicity, search remark and payee here
         query = query.where(
             or_(
                 Record.remark.ilike(f"%{keyword}%"),
                 Record.payee.ilike(f"%{keyword}%"),
+            )
+        )
+
+    category_name = (category or "").strip()
+    if category_name and category_name not in {"全部", "全部分类"}:
+        # Prefer id subquery over join: more reliable across SQLAlchemy join order,
+        # and covers both NULL category_id and a real Category row named 未分类
+        # (create_record defaults often create an actual 未分类 category).
+        named_ids = select(Category.id).where(
+            Category.book_id == book_id,
+            Category.name == category_name,
+        )
+        if category_name == "未分类":
+            query = query.where(
+                or_(
+                    Record.category_id.is_(None),
+                    Record.category_id.in_(named_ids),
+                )
+            )
+        else:
+            query = query.where(Record.category_id.in_(named_ids))
+
+    account_name = (account or "").strip()
+    if account_name:
+        acc_ids_result = await session.execute(
+            select(Account.id).where(
+                Account.book_id == book_id,
+                Account.name == account_name,
+            )
+        )
+        account_ids = [row[0] for row in acc_ids_result.all()]
+        if not account_ids:
+            return []
+        # Primary account or transfer target
+        query = query.where(
+            or_(
+                Record.account_id.in_(account_ids),
+                Record.target_account_id.in_(account_ids),
             )
         )
 
@@ -1450,10 +1502,19 @@ async def category_summary_range(
 
     category_name = category.strip()
     if category_name and category_name not in {"全部", "全部分类"}:
+        named_ids = select(Category.id).where(
+            Category.book_id == book_id,
+            Category.name == category_name,
+        )
         if category_name == "未分类":
-            query = query.where(Record.category_id.is_(None))
+            query = query.where(
+                or_(
+                    Record.category_id.is_(None),
+                    Record.category_id.in_(named_ids),
+                )
+            )
         else:
-            query = query.where(Category.name == category_name)
+            query = query.where(Record.category_id.in_(named_ids))
 
     result = await session.execute(query)
     rows = result.all()
@@ -1501,7 +1562,12 @@ async def range_summary(
     category_name = category.strip()
     if category_name and category_name not in {"全部", "全部分类"}:
         if category_name == "未分类":
-            query = query.where(Record.category_id.is_(None))
+            query = query.where(
+                or_(
+                    Record.category_id.is_(None),
+                    Category.name == "未分类",
+                )
+            )
         else:
             query = query.where(Category.name == category_name)
 

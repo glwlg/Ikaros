@@ -149,9 +149,11 @@ export const getRangeWindow = (
     allTimeStart: Date | null = null,
 ): RangeWindow => {
     if (preset === 'all_time') {
+        // Prefer first known data day; fallback to a sensible recent decade (avoid showing 1970 in UI)
+        const fallbackStart = new Date(now.getFullYear() - 10, 0, 1)
         const start = allTimeStart instanceof Date && !Number.isNaN(allTimeStart.getTime())
             ? startOfDay(allTimeStart)
-            : new Date(1970, 0, 1)
+            : fallbackStart
         return {
             start,
             end: addDays(startOfDay(now), 1),

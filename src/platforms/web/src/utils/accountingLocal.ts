@@ -714,6 +714,34 @@ export const removeStatsPanel = async (bookId: number | null, id: string) => {
     return saveStatsPanels(bookId, next)
 }
 
+/** Reorder panels by id list; assigns sort_order = (index+1)*10. Unknown ids are appended. */
+export const reorderStatsPanels = async (
+    bookId: number | null,
+    orderedIds: string[],
+) => {
+    const current = await loadStatsPanels(bookId)
+    const byId = new Map(current.map(panel => [panel.id, panel]))
+    const used = new Set<string>()
+    const reordered: StatsPanelConfig[] = []
+
+    for (const id of orderedIds) {
+        const panel = byId.get(id)
+        if (!panel || used.has(id)) continue
+        used.add(id)
+        reordered.push(panel)
+    }
+    for (const panel of current) {
+        if (used.has(panel.id)) continue
+        reordered.push(panel)
+    }
+
+    const next = reordered.map((panel, index) => ({
+        ...panel,
+        sort_order: (index + 1) * 10,
+    }))
+    return saveStatsPanels(bookId, next)
+}
+
 export const createStatsPanelDraft = (): StatsPanelConfig => {
     return {
         id: randomId(),

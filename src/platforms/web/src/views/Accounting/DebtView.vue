@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import { getDebts, createDebt, repayDebt, type Debt } from '@/api/accounting'
-import { 
-    ChevronLeft, Plus, Users, Calendar, AlertCircle, User
+import {
+    Plus, Users, Calendar, AlertCircle, User,
 } from 'lucide-vue-next'
+import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
 
-const router = useRouter()
 const route = useRoute()
 const store = useAccountingStore()
 
@@ -128,36 +129,35 @@ const isOverdue = (dateString: string | null) => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-slate-50 dark:bg-slate-900 absolute inset-0 z-50">
-    <!-- Header -->
-    <header class="bg-white dark:bg-slate-800 shadow-sm relative z-10 safe-top">
-      <div class="flex items-center justify-between h-14 px-4">
-        <button @click="router.back()" class="p-2 -ml-2 text-slate-600 dark:text-slate-300">
-          <ChevronLeft class="w-6 h-6" />
-        </button>
-        <h1 class="text-lg font-bold text-slate-800 dark:text-white">往来管理</h1>
-        <button @click="openCreate" class="p-2 -mr-2 text-indigo-600 dark:text-indigo-400">
+  <div class="accounting-fullscreen bg-theme-primary">
+    <AccountingPageHeader title="往来管理">
+      <template #actions>
+        <button type="button" class="p-2 text-accounting-brand" @click="openCreate">
           <Plus class="w-6 h-6" />
         </button>
-      </div>
-      
-      <!-- Tabs -->
-      <div class="flex border-t border-slate-100 dark:border-slate-700">
-        <button
-          v-for="tab in tabs"
-          :key="tab"
-          @click="handleTabChange(tab)"
-          class="flex-1 py-3 text-sm font-medium transition-colors relative"
-          :class="activeTab === tab ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:text-slate-700'"
-        >
-          {{ tab }}
-          <div v-if="activeTab === tab" class="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-1 bg-indigo-500 rounded-t-full"></div>
-        </button>
-      </div>
-    </header>
+      </template>
+      <template #below>
+        <div class="flex border-t border-theme-secondary">
+          <button
+            v-for="tab in tabs"
+            :key="tab"
+            type="button"
+            @click="handleTabChange(tab)"
+            class="flex-1 py-3 text-sm font-medium transition-colors relative"
+            :class="activeTab === tab ? 'text-accounting-brand' : 'text-theme-muted'"
+          >
+            {{ tab }}
+            <div
+              v-if="activeTab === tab"
+              class="absolute bottom-0 left-1/2 -translate-x-1/2 w-8 h-1 bg-accounting-brand rounded-t-full"
+            />
+          </button>
+        </div>
+      </template>
+    </AccountingPageHeader>
 
     <!-- Content -->
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
       <div v-if="loading" class="flex justify-center py-8">
         <div class="w-8 h-8 rounded-full border-4 border-indigo-500/30 border-t-indigo-500 animate-spin"></div>
       </div>
@@ -185,9 +185,9 @@ const isOverdue = (dateString: string | null) => {
                     </div>
                 </div>
                 <div class="text-right">
-                    <div class="text-sm font-medium text-slate-500">总计: ¥{{ debt.total_amount }}</div>
+                    <div class="text-sm font-medium text-slate-500">总计: {{ formatAccountingMoney(debt.total_amount) }}</div>
                     <div class="text-lg font-bold" :class="debt.type === '借入' ? 'text-rose-500' : 'text-indigo-500'">
-                        {{ debt.is_settled ? '已结清' : `待还: ¥${debt.remaining_amount}` }}
+                        {{ debt.is_settled ? '已结清' : `待还: ${formatAccountingMoney(debt.remaining_amount)}` }}
                     </div>
                 </div>
             </div>
@@ -210,7 +210,7 @@ const isOverdue = (dateString: string | null) => {
     </main>
 
     <!-- Create Dialog -->
-    <div v-if="showCreateDialog" class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
+    <div v-if="showCreateDialog" class="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div class="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         <div class="p-4 border-b border-slate-100 dark:border-slate-700">
           <h2 class="text-lg font-bold text-center">新增{{ createForm.type }}</h2>
@@ -218,19 +218,19 @@ const isOverdue = (dateString: string | null) => {
         <div class="p-4 space-y-4">
           <div>
             <label class="block text-sm text-slate-500 mb-1">往来人</label>
-            <input v-model="createForm.contact" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="姓名/机构">
+            <input v-model="createForm.contact" type="text" class="accounting-field" placeholder="姓名/机构">
           </div>
           <div>
             <label class="block text-sm text-slate-500 mb-1">金额</label>
-            <input v-model="createForm.amount" type="number" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="0.00">
+            <input v-model="createForm.amount" type="number" class="accounting-field" placeholder="0.00">
           </div>
           <div>
             <label class="block text-sm text-slate-500 mb-1">约定日期 (选填)</label>
-            <input v-model="createForm.due_date" type="date" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500">
+            <input v-model="createForm.due_date" type="date" class="accounting-field">
           </div>
           <div>
             <label class="block text-sm text-slate-500 mb-1">备注 (选填)</label>
-            <input v-model="createForm.remark" type="text" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="添加备注...">
+            <input v-model="createForm.remark" type="text" class="accounting-field" placeholder="添加备注...">
           </div>
         </div>
         <div class="p-4 flex gap-3 border-t border-slate-100 dark:border-slate-700">
@@ -241,7 +241,7 @@ const isOverdue = (dateString: string | null) => {
     </div>
 
     <!-- Repay Dialog -->
-    <div v-if="showRepayDialog" class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
+    <div v-if="showRepayDialog" class="fixed inset-0 bg-black/50 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div class="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         <div class="p-4 border-b border-slate-100 dark:border-slate-700">
           <h2 class="text-lg font-bold text-center">记录{{ activeTab === '借入' ? '还款' : '收款' }}</h2>
@@ -251,10 +251,10 @@ const isOverdue = (dateString: string | null) => {
           <div>
             <label class="block text-sm text-slate-500 mb-1">本次金额</label>
             <div class="relative">
-                <input v-model="repayForm.amount" type="number" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl pl-4 pr-20 py-3 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500" placeholder="0.00">
+                <input v-model="repayForm.amount" type="number" class="accounting-field pr-20" placeholder="0.00">
                 <button @click="repayForm.amount = String(repayMax)" class="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-indigo-500 font-medium">全部</button>
             </div>
-            <p class="text-xs text-slate-500 mt-1">最多可输入: ¥{{ repayMax }}</p>
+            <p class="text-xs text-slate-500 mt-1">最多可输入: {{ formatAccountingMoney(repayMax) }}</p>
           </div>
         </div>
         <div class="p-4 flex gap-3 border-t border-slate-100 dark:border-slate-700">

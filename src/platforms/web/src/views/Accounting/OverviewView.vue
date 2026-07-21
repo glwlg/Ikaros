@@ -4,12 +4,19 @@ import { useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import {
     getRecordsSummary, getDailySummary, getRecords, createBook, getBudgets, autoCreateRecordFromImage,
-    type MonthlySummary, type DailySummaryItem, type RecordItem, type Book, type Budget
+    type MonthlySummary, type DailySummaryItem, type RecordItem, type Book, type Budget,
 } from '@/api/accounting'
 import {
-    ChevronDown, ChevronRight, Plus, Loader2, Zap
+    ChevronDown, ChevronRight, Plus, Loader2, ChevronLeft,
 } from 'lucide-vue-next'
-import AddRecordDialog from '@/components/accounting/AddRecordDialog.vue'
+import QuickAddFab from '@/components/accounting/QuickAddFab.vue'
+import BudgetProgressRing from '@/components/accounting/BudgetProgressRing.vue'
+import RecordRow from '@/components/accounting/RecordRow.vue'
+import PullRefreshIndicator from '@/components/accounting/PullRefreshIndicator.vue'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import { usePullToRefresh } from '@/composables/usePullToRefresh'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
 import * as echarts from 'echarts'
 
 const store = useAccountingStore()
@@ -24,7 +31,6 @@ const dailyData = ref<DailySummaryItem[]>([])
 const recentRecords = ref<RecordItem[]>([])
 const currentBudget = ref<Budget | null>(null)
 const loading = ref(false)
-const showAddDialog = ref(false)
 const showBookDropdown = ref(false)
 const showClipboardPrompt = ref(false)
 const showIOSClipboardHint = ref(false)
@@ -37,13 +43,7 @@ const clipboardError = ref('')
 const successTip = ref('')
 let successTipTimer: ReturnType<typeof setTimeout> | null = null
 const pageRef = ref<HTMLElement | null>(null)
-const refreshing = ref(false)
-const pullStartY = ref<number | null>(null)
-const pullDistance = ref(0)
-const isPulling = ref(false)
-const pullThreshold = 72
 
-// Create book
 const showCreateBook = ref(false)
 const newBookName = ref('')
 const creatingBook = ref(false)
@@ -51,19 +51,24 @@ const creatingBook = ref(false)
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
 
-const monthLabel = computed(() => `${currentMonth.value}月`)
+const monthLabel = computed(() => `${currentYear.value}年${currentMonth.value}月`)
 
-const pullHint = computed(() => {
-    if (refreshing.value) return '刷新中...'
-    return pullDistance.value >= pullThreshold ? '松开刷新' : '下拉刷新'
-})
+const prevMonth = () => {
+    if (currentMonth.value === 1) {
+        currentMonth.value = 12
+        currentYear.value -= 1
+    } else {
+        currentMonth.value -= 1
+    }
+}
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
-
-const formatDate = (iso: string) => {
-    const d = new Date(iso)
-    return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
+const nextMonth = () => {
+    if (currentMonth.value === 12) {
+        currentMonth.value = 1
+        currentYear.value += 1
+    } else {
+        currentMonth.value += 1
+    }
 }
 
 const loadData = async () => {
@@ -75,14 +80,14 @@ const loadData = async () => {
             getRecordsSummary(store.currentBookId, currentYear.value, currentMonth.value),
             getDailySummary(store.currentBookId, currentYear.value, currentMonth.value),
             getRecords(store.currentBookId, 5),
-            getBudgets(store.currentBookId, formattedMonth)
+            getBudgets(store.currentBookId, formattedMonth),
         ])
         summary.value = sumRes.data
         dailyData.value = dailyRes.data
         recentRecords.value = recRes.data
         const globalB = budgetRes.data.find(b => !b.category_id)
         currentBudget.value = globalB || null
-        
+
         await nextTick()
         renderChart()
     } catch (e) {
@@ -91,6 +96,21 @@ const loadData = async () => {
         loading.value = false
     }
 }
+
+const {
+    refreshing,
+    pullDistance,
+    pullHint,
+    handleTouchStart,
+    handleTouchMove,
+    handleTouchEnd,
+} = usePullToRefresh({
+    pageRef,
+    onRefresh: async () => {
+        if (!store.currentBookId) await store.fetchBooks()
+        await loadData()
+    },
+})
 
 const renderChart = () => {
     if (!chartRef.value) return
@@ -121,11 +141,11 @@ const renderChart = () => {
             data: expenses,
             smooth: true,
             symbol: 'none',
-            lineStyle: { color: '#14b8a6', width: 2 },
+            lineStyle: { color: 'var(--color-accounting-brand, #0090ff)', width: 2 },
             areaStyle: {
                 color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                    { offset: 0, color: 'rgba(20,184,166,0.3)' },
-                    { offset: 1, color: 'rgba(20,184,166,0.02)' },
+                    { offset: 0, color: 'rgba(0,144,255,0.28)' },
+                    { offset: 1, color: 'rgba(0,144,255,0.02)' },
                 ]),
             },
         }],
@@ -163,20 +183,24 @@ const switchBook = async (book: Book) => {
     await loadData()
 }
 
-const onRecordAdded = () => {
-    showAddDialog.value = false
-    loadData()
-}
+const remainingDays = computed(() => {
+    const daysInMonth = new Date(currentYear.value, currentMonth.value, 0).getDate()
+    const isCurrentMonth =
+        currentYear.value === now.getFullYear() && currentMonth.value === now.getMonth() + 1
+    if (!isCurrentMonth) return daysInMonth
+    return Math.max(1, daysInMonth - now.getDate() + 1)
+})
+
+const dailyRemaining = computed(() => {
+    if (!currentBudget.value) return 0
+    const left = currentBudget.value.total_amount - summary.value.expense
+    if (left <= 0) return 0
+    return left / remainingDays.value
+})
 
 const readClipboardImage = async (): Promise<File | null> => {
-    if (typeof window === 'undefined' || !window.isSecureContext) {
-        return null
-    }
-
-    if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') {
-        return null
-    }
-
+    if (typeof window === 'undefined' || !window.isSecureContext) return null
+    if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') return null
     try {
         const items = await navigator.clipboard.read()
         for (const item of items) {
@@ -210,20 +234,14 @@ const openUploadImagePicker = () => {
 const handleUploadImageChange = (event: Event) => {
     const input = event.target as HTMLInputElement | null
     const file = input?.files?.[0] ?? null
-    if (input) {
-        input.value = ''
-    }
-    if (!file || !file.type.startsWith('image/')) {
-        return
-    }
+    if (input) input.value = ''
+    if (!file || !file.type.startsWith('image/')) return
     showIOSClipboardHint.value = false
     showImageAutoAccountingPrompt(file)
 }
 
 const releaseClipboardPreview = () => {
-    if (clipboardPreviewUrl.value) {
-        URL.revokeObjectURL(clipboardPreviewUrl.value)
-    }
+    if (clipboardPreviewUrl.value) URL.revokeObjectURL(clipboardPreviewUrl.value)
     clipboardPreviewUrl.value = ''
 }
 
@@ -237,9 +255,7 @@ const closeClipboardPrompt = () => {
 
 const showSuccessTip = (text: string) => {
     successTip.value = text
-    if (successTipTimer) {
-        clearTimeout(successTipTimer)
-    }
+    if (successTipTimer) clearTimeout(successTipTimer)
     successTipTimer = setTimeout(() => {
         successTip.value = ''
         successTipTimer = null
@@ -248,36 +264,27 @@ const showSuccessTip = (text: string) => {
 
 const handleImageFabClick = async () => {
     if (!store.currentBookId || clipboardSubmitting.value) return
-
     const image = await readClipboardImage()
     if (image) {
         showImageAutoAccountingPrompt(image)
         return
     }
-
     showIOSClipboardHint.value = true
 }
 
 const startClipboardAutoAccounting = async () => {
     if (!store.currentBookId || !clipboardImageFile.value || clipboardSubmitting.value) return
-
     clipboardSubmitting.value = true
     clipboardError.value = ''
     clipboardStage.value = 'uploading'
     await new Promise(resolve => window.setTimeout(resolve, 180))
-
     try {
         clipboardStage.value = 'recognizing'
         const res = await autoCreateRecordFromImage(store.currentBookId, clipboardImageFile.value)
-
         const recordId = Number(res.data?.record_id || 0)
-        if (!Number.isFinite(recordId) || recordId <= 0) {
-            throw new Error('未返回有效记录ID')
-        }
-
+        if (!Number.isFinite(recordId) || recordId <= 0) throw new Error('未返回有效记录ID')
         clipboardStage.value = 'writing'
         await new Promise(resolve => window.setTimeout(resolve, 160))
-
         closeClipboardPrompt()
         showSuccessTip('记账成功')
         await loadData()
@@ -289,85 +296,9 @@ const startClipboardAutoAccounting = async () => {
     }
 }
 
-const useManualRecordFromClipboardPrompt = () => {
-    closeClipboardPrompt()
-    showAddDialog.value = true
-}
-
-const useManualRecordFromIOSHint = () => {
-    showIOSClipboardHint.value = false
-    showAddDialog.value = true
-}
-
-const uploadImageFromIOSHint = () => {
-    showIOSClipboardHint.value = false
-    openUploadImagePicker()
-}
-
-const getScrollParent = () => {
-    let node: HTMLElement | null = pageRef.value?.parentElement || null
-    while (node) {
-        const style = window.getComputedStyle(node)
-        const scrollable = /(auto|scroll)/.test(style.overflowY)
-        if (scrollable && node.scrollHeight > node.clientHeight) {
-            return node
-        }
-        node = node.parentElement
-    }
-    return null
-}
-
-const resetPull = () => {
-    pullDistance.value = 0
-    pullStartY.value = null
-    isPulling.value = false
-}
-
-const triggerRefresh = async () => {
-    if (refreshing.value) return
-    refreshing.value = true
-    try {
-        if (!store.currentBookId) {
-            await store.fetchBooks()
-        }
-        await loadData()
-    } finally {
-        refreshing.value = false
-        resetPull()
-    }
-}
-
-const handleTouchStart = (event: TouchEvent) => {
-    if (refreshing.value) return
-    const scrollParent = getScrollParent()
-    if (scrollParent && scrollParent.scrollTop > 0) return
-    pullStartY.value = event.touches[0]?.clientY ?? null
-    isPulling.value = true
-}
-
-const handleTouchMove = (event: TouchEvent) => {
-    if (!isPulling.value || pullStartY.value === null) return
-    const currentY = event.touches[0]?.clientY ?? pullStartY.value
-    const delta = currentY - pullStartY.value
-    if (delta <= 0) {
-        pullDistance.value = 0
-        return
-    }
-
-    pullDistance.value = Math.min(120, delta * 0.5)
-    if (pullDistance.value > 0) {
-        event.preventDefault()
-    }
-}
-
-const handleTouchEnd = () => {
-    if (!isPulling.value) return
-    if (pullDistance.value >= pullThreshold) {
-        void triggerRefresh()
-        return
-    }
-    resetPull()
-}
+watch([currentYear, currentMonth], () => {
+    if (store.currentBookId) void loadData()
+})
 
 watch(() => store.currentBookId, () => {
     if (store.currentBookId) loadData()
@@ -375,9 +306,7 @@ watch(() => store.currentBookId, () => {
 
 onMounted(async () => {
     await store.fetchBooks()
-    if (store.currentBookId) {
-        await loadData()
-    }
+    if (store.currentBookId) await loadData()
 })
 
 onBeforeUnmount(() => {
@@ -386,13 +315,15 @@ onBeforeUnmount(() => {
         successTipTimer = null
     }
     releaseClipboardPreview()
+    chartInstance?.dispose()
+    chartInstance = null
 })
 </script>
 
 <template>
   <div
     ref="pageRef"
-    class="pb-20"
+    class="accounting-page-pad"
     @touchstart="handleTouchStart"
     @touchmove="handleTouchMove"
     @touchend="handleTouchEnd"
@@ -406,46 +337,43 @@ onBeforeUnmount(() => {
       @change="handleUploadImageChange"
     >
 
-    <div class="overflow-hidden transition-[height] duration-150" :style="{ height: `${Math.round(pullDistance)}px` }">
-      <div class="h-full flex items-end justify-center pb-2 text-xs text-slate-500 gap-1">
-        <Loader2 v-if="refreshing" class="w-3 h-3 animate-spin" />
-        <span>{{ pullHint }}</span>
-      </div>
-    </div>
+    <PullRefreshIndicator :distance="pullDistance" :hint="pullHint" :refreshing="refreshing" />
 
     <!-- Book Selector -->
     <div class="px-4 pt-4 pb-2 flex items-center justify-between">
       <div class="relative">
         <button
-          @click="showBookDropdown = !showBookDropdown"
+          type="button"
           class="flex items-center gap-1 text-lg font-bold text-theme-primary"
+          @click="showBookDropdown = !showBookDropdown"
         >
           {{ store.books.find(b => b.id === store.currentBookId)?.name || '选择账本' }}
           <ChevronDown class="w-4 h-4" />
         </button>
 
-        <!-- Dropdown -->
         <div
           v-if="showBookDropdown"
-          class="absolute top-full left-0 mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-lg py-1 min-w-[160px] z-30"
+          class="absolute top-full left-0 mt-1 bg-theme-elevated border border-theme-secondary rounded-xl shadow-lg py-1 min-w-[160px] z-30"
         >
           <button
             v-for="book in store.books"
             :key="book.id"
-            @click="switchBook(book)"
+            type="button"
             :class="[
               'w-full text-left px-4 py-2 text-sm transition',
               book.id === store.currentBookId
-                ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 font-medium'
-                : 'text-theme-primary hover:bg-gray-50 dark:hover:bg-slate-700'
+                ? 'bg-theme-secondary text-accounting-brand font-medium'
+                : 'text-theme-primary hover:bg-theme-secondary'
             ]"
+            @click="switchBook(book)"
           >
             {{ book.name }}
           </button>
-          <div class="border-t border-gray-100 dark:border-slate-700 mt-1 pt-1">
+          <div class="border-t border-theme-secondary mt-1 pt-1">
             <button
+              type="button"
+              class="w-full text-left px-4 py-2 text-sm text-accounting-brand hover:bg-theme-secondary flex items-center gap-2"
               @click="showCreateBook = true; showBookDropdown = false"
-              class="w-full text-left px-4 py-2 text-sm text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 flex items-center gap-2"
             >
               <Plus class="w-3.5 h-3.5" /> 新建账本
             </button>
@@ -454,49 +382,48 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- Create Book Prompt (when no books) -->
     <div v-if="store.books.length === 0 && !store.loading" class="px-4 py-12 text-center">
-      <div class="w-20 h-20 mx-auto mb-4 rounded-full bg-indigo-50 dark:bg-indigo-900/30 flex items-center justify-center">
-        <Plus class="w-8 h-8 text-indigo-500" />
+      <div class="w-20 h-20 mx-auto mb-4 rounded-full bg-theme-secondary flex items-center justify-center">
+        <Plus class="w-8 h-8 text-accounting-brand" />
       </div>
       <h3 class="text-lg font-semibold text-theme-primary mb-2">还没有账本</h3>
       <p class="text-theme-muted text-sm mb-4">创建一个账本开始记账吧</p>
       <button
+        type="button"
+        class="px-6 py-2.5 bg-accounting-brand hover:opacity-90 text-white font-medium rounded-xl transition shadow-sm"
         @click="showCreateBook = true"
-        class="px-6 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition shadow-sm"
       >
         创建第一个账本
       </button>
     </div>
 
-    <!-- Create Book Modal -->
     <div
       v-if="showCreateBook"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4"
       @click.self="showCreateBook = false"
     >
-      <div class="bg-white dark:bg-slate-800 rounded-2xl p-6 w-[320px] shadow-xl">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[360px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom">
         <h3 class="text-lg font-semibold text-theme-primary mb-4">新建账本</h3>
         <form @submit.prevent="handleCreateBook">
           <input
             v-model="newBookName"
             type="text"
             placeholder="输入账本名称…"
-            class="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-slate-600 bg-gray-50 dark:bg-slate-700 text-theme-primary focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
+            class="accounting-field mb-4"
             autofocus
           />
           <div class="flex gap-3">
             <button
               type="button"
+              class="flex-1 py-2.5 border border-theme-primary rounded-xl text-theme-secondary font-medium hover:bg-theme-secondary transition"
               @click="showCreateBook = false"
-              class="flex-1 py-2.5 border border-gray-200 dark:border-slate-600 rounded-xl text-theme-secondary font-medium hover:bg-gray-50 dark:hover:bg-slate-700 transition"
             >
               取消
             </button>
             <button
               type="submit"
               :disabled="creatingBook || !newBookName.trim()"
-              class="flex-1 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50"
+              class="flex-1 py-2.5 bg-accounting-brand hover:opacity-90 text-white font-medium rounded-xl transition disabled:opacity-50"
             >
               <Loader2 v-if="creatingBook" class="w-4 h-4 animate-spin mx-auto" />
               <span v-else>创建</span>
@@ -506,127 +433,116 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- Content (when has books) -->
     <template v-if="store.currentBookId">
+      <!-- Month navigation -->
+      <div class="mx-3 sm:mx-4 mt-1 flex items-center justify-between rounded-2xl bg-theme-elevated border border-theme-secondary px-1 py-1.5 shadow-sm">
+        <button type="button" class="accounting-touch-target inline-flex items-center justify-center p-2 rounded-xl active:bg-theme-secondary" aria-label="上一月" @click="prevMonth">
+          <ChevronLeft class="w-5 h-5 text-theme-secondary" />
+        </button>
+        <span class="text-sm font-semibold text-theme-primary">{{ monthLabel }}</span>
+        <button type="button" class="accounting-touch-target inline-flex items-center justify-center p-2 rounded-xl active:bg-theme-secondary" aria-label="下一月" @click="nextMonth">
+          <ChevronLeft class="w-5 h-5 text-theme-secondary rotate-180" />
+        </button>
+      </div>
+
       <!-- Monthly Summary Card -->
-      <div class="mx-4 mt-2 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 overflow-hidden">
-        <div class="p-4">
-          <RouterLink :to="{ name: 'StatsAmountDetail', query: { year: currentYear, month: currentMonth, type: '支出' } }" class="flex items-center justify-between mb-2 cursor-pointer hover:opacity-80 transition">
-            <span class="text-sm text-theme-muted">{{ monthLabel }}支出</span>
-            <ChevronRight class="w-4 h-4 text-indigo-500" />
+      <div class="mx-3 sm:mx-4 mt-3 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary overflow-hidden">
+        <div class="p-3 sm:p-4">
+          <RouterLink
+            :to="{ name: 'StatsAmountDetail', query: { year: currentYear, month: currentMonth, type: '支出' } }"
+            class="flex items-center justify-between mb-3 cursor-pointer active:opacity-80 transition"
+          >
+            <span class="text-sm text-theme-muted">{{ currentMonth }}月收支</span>
+            <ChevronRight class="w-4 h-4 text-accounting-brand" />
           </RouterLink>
-          <div class="flex items-baseline justify-between">
-            <div>
-              <span class="text-3xl font-bold text-rose-500">¥{{ formatMoney(summary.expense) }}</span>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="min-w-0">
+              <p class="text-xs text-theme-muted mb-1">支出</p>
+              <p class="text-xl sm:text-2xl font-bold text-accounting-expense tabular-nums break-all leading-tight">
+                {{ formatAccountingMoney(summary.expense) }}
+              </p>
             </div>
-            <span class="text-sm text-theme-muted">结余 {{ formatMoney(summary.balance) }}</span>
+            <div class="min-w-0">
+              <p class="text-xs text-theme-muted mb-1">收入</p>
+              <p class="text-xl sm:text-2xl font-bold text-accounting-income tabular-nums break-all leading-tight">
+                {{ formatAccountingMoney(summary.income) }}
+              </p>
+            </div>
           </div>
+          <p class="text-xs text-theme-muted mt-2">
+            结余 {{ formatAccountingMoney(summary.balance) }}
+          </p>
         </div>
-        <!-- Chart -->
-        <div ref="chartRef" class="w-full h-[120px]"></div>
+        <div ref="chartRef" class="w-full h-[120px]" />
       </div>
 
       <!-- Recent Transactions -->
-      <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700">
+      <div class="mx-4 mt-4 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary">
         <RouterLink to="/accounting/records" class="flex items-center justify-between p-4 pb-2 cursor-pointer hover:opacity-80 transition">
           <h3 class="font-semibold text-theme-primary">最近交易</h3>
-          <ChevronRight class="w-4 h-4 text-indigo-500" />
+          <ChevronRight class="w-4 h-4 text-accounting-brand" />
         </RouterLink>
 
-        <div v-if="loading" class="p-8 text-center text-theme-muted">
-          <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
-          加载中...
-        </div>
-
-        <div v-else-if="recentRecords.length === 0" class="p-8 text-center text-theme-muted text-sm">
-          暂无记录，点击右下角 + 开始记账
-        </div>
-
-        <ul v-else class="divide-y divide-gray-50 dark:divide-slate-700/50">
-          <li v-for="rec in recentRecords" :key="rec.id" class="px-4 py-3">
-            <RouterLink :to="`/accounting/records/${rec.id}`" class="flex items-start justify-between hover:opacity-80 transition">
-              <!-- Left -->
-              <div class="flex items-start gap-3">
-                <div class="w-2 h-2 mt-2 rounded-full bg-indigo-400 flex-shrink-0" />
-                <div>
-                  <p class="font-medium text-theme-primary text-sm">{{ rec.category || rec.payee || rec.remark || '未分类' }}</p>
-                  <p class="text-xs text-theme-muted mt-0.5">
-                    {{ formatDate(rec.record_time) }}
-                    <template v-if="rec.remark"> · {{ rec.remark }}</template>
-                  </p>
-                </div>
-              </div>
-              <!-- Right -->
-              <div class="text-right flex-shrink-0">
-                <p :class="[
-                  'font-semibold text-sm',
-                  rec.type === '收入' ? 'text-indigo-500' : 'text-theme-primary'
-                ]">
-                  {{ rec.type === '收入' ? '+' : '' }}¥{{ formatMoney(rec.amount) }}
-                </p>
-                <p v-if="rec.account" class="text-[10px] text-theme-muted mt-0.5 px-1.5 py-0.5 rounded bg-gray-50 dark:bg-slate-700 inline-block">
-                  {{ rec.account }}
-                </p>
-              </div>
+        <AccountingLoadingState v-if="loading" />
+        <AccountingEmptyState
+          v-else-if="recentRecords.length === 0"
+          title="暂无记录"
+          description="点击右下角 + 开始记账"
+        />
+        <ul v-else class="divide-y divide-[var(--color-border-secondary)]">
+          <li v-for="rec in recentRecords" :key="rec.id">
+            <RouterLink :to="`/accounting/records/${rec.id}`" class="block hover:bg-theme-secondary/50 transition">
+              <RecordRow
+                :id="rec.id"
+                :type="rec.type"
+                :amount="rec.amount"
+                :category="rec.category"
+                :payee="rec.payee"
+                :remark="rec.remark"
+                :account="rec.account"
+                :target-account="rec.target_account"
+                :record-time="rec.record_time"
+                :show-date="true"
+                :show-chevron="true"
+              />
             </RouterLink>
           </li>
         </ul>
       </div>
 
-      <div class="mx-4 mt-4 rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700 p-4">
+      <!-- Budget -->
+      <div class="mx-4 mt-4 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary p-4">
         <RouterLink to="/accounting/budgets" class="flex items-center justify-between mb-4 cursor-pointer hover:opacity-80 transition">
-          <h3 class="font-semibold text-theme-primary">{{ monthLabel }}预算</h3>
-          <ChevronRight class="w-4 h-4 text-indigo-500" />
+          <h3 class="font-semibold text-theme-primary">{{ currentMonth }}月预算</h3>
+          <ChevronRight class="w-4 h-4 text-accounting-brand" />
         </RouterLink>
         <div class="flex items-center justify-around">
           <div class="text-center">
             <p class="text-xs text-theme-muted">支出</p>
-            <p class="text-lg font-bold text-theme-primary">{{ formatMoney(summary.expense) }}</p>
+            <p class="text-lg font-bold text-theme-primary tabular-nums">{{ formatAccountingMoney(summary.expense) }}</p>
           </div>
-          <!-- Ring -->
-          <RouterLink to="/accounting/budgets" class="w-24 h-24 rounded-full border-[8px] flex items-center justify-center relative cursor-pointer hover:opacity-80 transition"
-            :class="[(summary.expense / (currentBudget?.total_amount || 1)) > 0.9 ? 'border-rose-400' : (currentBudget ? 'border-indigo-400' : 'border-gray-100 dark:border-slate-700')]">
-            <div class="text-center">
-              <p class="text-[10px] text-theme-muted">剩余</p>
-              <p :class="['text-sm font-bold', currentBudget ? ((currentBudget.total_amount - summary.expense) < 0 ? 'text-rose-500' : 'text-theme-primary') : 'text-theme-primary']">
-                {{ currentBudget ? formatMoney(currentBudget.total_amount - summary.expense) : '点击添加' }}
-              </p>
-              <p v-if="currentBudget" class="text-[10px] text-theme-muted">总额{{ formatMoney(currentBudget.total_amount) }}</p>
-            </div>
+          <RouterLink to="/accounting/budgets" class="cursor-pointer hover:opacity-80 transition">
+            <BudgetProgressRing
+              :spent="summary.expense"
+              :total="currentBudget?.total_amount || 0"
+            />
           </RouterLink>
           <div class="text-center">
             <p class="text-xs text-theme-muted">剩余日均</p>
-            <p class="text-lg font-bold text-theme-primary">
-              {{ currentBudget && (currentBudget.total_amount - summary.expense) > 0 ? formatMoney((currentBudget.total_amount - summary.expense) / (new Date(currentYear, currentMonth, 0).getDate() - now.getDate() + 1)) : '0' }}
+            <p class="text-lg font-bold text-theme-primary tabular-nums">
+              {{ formatAccountingMoney(dailyRemaining) }}
             </p>
           </div>
         </div>
       </div>
     </template>
 
-    <!-- FAB -->
-    <div
-      v-if="store.currentBookId"
-      class="fixed bottom-20 right-6 z-30 flex items-center gap-3"
-      style="-webkit-touch-callout: none; -webkit-user-select: none; user-select: none;"
-    >
-      <button
-        @click="handleImageFabClick"
-        @contextmenu.prevent
-        class="w-12 h-12 rounded-full bg-amber-400 hover:bg-amber-500 text-slate-900 shadow-lg hover:shadow-xl flex items-center justify-center transition-all active:scale-95"
-        aria-label="图片识别记账"
-      >
-        <Zap class="w-5 h-5" />
-      </button>
-      <button
-        @click="showAddDialog = true"
-        @contextmenu.prevent
-        class="w-14 h-14 rounded-full bg-indigo-500 hover:bg-indigo-600 text-white shadow-lg hover:shadow-xl flex items-center justify-center transition-all active:scale-95"
-        aria-label="手动记账"
-      >
-        <Plus class="w-7 h-7" />
-      </button>
-    </div>
+    <QuickAddFab
+      :book-id="store.currentBookId"
+      :show-image="true"
+      @saved="loadData"
+      @image="handleImageFabClick"
+    />
 
     <div
       v-if="successTip"
@@ -637,62 +553,43 @@ onBeforeUnmount(() => {
 
     <div
       v-if="showClipboardPrompt"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+      class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/45 p-0 sm:p-4"
       @click.self="!clipboardSubmitting && closeClipboardPrompt()"
     >
-      <div class="w-full max-w-[360px] rounded-2xl bg-white dark:bg-slate-800 border border-gray-100 dark:border-slate-700 shadow-xl p-4">
+      <div class="w-full sm:max-w-[360px] rounded-t-2xl sm:rounded-2xl bg-theme-elevated border border-theme-secondary shadow-xl p-4 safe-bottom">
         <template v-if="!clipboardSubmitting">
           <h3 class="text-base font-semibold text-theme-primary mb-2">已选择图片</h3>
           <p class="text-sm text-theme-muted">是否直接让 AI 识别并记账？</p>
-
           <img
             v-if="clipboardPreviewUrl"
             :src="clipboardPreviewUrl"
             alt="clipboard preview"
-            class="mt-3 w-full max-h-44 object-contain rounded-xl border border-gray-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900"
+            class="mt-3 w-full max-h-44 object-contain rounded-xl border border-theme-secondary bg-theme-secondary"
           />
-
-          <p v-if="clipboardError" class="mt-3 text-sm text-rose-500">{{ clipboardError }}</p>
-
+          <p v-if="clipboardError" class="mt-3 text-sm text-accounting-expense">{{ clipboardError }}</p>
           <div class="mt-4 flex gap-2">
-            <button
-              @click="closeClipboardPrompt"
-              class="flex-1 h-10 rounded-xl border border-gray-200 dark:border-slate-600 text-theme-secondary"
-            >
-              取消
-            </button>
-            <button
-              @click="useManualRecordFromClipboardPrompt"
-              class="flex-1 h-10 rounded-xl border border-indigo-200 text-indigo-500"
-            >
-              手动记账
-            </button>
-            <button
-              @click="startClipboardAutoAccounting"
-              class="flex-1 h-10 rounded-xl bg-indigo-500 text-white"
-            >
-              识别并记账
-            </button>
+            <button type="button" class="flex-1 h-10 rounded-xl border border-theme-primary text-theme-secondary" @click="closeClipboardPrompt">取消</button>
+            <button type="button" class="flex-1 h-10 rounded-xl border border-accounting-brand text-accounting-brand" @click="closeClipboardPrompt(); /* open via fab */">手动记账</button>
+            <button type="button" class="flex-1 h-10 rounded-xl bg-accounting-brand text-white" @click="startClipboardAutoAccounting">识别并记账</button>
           </div>
         </template>
-
         <template v-else>
           <h3 class="text-base font-semibold text-theme-primary mb-3">正在处理</h3>
           <div class="space-y-2 text-sm">
-            <div class="flex items-center justify-between rounded-xl px-3 py-2 bg-slate-50 dark:bg-slate-900">
+            <div class="flex items-center justify-between rounded-xl px-3 py-2 bg-theme-secondary">
               <span>上传中</span>
-              <Loader2 v-if="clipboardStage === 'uploading'" class="w-4 h-4 animate-spin text-indigo-500" />
-              <span v-else class="text-emerald-500">完成</span>
+              <Loader2 v-if="clipboardStage === 'uploading'" class="w-4 h-4 animate-spin text-accounting-brand" />
+              <span v-else class="text-accounting-income">完成</span>
             </div>
-            <div class="flex items-center justify-between rounded-xl px-3 py-2 bg-slate-50 dark:bg-slate-900">
+            <div class="flex items-center justify-between rounded-xl px-3 py-2 bg-theme-secondary">
               <span>AI识别中</span>
-              <Loader2 v-if="clipboardStage === 'recognizing'" class="w-4 h-4 animate-spin text-indigo-500" />
-              <span v-else-if="clipboardStage === 'writing'" class="text-emerald-500">完成</span>
+              <Loader2 v-if="clipboardStage === 'recognizing'" class="w-4 h-4 animate-spin text-accounting-brand" />
+              <span v-else-if="clipboardStage === 'writing'" class="text-accounting-income">完成</span>
               <span v-else class="text-theme-muted">等待</span>
             </div>
-            <div class="flex items-center justify-between rounded-xl px-3 py-2 bg-slate-50 dark:bg-slate-900">
+            <div class="flex items-center justify-between rounded-xl px-3 py-2 bg-theme-secondary">
               <span>写入账本</span>
-              <Loader2 v-if="clipboardStage === 'writing'" class="w-4 h-4 animate-spin text-indigo-500" />
+              <Loader2 v-if="clipboardStage === 'writing'" class="w-4 h-4 animate-spin text-accounting-brand" />
               <span v-else class="text-theme-muted">等待</span>
             </div>
           </div>
@@ -702,41 +599,17 @@ onBeforeUnmount(() => {
 
     <div
       v-if="showIOSClipboardHint"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+      class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/45 p-0 sm:p-4"
       @click.self="showIOSClipboardHint = false"
     >
-      <div class="w-full max-w-[360px] rounded-2xl bg-white dark:bg-slate-800 border border-gray-100 dark:border-slate-700 shadow-xl p-4">
+      <div class="w-full sm:max-w-[360px] rounded-t-2xl sm:rounded-2xl bg-theme-elevated border border-theme-secondary shadow-xl p-4 safe-bottom">
         <h3 class="text-base font-semibold text-theme-primary mb-2">未检测到可读取的剪贴板图片</h3>
         <p class="text-sm text-theme-muted">你可以上传截图识别，或切换为手动记账。</p>
         <div class="mt-4 flex gap-2 justify-end">
-          <button
-            @click="uploadImageFromIOSHint"
-            class="px-4 h-10 rounded-xl border border-indigo-200 text-indigo-500"
-          >
-            上传图片识别
-          </button>
-          <button
-            @click="showIOSClipboardHint = false"
-            class="px-4 h-10 rounded-xl border border-gray-200 dark:border-slate-600 text-theme-secondary"
-          >
-            取消
-          </button>
-          <button
-            @click="useManualRecordFromIOSHint"
-            class="px-4 h-10 rounded-xl bg-indigo-500 text-white"
-          >
-            手动记账
-          </button>
+          <button type="button" class="px-4 h-10 rounded-xl border border-accounting-brand text-accounting-brand" @click="showIOSClipboardHint = false; openUploadImagePicker()">上传图片识别</button>
+          <button type="button" class="px-4 h-10 rounded-xl border border-theme-primary text-theme-secondary" @click="showIOSClipboardHint = false">取消</button>
         </div>
       </div>
     </div>
-
-    <!-- Add Record Dialog -->
-    <AddRecordDialog
-      v-if="showAddDialog"
-      :book-id="store.currentBookId!"
-      @close="showAddDialog = false"
-      @saved="onRecordAdded"
-    />
   </div>
 </template>

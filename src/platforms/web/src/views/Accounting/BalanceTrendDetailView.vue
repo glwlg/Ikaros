@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
 import { useRoute, useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import {
@@ -157,8 +158,6 @@ const granularityLabel = computed(() => {
 const pad2 = (n: number) => String(n).padStart(2, '0')
 const toDateLabel = (d: Date) => `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`
 
-const formatMoney = (n: number) =>
-    new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n)
 
 const formatPeriodLabel = (period: string) => {
     if (granularity.value === 'day') return period.slice(5)
@@ -419,7 +418,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-theme-secondary absolute inset-0 z-50">
+  <div class="accounting-fullscreen bg-theme-secondary relative z-50">
     <header class="bg-indigo-500 dark:bg-indigo-700 text-white shadow-sm relative z-10 safe-top">
       <div class="flex items-center justify-between h-14 px-4">
         <button @click="router.back()" class="p-2 -ml-2 text-white/90">
@@ -445,12 +444,12 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main class="flex-1 overflow-y-auto p-4 safe-bottom space-y-4">
+    <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad space-y-4">
       <div class="rounded-2xl bg-theme-elevated border border-theme-primary p-3 shadow-sm space-y-3">
         <div class="flex items-center gap-2">
           <select
             v-model="scope"
-            class="h-9 rounded-xl border border-theme-primary bg-theme-secondary px-3 text-sm min-w-[96px] text-theme-primary"
+            class="accounting-field"
           >
             <option v-for="item in scopeOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
           </select>
@@ -461,7 +460,7 @@ onBeforeUnmount(() => {
 
           <select
             v-model="rangePreset"
-            class="flex-1 h-9 rounded-xl border border-theme-primary bg-theme-secondary px-3 text-sm text-theme-primary"
+            class="accounting-field flex-1"
           >
             <option v-for="item in detailRangeOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
           </select>
@@ -474,7 +473,7 @@ onBeforeUnmount(() => {
         <div v-if="scope === 'account_type'">
           <select
             v-model="selectedAccountType"
-            class="w-full h-9 rounded-xl border border-theme-primary bg-theme-secondary px-3 text-sm text-theme-primary"
+            class="accounting-field"
           >
             <option v-for="type in accountTypes" :key="type" :value="type">{{ type }}</option>
           </select>
@@ -483,15 +482,15 @@ onBeforeUnmount(() => {
         <div v-if="scope === 'account'">
           <select
             v-model.number="selectedAccountId"
-            class="w-full h-9 rounded-xl border border-theme-primary bg-theme-secondary px-3 text-sm text-theme-primary"
+            class="accounting-field"
           >
             <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.name }}</option>
           </select>
         </div>
 
         <div v-if="rangePreset === 'day_range'" class="grid grid-cols-2 gap-2">
-          <input v-model="customRange.dayStart" type="date" class="h-9 rounded-xl border border-theme-primary bg-theme-secondary px-3 text-sm text-theme-primary" />
-          <input v-model="customRange.dayEnd" type="date" class="h-9 rounded-xl border border-theme-primary bg-theme-secondary px-3 text-sm text-theme-primary" />
+          <input v-model="customRange.dayStart" type="date" class="accounting-field" />
+          <input v-model="customRange.dayEnd" type="date" class="accounting-field" />
         </div>
 
         <p class="text-xs text-theme-muted">{{ currentWindow.label }} · 按{{ granularityLabel }}</p>
@@ -500,9 +499,9 @@ onBeforeUnmount(() => {
       <template v-if="activeTab === 'trend'">
         <div class="rounded-2xl bg-theme-elevated border border-theme-primary p-4 shadow-sm">
           <div class="flex items-baseline justify-between gap-3 mb-3">
-            <p class="text-4xl font-semibold text-indigo-500">¥{{ formatMoney(displayBalance) }}</p>
+            <p class="text-4xl font-semibold text-indigo-500">{{ formatAccountingMoney(displayBalance) }}</p>
             <p class="text-sm" :class="displayChange >= 0 ? 'text-indigo-500' : 'text-rose-500'">
-              {{ displayChange >= 0 ? '+' : '' }}¥{{ formatMoney(displayChange) }}
+              {{ formatAccountingMoney(displayChange, { signed: true }) }}
             </p>
           </div>
 
@@ -526,13 +525,13 @@ onBeforeUnmount(() => {
                 <p class="text-xl text-theme-primary">{{ formatPeriodLabel(row.period) }}</p>
               </div>
               <p class="text-4xl font-semibold" :class="row.change >= 0 ? 'text-indigo-500' : 'text-rose-500'">
-                {{ row.change >= 0 ? '+' : '' }}¥{{ formatMoney(row.change) }}
+                {{ formatAccountingMoney(row.change, { signed: true }) }}
               </p>
             </div>
 
             <div class="mt-1 flex items-center justify-between text-sm text-theme-muted">
-              <p>+¥{{ formatMoney(row.income) }} · -¥{{ formatMoney(row.expense) }}</p>
-              <p class="px-2 py-0.5 rounded-full border border-theme-primary">余额 ¥{{ formatMoney(row.balance) }}</p>
+              <p>{{ formatAccountingMoney(row.income, { signed: true }) }} · {{ formatAccountingMoney(-Math.abs(row.expense)) }}</p>
+              <p class="px-2 py-0.5 rounded-full border border-theme-primary">余额 {{ formatAccountingMoney(row.balance) }}</p>
             </div>
           </div>
         </div>
@@ -542,7 +541,7 @@ onBeforeUnmount(() => {
         <div class="rounded-2xl bg-theme-elevated border border-theme-primary p-4 shadow-sm">
           <div class="flex items-center justify-between mb-3">
             <p class="text-sm text-theme-muted">{{ scopeLabel }} · 账户占比</p>
-            <p class="text-sm font-medium text-theme-primary">总额 ¥{{ formatMoney(shareTotal) }}</p>
+            <p class="text-sm font-medium text-theme-primary">总额 {{ formatAccountingMoney(shareTotal) }}</p>
           </div>
 
           <div v-if="shareRows.length === 0" class="py-8 text-center text-sm text-theme-muted">暂无可展示账户</div>
@@ -560,7 +559,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="text-right">
                   <p class="text-sm font-semibold" :class="row.balance >= 0 ? 'text-indigo-500' : 'text-rose-500'">
-                    {{ row.balance >= 0 ? '+' : '-' }}¥{{ formatMoney(Math.abs(row.balance)) }}
+                    {{ formatAccountingMoney(row.balance, { signed: true }) }}
                   </p>
                   <p class="text-xs text-theme-muted">{{ row.ratio.toFixed(1) }}%</p>
                 </div>
