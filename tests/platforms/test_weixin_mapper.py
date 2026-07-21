@@ -3,14 +3,17 @@ from extension.channels.weixin.formatter import markdown_to_weixin_text
 from extension.channels.weixin.mapper import map_weixin_message
 
 
-def test_markdown_to_weixin_text_downgrades_links_and_emphasis():
-    rendered = markdown_to_weixin_text(
-        "## 标题\n**加粗** [OpenAI](https://openai.com)\n`code`"
+def test_markdown_to_weixin_text_preserves_markdown_syntax():
+    source = "## 标题\n\n**加粗** [OpenAI](https://openai.com)\n\n`code`\n```\nblock\n```"
+    rendered = markdown_to_weixin_text(source)
+    assert rendered == (
+        "## 标题\n\n**加粗** [OpenAI](https://openai.com)\n\n`code`\n```\nblock\n```"
     )
-    assert "标题" in rendered
-    assert "加粗" in rendered
-    assert "OpenAI: https://openai.com" in rendered
-    assert "`" not in rendered
+
+
+def test_markdown_to_weixin_text_normalizes_newlines_only():
+    rendered = markdown_to_weixin_text("a\r\n\r\n\r\nb\n\n\n\nc\n")
+    assert rendered == "a\n\nb\n\nc"
 
 
 def test_map_weixin_message_extracts_plain_text_items():

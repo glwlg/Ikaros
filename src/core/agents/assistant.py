@@ -14,6 +14,84 @@ from core.agents.tools import build_agent_tools
 from services.openai_adapter import build_messages
 
 
+def to_agents_sdk_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Convert OpenAI Chat Completions content blocks into Agents SDK input items.
+
+    `build_messages` emits Chat Completions parts (`text`, `image_url`, `file`).
+    Agents SDK's ChatCompletions converter expects Responses-style parts
+    (`input_text`, `input_image`, `input_file`) and raises UserError otherwise.
+    """
+    converted: list[dict[str, Any]] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").strip() or "user"
+        content = message.get("content")
+        if isinstance(content, str) or content is None:
+            converted.append({"role": role, "content": content if content is not None else ""})
+            continue
+        if not isinstance(content, list):
+            converted.append({"role": role, "content": str(content)})
+            continue
+
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            mapped = _map_content_block_for_agents_sdk(block)
+            if mapped is not None:
+                blocks.append(mapped)
+        if not blocks:
+            continue
+        if len(blocks) == 1 and blocks[0].get("type") == "input_text":
+            converted.append(
+                {"role": role, "content": str(blocks[0].get("text") or "")}
+            )
+            continue
+        converted.append({"role": role, "content": blocks})
+    return converted
+
+
+def _map_content_block_for_agents_sdk(block: Any) -> dict[str, Any] | None:
+    if not isinstance(block, dict):
+        return None
+
+    block_type = str(block.get("type") or "").strip()
+    if block_type in {"input_text", "input_image", "input_audio", "input_file"}:
+        return dict(block)
+
+    if block_type in {"text", "output_text"}:
+        text = str(block.get("text") or "")
+        if not text:
+            return None
+        return {"type": "input_text", "text": text}
+
+    if block_type == "image_url":
+        image_url = block.get("image_url")
+        url = ""
+        detail = "auto"
+        if isinstance(image_url, dict):
+            url = str(image_url.get("url") or "").strip()
+            detail = str(image_url.get("detail") or "auto").strip() or "auto"
+        else:
+            url = str(image_url or "").strip()
+        if not url:
+            return None
+        return {"type": "input_image", "image_url": url, "detail": detail}
+
+    if block_type == "file":
+        file_obj = block.get("file") if isinstance(block.get("file"), dict) else {}
+        file_data = str(file_obj.get("file_data") or "").strip()
+        if not file_data:
+            return None
+        mapped: dict[str, Any] = {"type": "input_file", "file_data": file_data}
+        filename = str(file_obj.get("filename") or "").strip()
+        if filename:
+            mapped["filename"] = filename
+        return mapped
+
+    return None
+
+
 class AgentsSdkAssistantRuntime:
     """Stream Ikaros chat through OpenAI Agents SDK."""
 
@@ -66,7 +144,7 @@ class AgentsSdkAssistantRuntime:
         )
         result = sdk.Runner.run_streamed(
             agent,
-            input=build_messages(contents=message_history),
+            input=to_agents_sdk_input(build_messages(contents=message_history)),
             max_turns=_env_int("AI_TOOL_MAX_TURNS", 40),
         )
 

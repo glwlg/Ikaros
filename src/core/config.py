@@ -48,6 +48,14 @@ WEIXIN_DEBUG_UPDATES = os.getenv("WEIXIN_DEBUG_UPDATES", "false").lower() == "tr
 WEIXIN_SEND_VIDEO_AS_FILE = (
     os.getenv("WEIXIN_SEND_VIDEO_AS_FILE", "false").lower() == "true"
 )
+# Weixin cannot attach text+image in one bubble. Buffer nearby inbound messages
+# from the same user and merge text into media caption before dispatch.
+try:
+    WEIXIN_INBOUND_MERGE_WINDOW_SEC = float(
+        os.getenv("WEIXIN_INBOUND_MERGE_WINDOW_SEC", "3.0") or 3.0
+    )
+except Exception:
+    WEIXIN_INBOUND_MERGE_WINDOW_SEC = 3.0
 
 # 日志配置
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

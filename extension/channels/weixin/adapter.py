@@ -21,10 +21,15 @@ from urllib.parse import unquote, urlparse
 import httpx
 
 from api.services.env_config import ensure_admin_user_id_present
-from core.config import DATA_DIR, WEIXIN_DEBUG_UPDATES, WEIXIN_SEND_VIDEO_AS_FILE
+from core.config import (
+    DATA_DIR,
+    WEIXIN_DEBUG_UPDATES,
+    WEIXIN_INBOUND_MERGE_WINDOW_SEC,
+    WEIXIN_SEND_VIDEO_AS_FILE,
+)
 from core.platform.adapter import BotAdapter
 from core.platform.exceptions import MediaDownloadUnavailableError, MessageSendError
-from core.platform.models import UnifiedContext
+from core.platform.models import MessageType, UnifiedContext
 
 from .formatter import markdown_to_weixin_text
 from .mapper import map_weixin_message
@@ -58,9 +63,17 @@ DEFAULT_POLL_RETRY_SEC = 2
 DEFAULT_MAX_FAILURES = 3
 DEFAULT_TYPING_CACHE_TTL_SEC = 24 * 60 * 60
 DEFAULT_TYPING_CANCEL_DELAY_SEC = 6
+DEFAULT_INBOUND_MERGE_WINDOW_SEC = 3.0
 WEIXIN_TYPING_STATUS_TYPING = 1
 WEIXIN_TYPING_STATUS_CANCEL = 2
 CALLBACK_PREFIX = "#"
+_MERGEABLE_MEDIA_TYPES = {
+    MessageType.IMAGE,
+    MessageType.VIDEO,
+    MessageType.DOCUMENT,
+    MessageType.VOICE,
+    MessageType.AUDIO,
+}
 
 
 class WeixinAdapter(BotAdapter):
@@ -113,6 +126,9 @@ class WeixinAdapter(BotAdapter):
         self._typing_ticket_cache: Dict[str, Tuple[str, float]] = {}
         self._typing_cancel_tasks: Dict[str, asyncio.Task] = {}
         self._binding_tasks: Dict[str, asyncio.Task] = {}
+        self._inbound_merge_buffers: Dict[str, List[UnifiedContext]] = {}
+        self._inbound_merge_tasks: Dict[str, asyncio.Task] = {}
+        self._inbound_merge_window_sec = self._resolve_inbound_merge_window_sec()
         self.debug_updates = bool(WEIXIN_DEBUG_UPDATES)
 
     @property
@@ -122,6 +138,14 @@ class WeixinAdapter(BotAdapter):
     @staticmethod
     def _video_force_media_kind() -> str:
         return "file" if WEIXIN_SEND_VIDEO_AS_FILE else ""
+
+    @staticmethod
+    def _resolve_inbound_merge_window_sec() -> float:
+        try:
+            value = float(WEIXIN_INBOUND_MERGE_WINDOW_SEC)
+        except Exception:
+            value = DEFAULT_INBOUND_MERGE_WINDOW_SEC
+        return max(0.0, min(value, 30.0))
 
     @staticmethod
     def _normalize_base_url(value: str) -> str:
@@ -1734,9 +1758,144 @@ class WeixinAdapter(BotAdapter):
         if text and await self._dispatch_callback(context, text):
             return
 
-        if self._message_handler:
-            result = await self._message_handler(context)
-            await self._auto_reply_if_needed(context, result)
+        if self._should_buffer_inbound(context):
+            await self._buffer_inbound_context(context)
+            return
+
+        await self._dispatch_buffered_context(context)
+
+    def _inbound_buffer_key(self, context: UnifiedContext) -> str:
+        user_id = self._safe_text(getattr(context.message.user, "id", ""))
+        account_id = self._resolve_session_account_id(context=context)
+        return self._compose_scoped_key(account_id, user_id) or user_id or "unknown"
+
+    def _should_buffer_inbound(self, context: UnifiedContext) -> bool:
+        if self._inbound_merge_window_sec <= 0:
+            return False
+        if self._message_handler is None:
+            return False
+        message = context.message
+        if message.type in _MERGEABLE_MEDIA_TYPES:
+            return True
+        if message.type == MessageType.TEXT:
+            text = self._safe_text(message.text)
+            if not text or text == "(empty message)":
+                return False
+            if text.startswith("/") or text.startswith(CALLBACK_PREFIX):
+                return False
+            return True
+        return False
+
+    async def _buffer_inbound_context(self, context: UnifiedContext) -> None:
+        key = self._inbound_buffer_key(context)
+        bucket = self._inbound_merge_buffers.setdefault(key, [])
+        bucket.append(context)
+
+        previous = self._inbound_merge_tasks.get(key)
+        if previous and not previous.done():
+            previous.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await previous
+
+        self._inbound_merge_tasks[key] = asyncio.create_task(
+            self._flush_inbound_buffer_after_delay(key)
+        )
+        logger.info(
+            "Weixin inbound buffered user=%s size=%s window=%.2fs type=%s",
+            self._safe_text(getattr(context.message.user, "id", "")) or "-",
+            len(bucket),
+            self._inbound_merge_window_sec,
+            context.message.type.value,
+        )
+
+    async def _flush_inbound_buffer_after_delay(self, key: str) -> None:
+        try:
+            await asyncio.sleep(self._inbound_merge_window_sec)
+            await self._flush_inbound_buffer(key)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error(
+                "Weixin inbound buffer flush failed key=%s",
+                key,
+                exc_info=True,
+            )
+        finally:
+            current = self._inbound_merge_tasks.get(key)
+            if current is asyncio.current_task():
+                self._inbound_merge_tasks.pop(key, None)
+
+    async def _flush_inbound_buffer(self, key: str) -> None:
+        bucket = self._inbound_merge_buffers.pop(key, [])
+        if not bucket:
+            return
+
+        for context in self._merge_inbound_contexts(bucket):
+            await self._dispatch_buffered_context(context)
+
+    def _merge_inbound_contexts(
+        self, contexts: List[UnifiedContext]
+    ) -> List[UnifiedContext]:
+        if len(contexts) <= 1:
+            return list(contexts)
+
+        text_parts: list[str] = []
+        media_contexts: list[UnifiedContext] = []
+        other_contexts: list[UnifiedContext] = []
+
+        for context in contexts:
+            message = context.message
+            if message.type == MessageType.TEXT:
+                text = self._safe_text(message.text)
+                if text and text != "(empty message)":
+                    text_parts.append(text)
+                continue
+            if message.type in _MERGEABLE_MEDIA_TYPES:
+                caption = self._safe_text(message.caption)
+                if caption:
+                    text_parts.append(caption)
+                media_contexts.append(context)
+                continue
+            other_contexts.append(context)
+
+        merged_caption = "\n".join(dict.fromkeys(text_parts)).strip()
+        if not media_contexts:
+            if not text_parts:
+                return other_contexts
+            # Keep the latest text message; preserve earlier text via caption-like content.
+            latest = contexts[-1]
+            if latest.message.type == MessageType.TEXT and len(text_parts) > 1:
+                latest.message.text = merged_caption
+            elif latest.message.type != MessageType.TEXT:
+                # Reconstruct from last text context if the latest was not text.
+                for context in reversed(contexts):
+                    if context.message.type == MessageType.TEXT:
+                        context.message.text = merged_caption or context.message.text
+                        return other_contexts + [context]
+            return other_contexts + [latest]
+
+        for media_context in media_contexts:
+            existing = self._safe_text(media_context.message.caption)
+            if merged_caption:
+                # Prefer explicit nearby text; keep pre-existing caption if merge empty.
+                media_context.message.caption = merged_caption
+            elif existing:
+                media_context.message.caption = existing
+            media_context.message.text = None
+
+        logger.info(
+            "Weixin inbound merged messages=%s media=%s caption_chars=%s",
+            len(contexts),
+            len(media_contexts),
+            len(merged_caption),
+        )
+        return other_contexts + media_contexts
+
+    async def _dispatch_buffered_context(self, context: UnifiedContext) -> None:
+        if self._message_handler is None:
+            return
+        result = await self._message_handler(context)
+        await self._auto_reply_if_needed(context, result)
 
     @staticmethod
     def _iter_media_items(raw_message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1972,6 +2131,18 @@ class WeixinAdapter(BotAdapter):
         for task in typing_cancel_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        merge_tasks = list(self._inbound_merge_tasks.values())
+        self._inbound_merge_tasks.clear()
+        for task in merge_tasks:
+            task.cancel()
+        for task in merge_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        # Flush any remaining buffered inbound messages before teardown.
+        remaining_keys = list(self._inbound_merge_buffers.keys())
+        for key in remaining_keys:
+            with contextlib.suppress(Exception):
+                await self._flush_inbound_buffer(key)
         await self._close_client()
 
     async def reply_text(

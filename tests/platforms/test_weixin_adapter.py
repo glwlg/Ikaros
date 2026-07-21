@@ -239,6 +239,7 @@ def test_render_qr_png_returns_png_bytes():
 @pytest.mark.asyncio
 async def test_handle_incoming_message_accepts_nonstandard_user_link_message():
     adapter = WeixinAdapter()
+    adapter._inbound_merge_window_sec = 0.05
     captured: dict[str, str] = {}
 
     async def _handler(ctx: UnifiedContext):
@@ -268,6 +269,8 @@ async def test_handle_incoming_message_accepts_nonstandard_user_link_message():
             ],
         }
     )
+    await asyncio.sleep(0.12)
+    await adapter.stop()
 
     assert captured["type"] == "text"
     assert "GitHub" in captured["text"]
@@ -655,3 +658,118 @@ def test_log_updates_summary_emits_payload_sample_when_enabled(caplog):
 
     assert "Weixin getupdates summary" in caplog.text
     assert "\"from_user_id\": \"wx-user-1\"" in caplog.text
+
+
+def _image_raw(
+    *,
+    user_id: str = "wx-user-1",
+    account_id: str = "bot-1",
+    file_id: str = "enc-image-1",
+) -> dict:
+    return {
+        "from_user_id": user_id,
+        "to_user_id": account_id,
+        "bot_account_id": account_id,
+        "context_token": "ctx-1",
+        "message_type": 1,
+        "client_id": f"client-{file_id}",
+        "item_list": [
+            {
+                "type": 2,
+                "image_item": {
+                    "media": {
+                        "encrypt_query_param": file_id,
+                        "aes_key": "MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY=",
+                        "encrypt_type": 1,
+                    },
+                    "mid_size": 16,
+                },
+            }
+        ],
+    }
+
+
+def _text_raw(
+    *,
+    text: str,
+    user_id: str = "wx-user-1",
+    account_id: str = "bot-1",
+    client_id: str = "client-text",
+) -> dict:
+    return {
+        "from_user_id": user_id,
+        "to_user_id": account_id,
+        "bot_account_id": account_id,
+        "context_token": "ctx-1",
+        "message_type": 1,
+        "client_id": client_id,
+        "item_list": [{"type": 1, "text_item": {"text": text}}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_inbound_merge_combines_text_and_image_into_one_dispatch():
+    adapter = WeixinAdapter()
+    adapter._inbound_merge_window_sec = 0.05
+    adapter._apply_runtime_sessions({"bot-1": _session("bot-1")})
+    dispatched: list[UnifiedContext] = []
+
+    async def _handler(ctx: UnifiedContext):
+        dispatched.append(ctx)
+        return None
+
+    adapter.register_message_handler(_handler)
+
+    await adapter._handle_incoming_message(_text_raw(text="这个手机怎么样"))
+    await adapter._handle_incoming_message(_image_raw())
+    await asyncio.sleep(0.12)
+    await adapter.stop()
+
+    assert len(dispatched) == 1
+    message = dispatched[0].message
+    assert message.type == MessageType.IMAGE
+    assert message.caption == "这个手机怎么样"
+    assert message.file_id == "enc-image-1"
+
+
+@pytest.mark.asyncio
+async def test_inbound_merge_image_then_text_sets_caption():
+    adapter = WeixinAdapter()
+    adapter._inbound_merge_window_sec = 0.05
+    adapter._apply_runtime_sessions({"bot-1": _session("bot-1")})
+    dispatched: list[UnifiedContext] = []
+
+    async def _handler(ctx: UnifiedContext):
+        dispatched.append(ctx)
+        return None
+
+    adapter.register_message_handler(_handler)
+
+    await adapter._handle_incoming_message(_image_raw())
+    await adapter._handle_incoming_message(_text_raw(text="值不值得买"))
+    await asyncio.sleep(0.12)
+    await adapter.stop()
+
+    assert len(dispatched) == 1
+    assert dispatched[0].message.type == MessageType.IMAGE
+    assert dispatched[0].message.caption == "值不值得买"
+
+
+@pytest.mark.asyncio
+async def test_inbound_merge_disabled_dispatches_immediately():
+    adapter = WeixinAdapter()
+    adapter._inbound_merge_window_sec = 0.0
+    adapter._apply_runtime_sessions({"bot-1": _session("bot-1")})
+    dispatched: list[str] = []
+
+    async def _handler(ctx: UnifiedContext):
+        dispatched.append(ctx.message.type.value)
+        return None
+
+    adapter.register_message_handler(_handler)
+
+    await adapter._handle_incoming_message(_text_raw(text="hello"))
+    await adapter._handle_incoming_message(_image_raw())
+
+    assert dispatched == ["text", "image"]
+    await adapter.stop()

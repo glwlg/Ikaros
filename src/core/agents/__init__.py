@@ -1,6 +1,6 @@
 """OpenAI Agents SDK runtime adapters for Ikaros core."""
 
-from core.agents.assistant import AgentsSdkAssistantRuntime
+from core.agents.assistant import AgentsSdkAssistantRuntime, to_agents_sdk_input
 from core.agents.runtime import (
     AgentsModelConfig,
     build_agent_model,
@@ -16,4 +16,5 @@ __all__ = [
     "build_agent_tools",
     "looks_like_unexecuted_tool_call",
     "sanitize_visible_assistant_text",
+    "to_agents_sdk_input",
 ]

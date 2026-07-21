@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.agents import AgentsSdkAssistantRuntime
+from core.agents import AgentsSdkAssistantRuntime, to_agents_sdk_input
 from core.agents.runtime import (
     AgentsModelConfig,
     build_agent_model,
@@ -14,6 +14,7 @@ from core.agents.runtime import (
 from core.agents.tools import build_agent_tools
 from core.agent_orchestrator import AgentOrchestrator
 from services.ai_service import AiService
+from services.openai_adapter import build_messages
 
 
 class _FakeChatCompletionsModel:
@@ -236,6 +237,41 @@ def _raw_event(event_type: str, delta: str):
     )
 
 
+def test_to_agents_sdk_input_maps_chat_completions_image_parts():
+    messages = build_messages(
+        contents=[
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "请分析这张图片"},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": "abc123",
+                        }
+                    },
+                ],
+            }
+        ]
+    )
+
+    converted = to_agents_sdk_input(messages)
+
+    assert converted == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "请分析这张图片"},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/jpeg;base64,abc123",
+                    "detail": "auto",
+                },
+            ],
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_assistant_runtime_only_streams_output_text_delta(monkeypatch):
     _FakeRunner.result = _FakeStreamingResult(
@@ -269,6 +305,56 @@ async def test_assistant_runtime_only_streams_output_text_delta(monkeypatch):
     assert _FakeRunner.captured["input"] == [{"role": "user", "content": "hi"}]
     assert events[-1][0] == "final_response"
     assert "secret" not in events[-1][1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_assistant_runtime_converts_image_parts_for_agents_sdk(monkeypatch):
+    _FakeRunner.result = _FakeStreamingResult(events=[], final_output="ok")
+    runtime = AgentsSdkAssistantRuntime(
+        runner=_FakeRunner,
+        agent_cls=_FakeAgent,
+        model_settings_cls=_FakeModelSettings,
+        model_builder=lambda _config: "model",
+    )
+    monkeypatch.setattr(
+        "core.agents.assistant.resolve_agents_model_config",
+        lambda: AgentsModelConfig(api_key="key", base_url=None, model="gpt-5.4"),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in runtime.generate_response_stream(
+            [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "请分析这张图片"},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": "abc123",
+                            }
+                        },
+                    ],
+                }
+            ]
+        )
+    ]
+
+    assert chunks == ["ok"]
+    assert _FakeRunner.captured["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "请分析这张图片"},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/jpeg;base64,abc123",
+                    "detail": "auto",
+                },
+            ],
+        }
+    ]
 
 
 @pytest.mark.asyncio
