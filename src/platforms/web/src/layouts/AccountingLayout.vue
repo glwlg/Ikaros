@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRoute, RouterView, RouterLink } from 'vue-router'
 import { Home, Wallet, BarChart3, Grid2x2, UserCircle, ArrowLeft } from 'lucide-vue-next'
 import AccountingDialogHost from '@/components/accounting/AccountingDialogHost.vue'
+import AccountingToastHost from '@/components/accounting/AccountingToastHost.vue'
 
 const route = useRoute()
 
@@ -87,6 +88,7 @@ const isSubPage = computed(() => [
     </nav>
 
     <AccountingDialogHost />
+    <AccountingToastHost />
   </div>
 </template>
 

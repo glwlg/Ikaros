@@ -21,7 +21,10 @@ import {
     rangeOptions,
     toIsoLocal,
 } from './statsRange'
-import { accountingAlert } from '@/utils/accountingDialog'
+import {
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
 
 const router = useRouter()
@@ -209,7 +212,7 @@ const savePanel = async () => {
     if (!store.currentBookId) return
     const name = panel.value.name.trim()
     if (!name) {
-        await accountingAlert('统计名称不能为空')
+        accountingToastError('统计名称不能为空')
         return
     }
 
@@ -221,9 +224,14 @@ const savePanel = async () => {
         is_custom: panel.value.is_custom || !isEditing.value,
     }
 
-    await upsertStatsPanel(store.currentBookId, next)
-    appendOperationLog(store.currentBookId, isEditing.value ? '更新统计模板' : '新增统计模板', next.name)
-    router.replace({ name: 'StatsPanelManage' })
+    try {
+        await upsertStatsPanel(store.currentBookId, next)
+        appendOperationLog(store.currentBookId, isEditing.value ? '更新统计模板' : '新增统计模板', next.name)
+        accountingToastSuccess(isEditing.value ? '统计已更新' : '统计已创建')
+        router.replace({ name: 'StatsPanelManage' })
+    } catch {
+        accountingToastError('保存统计失败')
+    }
 }
 
 watch(

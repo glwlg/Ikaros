@@ -17,7 +17,13 @@ import {
     type GlobalSettingsState,
     type OperationLogEntry,
 } from '@/utils/accountingLocal'
-import { accountingAlert, accountingConfirm } from '@/utils/accountingDialog'
+import { accountingConfirm } from '@/utils/accountingDialog'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 
 type SettingsKind = 'global' | 'extensions' | 'logs'
 
@@ -99,22 +105,22 @@ const handleRollback = async (log: OperationLogEntry) => {
             appendOperationLog(
                 store.currentBookId,
                 '回滚删除交易',
-                `${log.rollback.data.type} · ¥${log.rollback.data.amount.toFixed(2)} · ${log.rollback.data.category_name || '未分类'}`,
+                `${log.rollback.data.type} · ${formatAccountingMoney(log.rollback.data.amount)} · ${log.rollback.data.category_name || '未分类'}`,
             )
         } else {
             await createAccount(store.currentBookId, log.rollback.data)
             appendOperationLog(
                 store.currentBookId,
                 '回滚删除账户',
-                `${log.rollback.data.name} · ${log.rollback.data.type} · ¥${log.rollback.data.balance.toFixed(2)}`,
+                `${log.rollback.data.name} · ${log.rollback.data.type} · ${formatAccountingMoney(log.rollback.data.balance)}`,
             )
         }
 
         operationLogs.value = await markOperationLogRolledBack(store.currentBookId, log.id)
         showSavedHint('回滚成功')
+        accountingToastSuccess('回滚成功')
     } catch (error) {
-        console.error('rollback operation failed', error)
-        await accountingAlert('回滚失败，请稍后重试')
+        accountingToastError(accountingErrorMessage(error, '回滚失败，请稍后重试'))
     } finally {
         rollbackingLogId.value = ''
     }
@@ -171,18 +177,21 @@ const handleSaveGlobal = () => {
     saveGlobalSettings(globalSettings.value)
     appendOperationLog(store.currentBookId, '保存全局设置', JSON.stringify(globalSettings.value))
     showSavedHint('全局设置已保存')
+    accountingToastSuccess('全局设置已保存')
 }
 
 const handleSaveExtensions = () => {
     saveExtensionSettings(extensionSettings.value)
     appendOperationLog(store.currentBookId, '保存扩展设置', JSON.stringify(extensionSettings.value))
     showSavedHint('扩展设置已保存')
+    accountingToastSuccess('扩展设置已保存')
 }
 
 const handleClearLogs = async () => {
     if (!await accountingConfirm('确认清空操作日志吗？')) return
     await clearOperationLogs(store.currentBookId)
     await refreshLogs()
+    accountingToastSuccess('操作日志已清空')
 }
 
 watch(kind, () => {

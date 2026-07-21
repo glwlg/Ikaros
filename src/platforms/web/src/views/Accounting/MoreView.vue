@@ -12,6 +12,10 @@ import {
 } from '@/utils/accountingMoney'
 import { getAccountingMoneySettings } from '@/utils/accountingFormat'
 import QuickAddFab from '@/components/accounting/QuickAddFab.vue'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+} from '@/utils/accountingToast'
 
 const store = useAccountingStore()
 const debts = ref<Debt[]>([])
@@ -91,8 +95,8 @@ const loadDebts = async () => {
         const res = await getDebts(store.currentBookId)
         debts.value = res.data
     } catch (e) {
-        console.error(e)
         debts.value = []
+        accountingToastError(accountingErrorMessage(e, '债务摘要加载失败'))
     } finally {
         loading.value = false
     }

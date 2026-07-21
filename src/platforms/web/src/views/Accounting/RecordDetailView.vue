@@ -13,12 +13,20 @@ import {
     type RecordItem,
 } from '@/api/accounting'
 import { ChevronLeft, Loader2, Trash2 } from 'lucide-vue-next'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
 import { appendOperationLog } from '@/utils/accountingLocal'
 import {
     formatRecordTimeForInput,
     serializeRecordTimeInput,
 } from '@/utils/accountingDateTime'
-import { accountingAlert, accountingConfirm } from '@/utils/accountingDialog'
+import { accountingConfirm } from '@/utils/accountingDialog'
+import { formatAccountingMoney } from '@/utils/accountingFormat'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 
 const router = useRouter()
 const route = useRoute()
@@ -109,8 +117,8 @@ const loadData = async () => {
             record_time: formatRecordTimeForInput(record.record_time),
         }
     } catch (e) {
-        console.error('Failed to load record detail', e)
         loadFailed.value = true
+        accountingToastError(accountingErrorMessage(e, '记录加载失败'))
     } finally {
         loading.value = false
     }
@@ -121,7 +129,7 @@ const handleSave = async () => {
 
     const amount = Number(form.value.amount)
     if (!amount || amount <= 0) {
-        await accountingAlert('请输入正确的金额')
+        accountingToastError('请输入正确的金额')
         return
     }
 
@@ -143,13 +151,12 @@ const handleSave = async () => {
         appendOperationLog(
             store.currentBookId,
             '更新交易',
-            `ID ${recordId} · ${form.value.type} · ¥${amount.toFixed(2)}`,
+            `ID ${recordId} · ${form.value.type} · ${formatAccountingMoney(amount)}`,
         )
-        await accountingAlert('保存成功')
+        accountingToastSuccess('保存成功')
         await loadData()
     } catch (e) {
-        console.error('Failed to update record', e)
-        await accountingAlert('保存失败，请稍后重试')
+        accountingToastError(accountingErrorMessage(e, '保存失败，请稍后重试'))
     } finally {
         saving.value = false
     }
@@ -168,7 +175,7 @@ const handleDelete = async () => {
             appendOperationLog(
                 store.currentBookId,
                 '删除交易',
-                `ID ${recordId} · ${snapshot.type} · ¥${snapshot.amount.toFixed(2)}`,
+                `ID ${recordId} · ${snapshot.type} · ${formatAccountingMoney(snapshot.amount)}`,
                 {
                     rollback: {
                         kind: 'record',
@@ -188,11 +195,10 @@ const handleDelete = async () => {
         } else {
             appendOperationLog(store.currentBookId, '删除交易', `ID ${recordId}`)
         }
-        await accountingAlert('删除成功')
+        accountingToastSuccess('删除成功')
         router.replace('/accounting/records')
     } catch (e) {
-        console.error('Failed to delete record', e)
-        await accountingAlert('删除失败，请稍后重试')
+        accountingToastError(accountingErrorMessage(e, '删除失败，请稍后重试'))
     } finally {
         deleting.value = false
     }
@@ -223,13 +229,14 @@ onMounted(() => {
     </header>
 
     <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
-      <div v-if="loading" class="flex justify-center py-10">
-        <Loader2 class="w-6 h-6 animate-spin text-indigo-500" />
-      </div>
+      <AccountingLoadingState v-if="loading" />
 
-      <div v-else-if="loadFailed" class="bg-white dark:bg-slate-800 rounded-2xl p-6 text-center text-sm text-slate-500">
-        记录不存在或加载失败
-      </div>
+      <AccountingErrorState
+        v-else-if="loadFailed"
+        title="记录加载失败"
+        description="记录不存在或网络异常"
+        @retry="loadData"
+      />
 
       <div v-else class="space-y-4">
         <div class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-slate-100 dark:border-slate-700">

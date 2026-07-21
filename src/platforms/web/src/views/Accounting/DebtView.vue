@@ -7,7 +7,15 @@ import {
     Plus, Users, Calendar, AlertCircle, User,
 } from 'lucide-vue-next'
 import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 
 const route = useRoute()
 const store = useAccountingStore()
@@ -15,6 +23,7 @@ const store = useAccountingStore()
 // State
 const debts = ref<Debt[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const activeTab = ref(route.query.type as string || '借入')
 const showCreateDialog = ref(false)
 const showRepayDialog = ref(false)
@@ -44,11 +53,13 @@ const filteredDebts = computed(() => {
 const loadData = async () => {
     if (!store.currentBookId) return
     loading.value = true
+    loadError.value = ''
     try {
         const res = await getDebts(store.currentBookId)
         debts.value = res.data
     } catch (e) {
-        console.error(e)
+        loadError.value = accountingErrorMessage(e, '债务加载失败')
+        accountingToastError(loadError.value)
     } finally {
         loading.value = false
     }
@@ -72,7 +83,10 @@ const openCreate = () => {
 
 const saveDebt = async () => {
     if (!store.currentBookId) return
-    if (!createForm.value.contact || !createForm.value.amount) return
+    if (!createForm.value.contact || !createForm.value.amount) {
+        accountingToastError('请填写联系人和金额')
+        return
+    }
     
     try {
         await createDebt(store.currentBookId, {
@@ -83,9 +97,10 @@ const saveDebt = async () => {
             remark: createForm.value.remark || undefined
         })
         showCreateDialog.value = false
+        accountingToastSuccess('已添加')
         loadData()
     } catch (e) {
-        console.error(e)
+        accountingToastError(accountingErrorMessage(e, '添加失败'))
     }
 }
 
@@ -100,16 +115,20 @@ const openRepay = (debt: Debt) => {
 }
 
 const submitRepay = async () => {
-    if (!store.currentBookId || !repayForm.value.debtId || !repayForm.value.amount) return
+    if (!store.currentBookId || !repayForm.value.debtId || !repayForm.value.amount) {
+        accountingToastError('请输入还款金额')
+        return
+    }
     
     try {
         await repayDebt(store.currentBookId, repayForm.value.debtId, {
             amount: Number(repayForm.value.amount)
         })
         showRepayDialog.value = false
+        accountingToastSuccess('已记录还款')
         loadData()
     } catch (e) {
-        console.error(e)
+        accountingToastError(accountingErrorMessage(e, '还款失败'))
     }
 }
 
@@ -158,14 +177,24 @@ const isOverdue = (dateString: string | null) => {
 
     <!-- Content -->
     <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
-      <div v-if="loading" class="flex justify-center py-8">
-        <div class="w-8 h-8 rounded-full border-4 border-indigo-500/30 border-t-indigo-500 animate-spin"></div>
-      </div>
+      <AccountingLoadingState v-if="loading" />
+
+      <AccountingErrorState
+        v-else-if="loadError"
+        title="债务加载失败"
+        :description="loadError"
+        @retry="loadData"
+      />
       
-      <div v-else-if="filteredDebts.length === 0" class="flex flex-col items-center justify-center py-20 text-slate-400">
-        <Users class="w-16 h-16 mb-4 text-slate-300" />
-        <p>暂无{{ activeTab }}记录</p>
-      </div>
+      <AccountingEmptyState
+        v-else-if="filteredDebts.length === 0"
+        :title="`暂无${activeTab}记录`"
+        description="点右上角 + 添加一笔"
+      >
+        <template #icon>
+          <Users class="w-6 h-6" />
+        </template>
+      </AccountingEmptyState>
 
       <div v-else class="space-y-4">
         <div 

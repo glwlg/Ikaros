@@ -13,8 +13,11 @@ import {
     updateCategory,
     type CategoryItem,
 } from '@/api/accounting'
-import { Loader2, Trash2, Pencil, Check } from 'lucide-vue-next'
+import { Trash2, Pencil, Check } from 'lucide-vue-next'
 import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
 import {
     addNamedItem,
     appendOperationLog,
@@ -23,6 +26,12 @@ import {
     type NamedItem,
 } from '@/utils/accountingLocal'
 import { accountingConfirm } from '@/utils/accountingDialog'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastInfo,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 
 type ManageKind = 'category' | 'project' | 'merchant' | 'tag' | 'book'
 type CategoryType = '支出' | '收入' | '转账'
@@ -31,6 +40,7 @@ const route = useRoute()
 const store = useAccountingStore()
 
 const loading = ref(false)
+const loadError = ref('')
 const operating = ref(false)
 
 const resolveKind = (value: unknown): ManageKind => {
@@ -121,6 +131,7 @@ const loadBooks = async () => {
 
 const loadData = async () => {
     loading.value = true
+    loadError.value = ''
     try {
         if (!store.currentBookId) {
             await store.fetchBooks()
@@ -140,6 +151,9 @@ const loadData = async () => {
         if (kind.value === 'merchant') {
             await loadRecentMerchants()
         }
+    } catch (e) {
+        loadError.value = accountingErrorMessage(e, '数据加载失败')
+        accountingToastError(loadError.value)
     } finally {
         loading.value = false
     }
@@ -148,7 +162,10 @@ const loadData = async () => {
 const addCategory = async () => {
     if (!store.currentBookId) return
     const name = newCategoryName.value.trim()
-    if (!name) return
+    if (!name) {
+        accountingToastError('请输入分类名称')
+        return
+    }
 
     operating.value = true
     try {
@@ -158,7 +175,10 @@ const addCategory = async () => {
         })
         appendOperationLog(store.currentBookId, '新增分类', `${newCategoryType.value} / ${name}`)
         newCategoryName.value = ''
+        accountingToastSuccess('分类已添加')
         await loadCategories()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '添加分类失败'))
     } finally {
         operating.value = false
     }
@@ -179,7 +199,10 @@ const cancelEditCategory = () => {
 const saveEditCategory = async () => {
     if (!store.currentBookId || editingCategoryId.value === null) return
     const name = editingCategoryName.value.trim()
-    if (!name) return
+    if (!name) {
+        accountingToastError('请输入分类名称')
+        return
+    }
 
     operating.value = true
     try {
@@ -189,7 +212,10 @@ const saveEditCategory = async () => {
         })
         appendOperationLog(store.currentBookId, '编辑分类', `${editingCategoryType.value} / ${name}`)
         cancelEditCategory()
+        accountingToastSuccess('分类已更新')
         await loadCategories()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '更新分类失败'))
     } finally {
         operating.value = false
     }
@@ -203,7 +229,10 @@ const removeCategory = async (item: CategoryItem) => {
     try {
         await deleteCategory(store.currentBookId, item.id)
         appendOperationLog(store.currentBookId, '删除分类', `${item.type} / ${item.name}`)
+        accountingToastSuccess('分类已删除')
         await loadCategories()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '删除分类失败'))
     } finally {
         operating.value = false
     }
@@ -211,12 +240,16 @@ const removeCategory = async (item: CategoryItem) => {
 
 const addLocalEntry = () => {
     const name = newLocalName.value.trim()
-    if (!name) return
+    if (!name) {
+        accountingToastError('请输入名称')
+        return
+    }
 
     const next = addNamedItem(store.currentBookId, localSection.value, name)
     localItems.value = next
     appendOperationLog(store.currentBookId, '新增条目', `${pageTitle.value} / ${name}`)
     newLocalName.value = ''
+    accountingToastSuccess('已添加')
 }
 
 const removeLocalEntry = async (item: NamedItem) => {
@@ -224,11 +257,15 @@ const removeLocalEntry = async (item: NamedItem) => {
     const next = removeNamedItem(store.currentBookId, localSection.value, item.id)
     localItems.value = next
     appendOperationLog(store.currentBookId, '删除条目', `${pageTitle.value} / ${item.name}`)
+    accountingToastSuccess('已删除')
 }
 
 const addBook = async () => {
     const name = newBookName.value.trim()
-    if (!name) return
+    if (!name) {
+        accountingToastError('请输入账本名称')
+        return
+    }
 
     operating.value = true
     try {
@@ -237,6 +274,9 @@ const addBook = async () => {
         store.setCurrentBook(res.data.id)
         appendOperationLog(res.data.id, '新增账本', name)
         newBookName.value = ''
+        accountingToastSuccess('账本已创建')
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '创建账本失败'))
     } finally {
         operating.value = false
     }
@@ -255,14 +295,20 @@ const cancelEditBook = () => {
 const saveBook = async () => {
     if (editingBookId.value === null) return
     const name = editingBookName.value.trim()
-    if (!name) return
+    if (!name) {
+        accountingToastError('请输入账本名称')
+        return
+    }
 
     operating.value = true
     try {
         await updateBook(editingBookId.value, { name })
         appendOperationLog(editingBookId.value, '重命名账本', name)
         cancelEditBook()
+        accountingToastSuccess('账本已更新')
         await store.fetchBooks()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '更新账本失败'))
     } finally {
         operating.value = false
     }
@@ -285,6 +331,9 @@ const removeBook = async (id: number, name: string) => {
                 store.currentBookId = null
             }
         }
+        accountingToastSuccess('账本已删除')
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '删除账本失败'))
     } finally {
         operating.value = false
     }
@@ -293,6 +342,7 @@ const removeBook = async (id: number, name: string) => {
 const selectBook = (id: number, name: string) => {
     store.setCurrentBook(id)
     appendOperationLog(id, '切换账本', name)
+    accountingToastInfo('已切换账本')
 }
 
 watch(kind, () => {
@@ -311,13 +361,20 @@ onMounted(() => {
     <AccountingPageHeader :title="pageTitle" />
 
     <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
-      <div v-if="loading" class="py-12 flex justify-center">
-        <Loader2 class="w-6 h-6 animate-spin text-accounting-brand" />
-      </div>
+      <AccountingLoadingState v-if="loading" />
 
-      <div v-else-if="!hasBookContext" class="bg-white dark:bg-slate-800 rounded-2xl p-6 text-center text-slate-500 text-sm">
-        还没有账本，请先在账本管理中创建账本
-      </div>
+      <AccountingErrorState
+        v-else-if="loadError"
+        title="加载失败"
+        :description="loadError"
+        @retry="loadData"
+      />
+
+      <AccountingEmptyState
+        v-else-if="!hasBookContext"
+        title="还没有账本"
+        description="请先在账本管理中创建账本"
+      />
 
       <template v-else>
         <div v-if="kind === 'category'" class="space-y-4">
@@ -346,7 +403,7 @@ onMounted(() => {
           </div>
 
           <div class="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm overflow-hidden">
-            <div v-if="categories.length === 0" class="p-6 text-center text-sm text-slate-500">暂无分类</div>
+            <AccountingEmptyState v-if="categories.length === 0" title="暂无分类" description="在上方输入名称后新增" />
             <div v-for="item in categories" :key="item.id" class="px-4 py-3 border-b border-slate-100 dark:border-slate-700 last:border-b-0">
               <div v-if="editingCategoryId !== item.id" class="flex items-center gap-3">
                 <span class="flex-1 text-sm text-slate-800 dark:text-white">{{ item.name }} <span class="text-slate-400">({{ item.type }})</span></span>
@@ -397,7 +454,7 @@ onMounted(() => {
           </div>
 
           <div class="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm overflow-hidden">
-            <div v-if="store.books.length === 0" class="p-6 text-center text-sm text-slate-500">暂无账本</div>
+            <AccountingEmptyState v-if="store.books.length === 0" title="暂无账本" description="在上方输入名称后创建" />
             <div v-for="book in store.books" :key="book.id" class="px-4 py-3 border-b border-slate-100 dark:border-slate-700 last:border-b-0">
               <div v-if="editingBookId !== book.id" class="flex items-center gap-3">
                 <button

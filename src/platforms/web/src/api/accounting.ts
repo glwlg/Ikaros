@@ -136,11 +136,13 @@ export const getRecords = (
     type?: string,
     category?: string,
     account?: string,
+    offset: number = 0,
 ) =>
     request.get<RecordItem[]>('/accounting/records', {
         params: {
             book_id: bookId,
             limit,
+            offset,
             keyword,
             start_date,
             end_date,

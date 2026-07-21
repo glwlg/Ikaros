@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import {
@@ -10,17 +10,21 @@ import {
     type CategoryItem,
     type RecordItem,
 } from '@/api/accounting'
-import { Search, ChevronDown } from 'lucide-vue-next'
+import { Search, ChevronDown, Loader2 } from 'lucide-vue-next'
 import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
 import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
 import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
 import RecordRow from '@/components/accounting/RecordRow.vue'
 import {
     groupRecordsByDay,
-    nextRecordsLimit,
     recordsPageHasMore,
 } from '@/utils/accountingMoney'
 import { buildRecordListQuery } from '@/utils/accountingNavigation'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+} from '@/utils/accountingToast'
 
 const PAGE_SIZE = 50
 
@@ -29,8 +33,8 @@ const route = useRoute()
 const store = useAccountingStore()
 const loading = ref(false)
 const loadingMore = ref(false)
+const loadError = ref('')
 const records = ref<RecordItem[]>([])
-const requestedLimit = ref(PAGE_SIZE)
 const hasMore = ref(false)
 
 const keyword = ref('')
@@ -46,15 +50,15 @@ const filtersExpanded = ref(false)
 const categories = ref<CategoryItem[]>([])
 const accounts = ref<AccountItem[]>([])
 
+const scrollEl = ref<HTMLElement | null>(null)
+const loadMoreSentinel = ref<HTMLElement | null>(null)
+let loadMoreObserver: IntersectionObserver | null = null
+
 const dayGroups = computed(() => groupRecordsByDay(records.value))
 
 const categoryOptions = computed(() => {
     const names = new Set<string>(['未分类'])
     for (const c of categories.value) {
-        if (selectedType.value && c.type !== selectedType.value && c.type !== '转账') {
-            // still show all types for flexibility when type filter empty
-            if (selectedType.value) continue
-        }
         if (selectedType.value && c.type !== selectedType.value) continue
         if (c.name) names.add(c.name)
     }
@@ -138,36 +142,50 @@ const loadMeta = async () => {
         categories.value = catRes.data
         accounts.value = accRes.data
     } catch (e) {
-        console.error('load filter meta failed', e)
+        accountingToastError(accountingErrorMessage(e, '筛选条件加载失败'))
     }
 }
 
 const loadData = async (mode: 'replace' | 'append' = 'replace') => {
     if (!store.currentBookId) return
-    if (mode === 'replace') {
-        loading.value = true
-        requestedLimit.value = PAGE_SIZE
-    } else {
+    if (mode === 'append') {
+        if (loadingMore.value || loading.value || !hasMore.value) return
         loadingMore.value = true
+    } else {
+        loading.value = true
+        loadError.value = ''
     }
 
     try {
-        const limit = mode === 'replace' ? PAGE_SIZE : requestedLimit.value
+        const offset = mode === 'append' ? records.value.length : 0
         const res = await getRecords(
             store.currentBookId,
-            limit,
+            PAGE_SIZE,
             keyword.value || undefined,
             toApiDate(startDate.value, queryStartRaw.value),
             toApiDate(endDate.value, queryEndRaw.value),
             selectedType.value || undefined,
             selectedCategory.value || undefined,
             selectedAccount.value || undefined,
+            offset,
         )
-        records.value = res.data
-        hasMore.value = recordsPageHasMore(res.data.length, limit)
-        requestedLimit.value = limit
+        if (mode === 'append') {
+            const seen = new Set(records.value.map(r => r.id))
+            const fresh = res.data.filter(r => !seen.has(r.id))
+            records.value = [...records.value, ...fresh]
+        } else {
+            records.value = res.data
+        }
+        hasMore.value = recordsPageHasMore(res.data.length, PAGE_SIZE)
     } catch (e) {
-        console.error('Failed to load records', e)
+        const msg = accountingErrorMessage(e, '交易加载失败')
+        if (mode === 'replace') {
+            loadError.value = msg
+            records.value = []
+            hasMore.value = false
+        } else {
+            accountingToastError(msg)
+        }
     } finally {
         loading.value = false
         loadingMore.value = false
@@ -238,14 +256,34 @@ const clearFilters = () => {
 }
 
 const loadMore = async () => {
-    const next = nextRecordsLimit(records.value.length, PAGE_SIZE, hasMore.value)
-    if (next == null) return
-    requestedLimit.value = next
     await loadData('append')
 }
 
 const openRecordDetail = (id: number) => {
     router.push({ name: 'RecordDetail', params: { id } })
+}
+
+const teardownObserver = () => {
+    loadMoreObserver?.disconnect()
+    loadMoreObserver = null
+}
+
+const setupObserver = async () => {
+    await nextTick()
+    teardownObserver()
+    const root = scrollEl.value
+    const target = loadMoreSentinel.value
+    if (!root || !target) return
+
+    loadMoreObserver = new IntersectionObserver(
+        entries => {
+            if (entries.some(e => e.isIntersecting)) {
+                void loadMore()
+            }
+        },
+        { root, rootMargin: '160px', threshold: 0 },
+    )
+    loadMoreObserver.observe(target)
 }
 
 watch(
@@ -261,13 +299,24 @@ watch(
     },
 )
 
+watch([hasMore, loading, () => records.value.length], () => {
+    if (!loading.value && hasMore.value) {
+        void setupObserver()
+    } else {
+        teardownObserver()
+    }
+})
+
 onMounted(async () => {
     if (!store.currentBookId) await store.fetchBooks()
     hydrateFromRoute()
-    // Deep links keep filters visible collapsed with summary; expand if many filters
     filtersExpanded.value = false
     await loadMeta()
     if (store.currentBookId) await loadData('replace')
+})
+
+onBeforeUnmount(() => {
+    teardownObserver()
 })
 </script>
 
@@ -275,7 +324,7 @@ onMounted(async () => {
   <div class="accounting-fullscreen bg-theme-primary">
     <AccountingPageHeader title="交易明细" />
 
-    <div class="flex-1 min-h-0 overflow-auto accounting-scroll accounting-subpage-pad">
+    <div ref="scrollEl" class="flex-1 min-h-0 overflow-auto accounting-scroll accounting-subpage-pad">
       <!-- Sticky filter bar -->
       <div class="sticky top-0 z-10 bg-theme-primary/95 backdrop-blur-md border-b border-theme-secondary px-3 pt-3 pb-3">
         <div class="flex items-center gap-2">
@@ -363,6 +412,13 @@ onMounted(async () => {
       <div class="px-3 pt-3">
         <AccountingLoadingState v-if="loading" />
 
+        <AccountingErrorState
+          v-else-if="loadError"
+          title="交易加载失败"
+          :description="loadError"
+          @retry="loadData('replace')"
+        />
+
         <AccountingEmptyState
           v-else-if="records.length === 0"
           title="没有符合条件的交易"
@@ -412,15 +468,18 @@ onMounted(async () => {
             </ul>
           </div>
 
-          <div class="flex justify-center pt-1">
+          <div ref="loadMoreSentinel" class="flex justify-center pt-1 min-h-[2.5rem]">
+            <div v-if="loadingMore" class="inline-flex items-center gap-2 text-xs text-theme-muted py-2">
+              <Loader2 class="w-3.5 h-3.5 animate-spin text-accounting-brand" />
+              加载更多…
+            </div>
             <button
-              v-if="hasMore"
+              v-else-if="hasMore"
               type="button"
-              class="px-5 h-11 rounded-full border border-theme-primary text-sm font-medium text-accounting-brand active:bg-theme-secondary disabled:opacity-50"
-              :disabled="loadingMore"
+              class="px-5 h-11 rounded-full border border-theme-primary text-sm font-medium text-accounting-brand active:bg-theme-secondary"
               @click="loadMore"
             >
-              {{ loadingMore ? '加载中…' : '加载更多' }}
+              加载更多
             </button>
             <p v-else class="text-xs text-theme-muted py-2">共 {{ records.length }} 条</p>
           </div>

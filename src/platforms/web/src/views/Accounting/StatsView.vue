@@ -27,7 +27,12 @@ import {
 } from '@/utils/accountingLocal'
 import QuickAddFab from '@/components/accounting/QuickAddFab.vue'
 import PullRefreshIndicator from '@/components/accounting/PullRefreshIndicator.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+} from '@/utils/accountingToast'
 import { buildRecordListQuery, periodBounds } from '@/utils/accountingNavigation'
 
 type StatType = '支出' | '收入'
@@ -144,6 +149,7 @@ const primaryTeamPanelId = computed(() => {
 const categoryData = ref<CategorySummaryItem[]>([])
 const trendData = ref<PeriodSummaryItem[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const currentGranularity = ref<Granularity>('day')
 const panelPreviewMap = ref<Record<string, {
     value: number
@@ -426,6 +432,7 @@ const loadData = async () => {
     const window = timeWindow.value
     currentGranularity.value = window.granularity
     loading.value = true
+    loadError.value = ''
 
     try {
         const [categoryRes, trendRes] = await Promise.all([
@@ -448,9 +455,10 @@ const loadData = async () => {
         trendData.value = trendRes.data
     } catch (error) {
         if (current !== loadVersion) return
-        console.error('stats load failed', error)
         categoryData.value = []
         trendData.value = []
+        loadError.value = accountingErrorMessage(error, '统计数据加载失败')
+        accountingToastError(loadError.value)
     } finally {
         if (current === loadVersion) {
             loading.value = false
@@ -691,6 +699,14 @@ onBeforeUnmount(() => {
     @touchcancel="handleTouchEnd"
   >
     <PullRefreshIndicator :distance="pullDistance" :hint="pullHint" :refreshing="refreshing" />
+
+    <AccountingErrorState
+      v-if="loadError && !loading"
+      class="mx-4"
+      title="统计加载失败"
+      :description="loadError"
+      @retry="loadData"
+    />
 
     <div class="px-4 py-2">
       <button

@@ -12,10 +12,17 @@ import {
 } from 'lucide-vue-next'
 import * as echarts from 'echarts'
 import { appendOperationLog } from '@/utils/accountingLocal'
-import { accountingAlert } from '@/utils/accountingDialog'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
 import { buildRecordListQuery } from '@/utils/accountingNavigation'
 import AddRecordDialog from '@/components/accounting/AddRecordDialog.vue'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 
 
 
@@ -28,6 +35,7 @@ const account = ref<AccountItem | null>(null)
 const records = ref<RecordItem[]>([])
 const trendData = ref<BalanceTrendItem[]>([])
 const loading = ref(false)
+const loadError = ref('')
 
 // Edit modal
 const showEdit = ref(false)
@@ -88,8 +96,8 @@ const handleToggleAssets = async () => {
             '更新账户',
             `${account.value.name} · 计入资产 ${newVal ? '开启' : '关闭'}`,
         )
-    } catch (e: any) {
-        await accountingAlert(e.response?.data?.detail || '状态更新失败')
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '状态更新失败'))
     } finally {
         togglingAssets.value = false
     }
@@ -121,6 +129,7 @@ const isPositiveRecord = (record: RecordItem) => getRecordDelta(record) > 0
 
 const loadData = async () => {
     loading.value = true
+    loadError.value = ''
     try {
         const [detailRes, recordsRes, trendRes] = await Promise.all([
             getAccountDetail(accountId),
@@ -132,6 +141,9 @@ const loadData = async () => {
         trendData.value = trendRes.data
         await nextTick()
         renderChart()
+    } catch (e) {
+        loadError.value = accountingErrorMessage(e, '账户详情加载失败')
+        accountingToastError(loadError.value)
     } finally {
         loading.value = false
     }
@@ -205,6 +217,9 @@ const handleSaveEdit = async () => {
         )
         await loadData()
         showEdit.value = false
+        accountingToastSuccess('账户已更新')
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '更新失败'))
     } finally {
         saving.value = false
     }
@@ -231,8 +246,9 @@ const handleAdjust = async () => {
         )
         await loadData()
         showAdjust.value = false
-    } catch (e: any) {
-        await accountingAlert(e.response?.data?.detail || '调整失败')
+        accountingToastSuccess('余额已调整')
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '调整失败'))
     } finally {
         adjusting.value = false
     }
@@ -262,9 +278,10 @@ const handleDelete = async () => {
         } else {
             appendOperationLog(resolveLogBookId(), '删除账户', `ID ${accountId}`)
         }
+        accountingToastSuccess('账户已删除')
         router.push('/accounting/assets')
-    } catch (e: any) {
-        await accountingAlert(e.response?.data?.detail || '删除失败')
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '删除失败'))
     }
 }
 
@@ -284,10 +301,13 @@ onMounted(loadData)
       </button>
     </div>
 
-    <!-- Loading -->
-    <div v-if="loading && !account" class="p-12 text-center">
-      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
-    </div>
+    <AccountingLoadingState v-if="loading && !account" />
+    <AccountingErrorState
+      v-else-if="loadError && !account"
+      title="账户加载失败"
+      :description="loadError"
+      @retry="loadData"
+    />
 
     <template v-if="account">
       <!-- Balance Card -->
@@ -329,7 +349,11 @@ onMounted(loadData)
           </button>
         </div>
 
-        <div v-if="records.length === 0" class="p-6 text-center text-theme-muted text-sm">暂无交易记录</div>
+        <AccountingEmptyState
+          v-if="records.length === 0"
+          title="暂无交易记录"
+          description="点右上角 + 记一笔"
+        />
 
         <ul v-else class="divide-y divide-gray-50 dark:divide-slate-700/50">
           <li v-for="rec in records" :key="rec.id" class="px-4 py-3">

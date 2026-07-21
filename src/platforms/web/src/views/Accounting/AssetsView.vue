@@ -19,10 +19,18 @@ import {
 import * as echarts from 'echarts'
 import { toIsoLocal } from './statsRange'
 import netWorthBg from '@/assets/net-worth-ocean.svg'
-import { accountingAlert, accountingConfirm } from '@/utils/accountingDialog'
+import { accountingConfirm } from '@/utils/accountingDialog'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 import QuickAddFab from '@/components/accounting/QuickAddFab.vue'
 import PullRefreshIndicator from '@/components/accounting/PullRefreshIndicator.vue'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
 
 
 
@@ -32,6 +40,7 @@ const router = useRouter()
 const store = useAccountingStore()
 const accounts = ref<AccountItem[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const showAmount = ref(true)
 const showAddAccount = ref(false)
 const chartRef = ref<HTMLElement | null>(null)
@@ -203,8 +212,8 @@ const loadNetTrend = async () => {
         )
         netTrendRows.value = res.data
     } catch (error) {
-        console.error('load net trend failed', error)
         netTrendRows.value = []
+        accountingToastError(accountingErrorMessage(error, '资产趋势加载失败'))
     } finally {
         netTrendLoading.value = false
     }
@@ -248,10 +257,14 @@ const goBalanceTrend = (
 const loadData = async () => {
     if (!store.currentBookId) return
     loading.value = true
+    loadError.value = ''
     try {
         const res = await getAccounts(store.currentBookId)
         accounts.value = res.data
         await loadNetTrend()
+    } catch (error) {
+        loadError.value = accountingErrorMessage(error, '账户加载失败')
+        accountingToastError(loadError.value)
     } finally {
         loading.value = false
     }
@@ -276,6 +289,9 @@ const handleCreateAccount = async () => {
         newAccName.value = ''
         newAccBalance.value = 0
         showAddAccount.value = false
+        accountingToastSuccess('账户已创建')
+    } catch (error) {
+        accountingToastError(accountingErrorMessage(error, '创建账户失败'))
     } finally {
         creatingAcc.value = false
     }
@@ -311,8 +327,9 @@ const handleMergeAccount = async () => {
         appendOperationLog(store.currentBookId, '合并账户', `${source.name} -> ${target.name}`)
         await loadData()
         closeMergeAccount()
-    } catch (error: any) {
-        await accountingAlert(error?.response?.data?.detail || '合并失败，请稍后重试')
+        accountingToastSuccess('账户已合并')
+    } catch (error) {
+        accountingToastError(accountingErrorMessage(error, '合并失败，请稍后重试'))
     } finally {
         mergingAccount.value = false
     }
@@ -493,10 +510,13 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- Loading -->
-    <div v-if="loading" class="p-8 text-center text-theme-muted">
-      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
-    </div>
+    <AccountingLoadingState v-if="loading" />
+    <AccountingErrorState
+      v-else-if="loadError"
+      title="账户加载失败"
+      :description="loadError"
+      @retry="loadData"
+    />
 
     <!-- Account Groups -->
     <template v-else>
@@ -551,9 +571,11 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="accounts.length === 0" class="mx-4 mt-4 p-8 text-center text-theme-muted text-sm rounded-2xl bg-white dark:bg-slate-800 shadow-sm border border-gray-100 dark:border-slate-700">
-        暂无账户，点击右上角 + 添加
-      </div>
+      <AccountingEmptyState
+        v-if="accounts.length === 0"
+        title="暂无账户"
+        description="点击右上角 + 添加第一个账户"
+      />
     </template>
 
     <!-- Add Account Modal -->

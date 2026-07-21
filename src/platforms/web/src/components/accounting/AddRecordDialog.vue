@@ -4,9 +4,13 @@ import { createRecord, getCategories, getAccounts, type CategoryItem, type Accou
 import { X, Delete, Loader2, ChevronRight } from 'lucide-vue-next'
 import { appendOperationLog, loadNamedItems, type NamedItem } from '@/utils/accountingLocal'
 import { toLocalIsoString } from '@/utils/accountingDateTime'
-import { accountingAlert } from '@/utils/accountingDialog'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
 import { moneyTypeTextClass } from '@/utils/accountingMoney'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 
 const props = defineProps<{
     bookId: number
@@ -332,7 +336,7 @@ const handleSave = async () => {
 
     if (activeTab.value === '转账' && selectedAccount.value && selectedTargetAccount.value
         && selectedAccount.value === selectedTargetAccount.value) {
-        await accountingAlert('转入账户不能与转出账户相同')
+        accountingToastError('转入账户不能与转出账户相同')
         return
     }
 
@@ -353,10 +357,10 @@ const handleSave = async () => {
             '新增交易',
             `${activeTab.value} · ${formatAccountingMoney(amount)} · ${selectedCategory.value || '未分类'}`,
         )
+        accountingToastSuccess('记账成功')
         emit('saved')
     } catch (e) {
-        console.error('Failed to save', e)
-        await accountingAlert('保存失败')
+        accountingToastError(accountingErrorMessage(e, '保存失败'))
     } finally {
         saving.value = false
     }

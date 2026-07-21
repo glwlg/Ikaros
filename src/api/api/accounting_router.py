@@ -932,6 +932,7 @@ async def clear_operation_logs(
 async def get_records(
     book_id: int,
     limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0, ge=0),
     keyword: str = None,
     start_date: str = None,
     end_date: str = None,
@@ -1009,7 +1010,7 @@ async def get_records(
         )
 
     result = await session.execute(
-        query.order_by(Record.record_time.desc()).limit(limit)
+        query.order_by(Record.record_time.desc()).offset(offset).limit(limit)
     )
     records = result.scalars().all()
     return [await _serialize_record(session, r) for r in records]

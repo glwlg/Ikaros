@@ -15,8 +15,13 @@ import RecordRow from '@/components/accounting/RecordRow.vue'
 import PullRefreshIndicator from '@/components/accounting/PullRefreshIndicator.vue'
 import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
 import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+} from '@/utils/accountingToast'
 import * as echarts from 'echarts'
 
 const store = useAccountingStore()
@@ -28,6 +33,7 @@ const currentMonth = ref(now.getMonth() + 1)
 
 const summary = ref<MonthlySummary>({ income: 0, expense: 0, balance: 0 })
 const dailyData = ref<DailySummaryItem[]>([])
+const loadError = ref('')
 const recentRecords = ref<RecordItem[]>([])
 const currentBudget = ref<Budget | null>(null)
 const loading = ref(false)
@@ -74,6 +80,7 @@ const nextMonth = () => {
 const loadData = async () => {
     if (!store.currentBookId) return
     loading.value = true
+    loadError.value = ''
     try {
         const formattedMonth = `${currentYear.value}-${String(currentMonth.value).padStart(2, '0')}`
         const [sumRes, dailyRes, recRes, budgetRes] = await Promise.all([
@@ -91,7 +98,8 @@ const loadData = async () => {
         await nextTick()
         renderChart()
     } catch (e) {
-        console.error('Failed to load data', e)
+        loadError.value = accountingErrorMessage(e, '首页数据加载失败')
+        accountingToastError(loadError.value)
     } finally {
         loading.value = false
     }
@@ -484,6 +492,12 @@ onBeforeUnmount(() => {
         </RouterLink>
 
         <AccountingLoadingState v-if="loading" />
+        <AccountingErrorState
+          v-else-if="loadError"
+          title="加载失败"
+          :description="loadError"
+          @retry="loadData"
+        />
         <AccountingEmptyState
           v-else-if="recentRecords.length === 0"
           title="暂无记录"

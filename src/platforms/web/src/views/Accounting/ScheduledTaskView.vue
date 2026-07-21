@@ -17,9 +17,15 @@ import {
 import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
 import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
 import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
-import { accountingAlert, accountingConfirm } from '@/utils/accountingDialog'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
+import { accountingConfirm } from '@/utils/accountingDialog'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
 import { moneyTypeTextClass } from '@/utils/accountingMoney'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 
 const store = useAccountingStore()
 
@@ -27,6 +33,7 @@ const tasks = ref<ScheduledTask[]>([])
 const accounts = ref<AccountItem[]>([])
 const categories = ref<CategoryItem[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const showCreateDialog = ref(false)
 const saving = ref(false)
 
@@ -52,6 +59,7 @@ const filteredCategories = computed(() =>
 const loadData = async () => {
     if (!store.currentBookId) return
     loading.value = true
+    loadError.value = ''
     try {
         const [taskRes, accRes, catRes] = await Promise.all([
             getScheduledTasks(store.currentBookId),
@@ -62,7 +70,8 @@ const loadData = async () => {
         accounts.value = accRes.data
         categories.value = catRes.data
     } catch (e) {
-        console.error(e)
+        loadError.value = accountingErrorMessage(e, '周期计划加载失败')
+        accountingToastError(loadError.value)
     } finally {
         loading.value = false
     }
@@ -95,26 +104,26 @@ const getNextRunDate = (freq: string) => {
 const saveTask = async () => {
     if (!store.currentBookId) return
     if (!createForm.value.name.trim() || !createForm.value.amount) {
-        await accountingAlert('请填写计划名称和金额')
+        accountingToastError('请填写计划名称和金额')
         return
     }
     if (!createForm.value.account_id) {
-        await accountingAlert('请选择账户')
+        accountingToastError('请选择账户')
         return
     }
     if (createForm.value.type !== '转账' && !createForm.value.category_id) {
-        await accountingAlert('请选择分类')
+        accountingToastError('请选择分类')
         return
     }
     if (createForm.value.type === '转账' && !createForm.value.target_account_id) {
-        await accountingAlert('转账请选择转入账户')
+        accountingToastError('转账请选择转入账户')
         return
     }
     if (
         createForm.value.type === '转账'
         && createForm.value.account_id === createForm.value.target_account_id
     ) {
-        await accountingAlert('转入账户不能与转出账户相同')
+        accountingToastError('转入账户不能与转出账户相同')
         return
     }
 
@@ -138,10 +147,10 @@ const saveTask = async () => {
             remark: createForm.value.remark || undefined,
         })
         showCreateDialog.value = false
+        accountingToastSuccess('计划已创建')
         await loadData()
-    } catch (e: any) {
-        console.error(e)
-        await accountingAlert(e?.response?.data?.detail || '保存失败')
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '保存失败'))
     } finally {
         saving.value = false
     }
@@ -153,9 +162,10 @@ const handleDelete = async (id: number) => {
     if (!ok) return
     try {
         await deleteScheduledTask(store.currentBookId, id)
+        accountingToastSuccess('计划已删除')
         await loadData()
-    } catch (e: any) {
-        await accountingAlert(e?.response?.data?.detail || '删除失败')
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '删除失败'))
     }
 }
 
@@ -188,6 +198,12 @@ const getIconColor = (type: string) => {
 
     <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad">
       <AccountingLoadingState v-if="loading" />
+      <AccountingErrorState
+        v-else-if="loadError"
+        title="周期计划加载失败"
+        :description="loadError"
+        @retry="loadData"
+      />
       <AccountingEmptyState
         v-else-if="tasks.length === 0"
         title="暂无周期计划"

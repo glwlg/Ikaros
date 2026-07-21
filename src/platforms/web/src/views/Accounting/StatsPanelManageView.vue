@@ -11,6 +11,9 @@ import {
     type StatsPanelConfig,
 } from '@/utils/accountingLocal'
 import { accountingConfirm } from '@/utils/accountingDialog'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingEmptyState from '@/components/accounting/AccountingEmptyState.vue'
+import { accountingToastSuccess } from '@/utils/accountingToast'
 
 const router = useRouter()
 const store = useAccountingStore()
@@ -45,6 +48,7 @@ const deletePanel = async (panel: StatsPanelConfig) => {
     if (!await accountingConfirm(`确认删除统计模板「${panel.name}」吗？`)) return
     panels.value = await removeStatsPanel(store.currentBookId, panel.id)
     appendOperationLog(store.currentBookId, '删除自定义统计', panel.name)
+    accountingToastSuccess('统计模板已删除')
 }
 
 onMounted(async () => {
@@ -76,9 +80,7 @@ onMounted(async () => {
     </header>
 
     <main class="flex-1 min-h-0 overflow-y-auto accounting-scroll p-4 accounting-subpage-pad space-y-4">
-      <div v-if="loading" class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-6 text-sm text-theme-muted text-center">
-        正在加载账本...
-      </div>
+      <AccountingLoadingState v-if="loading" label="正在加载账本..." />
 
       <template v-else>
         <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-4">
@@ -118,9 +120,11 @@ onMounted(async () => {
         <div class="rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 p-4">
           <h2 class="text-base font-semibold text-theme-primary mb-3">自定义统计</h2>
 
-          <div v-if="customPanels.length === 0" class="rounded-xl border border-dashed border-slate-300 dark:border-slate-600 p-5 text-sm text-theme-muted text-center">
-            暂无自定义统计，点击右上角“添加统计”创建。
-          </div>
+          <AccountingEmptyState
+            v-if="customPanels.length === 0"
+            title="暂无自定义统计"
+            description="点击右上角「添加统计」创建"
+          />
 
           <div v-else class="space-y-3">
             <div

@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, type Component } from 'vue'
 import { formatAccountingMoney, formatCompactAccountingMoney } from '@/utils/accountingFormat'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAccountingStore } from '@/stores/accounting'
@@ -88,8 +93,11 @@ const handleFileUpload = async (event: Event) => {
         await importCsv(store.currentBookId, file)
         appendOperationLog(store.currentBookId, '导入CSV', file.name)
         setActionMessage('导入成功')
-    } catch (e: any) {
-        setActionMessage(e.response?.data?.detail || '导入失败')
+        accountingToastSuccess('导入成功')
+    } catch (e) {
+        const msg = accountingErrorMessage(e, '导入失败')
+        setActionMessage(msg)
+        accountingToastError(msg)
     } finally {
         uploading.value = false
         target.value = ''
@@ -120,8 +128,11 @@ const handleExport = async () => {
 
         appendOperationLog(store.currentBookId, '导出CSV', filename)
         setActionMessage('导出成功')
-    } catch {
-        setActionMessage('导出失败')
+        accountingToastSuccess('导出成功')
+    } catch (e) {
+        const msg = accountingErrorMessage(e, '导出失败')
+        setActionMessage(msg)
+        accountingToastError(msg)
     } finally {
         exporting.value = false
     }
@@ -199,6 +210,8 @@ onMounted(async () => {
         try {
             const res = await getStatsOverview(store.currentBookId)
             overview.value = res.data
+        } catch (e) {
+            accountingToastError(accountingErrorMessage(e, '概览加载失败'))
         } finally {
             loading.value = false
         }

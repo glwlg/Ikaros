@@ -6,13 +6,21 @@ import { getBudgets, createOrUpdateBudget, getRecordsSummary, getCategorySummary
 import { Loader2, Plus, ArrowLeft, Target, Wallet, Pencil, ChevronRight } from 'lucide-vue-next'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
 import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
+import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
+import AccountingErrorState from '@/components/accounting/AccountingErrorState.vue'
 import { buildRecordListQuery, monthWindow } from '@/utils/accountingNavigation'
+import {
+    accountingErrorMessage,
+    accountingToastError,
+    accountingToastSuccess,
+} from '@/utils/accountingToast'
 
 const router = useRouter()
 
 
 const store = useAccountingStore()
 const loading = ref(false)
+const loadError = ref('')
 
 const now = new Date()
 const selectedYear = ref(now.getFullYear())
@@ -41,6 +49,7 @@ const categoryBudgets = computed(() => budgets.value.filter(b => b.category_id !
 const loadData = async () => {
     if (!store.currentBookId) return
     loading.value = true
+    loadError.value = ''
     try {
         const [sumRes, budgetRes, catSumRes, catsRes] = await Promise.all([
             getRecordsSummary(store.currentBookId, selectedYear.value, selectedMonth.value),
@@ -63,7 +72,8 @@ const loadData = async () => {
         globalBudgetAmount.value = globalBudget ? globalBudget.total_amount : 0
         
     } catch (e) {
-        console.error('Failed to load budgets', e)
+        loadError.value = accountingErrorMessage(e, '预算加载失败')
+        accountingToastError(loadError.value)
     } finally {
         loading.value = false
     }
@@ -97,7 +107,10 @@ const handleSaveBudget = async () => {
             category_id: null
         })
         showEditDialog.value = false
+        accountingToastSuccess('总预算已保存')
         await loadData()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '保存预算失败'))
     } finally {
         saving.value = false
     }
@@ -113,7 +126,10 @@ const handleSaveCategoryBudget = async () => {
             category_id: Number(inputCategoryId.value)
         })
         showCategoryDialog.value = false
+        accountingToastSuccess('分类预算已保存')
         await loadData()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '保存分类预算失败'))
     } finally {
         saving.value = false
     }
@@ -188,10 +204,13 @@ onMounted(async () => {
       </button>
     </div>
 
-    <div v-if="loading" class="p-12 text-center text-theme-muted">
-      <Loader2 class="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-400" />
-      加载中...
-    </div>
+    <AccountingLoadingState v-if="loading" />
+    <AccountingErrorState
+      v-else-if="loadError"
+      title="预算加载失败"
+      :description="loadError"
+      @retry="loadData"
+    />
 
     <template v-else>
       <!-- Overall Budget Card -->
