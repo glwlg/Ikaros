@@ -291,7 +291,7 @@ onMounted(loadData)
 <template>
   <div class="accounting-subpage-pad min-h-full">
     <!-- Custom Header (override AccountingLayout) -->
-    <div class="sticky top-0 z-20 bg-gradient-to-r from-indigo-500 to-indigo-400 px-4 py-3 flex items-center justify-between shadow-sm">
+    <div class="accounting-detail-header sticky top-0 z-20 px-4 py-3 safe-top flex items-center justify-between shadow-sm">
       <button @click="router.push('/accounting/assets')" class="flex items-center gap-1.5 text-white/90 hover:text-white transition">
         <ArrowLeft class="w-4 h-4" />
         <span class="font-semibold">{{ account?.name || '账户详情' }}</span>

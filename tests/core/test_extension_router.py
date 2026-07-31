@@ -167,3 +167,21 @@ def test_extension_router_skips_ikaros_only_skill(monkeypatch):
 
     assert "internal_dev_tool" not in names
     assert "rss_subscribe" in names
+
+
+def test_extension_router_can_return_all_candidates(monkeypatch):
+    monkeypatch.setattr(
+        extension_router_module.skill_loader,
+        "get_skills_summary",
+        lambda: [
+            {
+                "name": f"skill_{index}",
+                "description": f"Skill {index}",
+            }
+            for index in range(25)
+        ],
+    )
+
+    candidates = ExtensionRouter().route("测试", max_candidates=None)
+
+    assert len(candidates) == 25

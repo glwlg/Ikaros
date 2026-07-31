@@ -261,6 +261,13 @@ def test_camera_view_offers_zoomed_picture_in_picture():
     assert "const TIMESTAMP_CROP_WIDTH_RATIO" in text
     assert "canvas.captureStream(24)" in text
     assert "requestPictureInPicture()" in text
+    assert "ensurePipWarmup" in text
+    assert "webkitSetPresentationMode" in text
+    assert "Keep the click handler free of awaits" in text
+    assert "resolvePipTarget" in text
+    assert "prefersNativePictureInPicture" in text
+    assert "isVideoReadyForPictureInPicture" in text
+    assert "mode: 'native'" in text
     assert "new URL(" in text
     assert "ref=\"previewCanvasRef\"" in text
     assert "ref=\"overviewCanvasRef\"" in text

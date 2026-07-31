@@ -109,21 +109,24 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="accounting-page-pad">
-    <div class="px-4 pt-4 pb-2">
-      <h2 class="text-lg font-bold text-theme-primary text-center">更多</h2>
+  <div class="accounting-page-pad accounting-more-page">
+    <div class="px-4 pt-3 pb-2">
+      <h2 class="text-2xl font-bold text-theme-primary text-center">更多</h2>
     </div>
 
     <div v-for="section in sections" :key="section.title" class="px-4 mt-4">
-      <h3 class="text-base font-bold text-accounting-brand">{{ section.title }}</h3>
-      <p class="text-xs text-theme-muted mb-3">{{ section.subtitle }}</p>
-
-      <div class="grid grid-cols-2 gap-3">
+      <section class="accounting-more-section">
+        <div class="mb-4">
+          <h3 class="text-xl font-bold text-theme-primary">{{ section.title }}</h3>
+          <span class="accounting-section-accent" />
+          <p class="text-sm text-theme-muted mt-2">{{ section.subtitle }}</p>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
         <RouterLink
           v-for="item in section.items"
           :key="item.label"
           :to="item.route"
-          class="bg-theme-elevated rounded-2xl p-4 shadow-sm border border-theme-secondary hover:shadow-md transition cursor-pointer"
+          class="accounting-more-tile bg-theme-elevated rounded-2xl p-4 border border-theme-secondary transition cursor-pointer"
         >
           <div class="flex items-center gap-3">
             <div class="w-10 h-10 rounded-xl flex items-center justify-center bg-accounting-brand">
@@ -135,7 +138,8 @@ onMounted(async () => {
             </div>
           </div>
         </RouterLink>
-      </div>
+        </div>
+      </section>
     </div>
 
     <QuickAddFab :book-id="store.currentBookId" @saved="loadDebts" />

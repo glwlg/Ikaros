@@ -22,13 +22,23 @@ if str(SCRIPT_ROOT) not in sys.path:
 
 from core.platform.models import UnifiedContext
 from core.skill_menu import make_callback, parse_callback
-from core.config import is_user_allowed
+from core.config import is_user_admin, is_user_allowed
 from utils import extract_video_url
 
 if __package__:
     from .services.download_service import download_video, get_download_dir
+    from .services.browser_login_service import (
+        LOGIN_PROVIDERS,
+        normalize_login_platform,
+        run_browser_login,
+    )
 else:
     from services.download_service import download_video, get_download_dir
+    from services.browser_login_service import (
+        LOGIN_PROVIDERS,
+        normalize_login_platform,
+        run_browser_login,
+    )
 
 logger = logging.getLogger(__name__)
 DOWNLOAD_MENU_NS = "dlm"
@@ -47,7 +57,8 @@ def _download_usage_text() -> str:
         "• `/download <视频链接>`\n"
         "• `/download video <视频链接>`\n"
         "• `/download audio <视频链接>`\n\n"
-        "支持平台：X、YouTube、Instagram、TikTok、Bilibili。"
+        "支持平台：X、YouTube、Instagram、TikTok、Bilibili、微博、抖音。\n"
+        "需要登录时会自动发送二维码，也可用 `/login douyin` 主动登录。"
     )
 
 
@@ -68,7 +79,9 @@ def _download_video_help() -> dict:
             "📹 **下载视频**\n\n"
             "直接发送：\n"
             "• `/download https://www.youtube.com/watch?v=xxx`\n"
-            "• `/download video https://x.com/...`\n\n"
+            "• `/download video https://x.com/...`\n"
+            "• `/download https://v.douyin.com/...`\n"
+            "• `/download https://weibo.com/...`\n\n"
             "默认下载最佳可用视频。"
         ),
         "ui": {
@@ -123,6 +136,24 @@ def _parse_download_command(text: str) -> tuple[str, str]:
     return "video", " ".join(parts[1:]).strip()
 
 
+def _parse_login_command(text: str) -> str | None:
+    raw = str(text or "").strip()
+    parts = raw.split(maxsplit=1)
+    if len(parts) != 2 or not parts[0].startswith("/login"):
+        return None
+    return normalize_login_platform(parts[1])
+
+
+def _login_usage_text() -> str:
+    supported = "、".join(provider.display_name for provider in LOGIN_PROVIDERS.values())
+    return (
+        "📱 **扫码登录视频平台**\n\n"
+        "用法：`/login <平台>`\n"
+        "示例：`/login douyin`、`/login weibo`、`/login bilibili`\n\n"
+        f"当前支持：{supported}。"
+    )
+
+
 # --- Skill Entry Point ---
 
 
@@ -164,6 +195,29 @@ async def download_command(ctx: UnifiedContext):
     return await process_video_download(ctx, url, audio_only=(mode == "audio"))
 
 
+async def login_command(ctx: UnifiedContext):
+    if not await check_permission(ctx):
+        return None
+    user_id = ctx.message.user.id
+    if not is_user_admin(user_id):
+        return {"text": "⛔ 仅管理员可以建立平台登录会话。", "ui": {}}
+
+    platform = _parse_login_command(ctx.message.text or "")
+    if not platform:
+        return {"text": _login_usage_text(), "ui": {}}
+
+    provider = LOGIN_PROVIDERS[platform]
+    progress = await ctx.reply(f"正在打开{provider.display_name}登录页，请稍候... ⏳")
+    result = await run_browser_login(ctx, platform, user_id)
+    await _delete_message_safely(ctx, progress)
+    if result.success:
+        return {
+            "text": f"✅ {provider.display_name}登录成功，会话已安全保存。",
+            "ui": {},
+        }
+    return {"text": f"❌ {result.error_message or '扫码登录失败。'}", "ui": {}}
+
+
 def _build_download_file_payload(file_path: str, *, audio_only: bool = False) -> dict[str, str]:
     path = str(file_path or "").strip()
     filename = Path(path).name
@@ -188,7 +242,6 @@ async def process_video_download(
     """
     Core video download logic, shared by direct command and AI router.
     """
-    chat_id = ctx.message.chat.id
     user_id = ctx.message.user.id
 
     if not ctx.platform_ctx:
@@ -201,8 +254,51 @@ async def process_video_download(
 
     # 下载视频/音频
     result = await download_video(
-        url, chat_id, processing_message, audio_only=audio_only
+        url, user_id, processing_message, audio_only=audio_only
     )
+
+    if (
+        not result.success
+        and getattr(result, "auth_required", False)
+        and getattr(result, "auth_platform", None)
+    ):
+        if not is_user_admin(user_id):
+            return {
+                "text": "❌ 该平台需要登录，请联系管理员扫码建立登录会话。",
+                "ui": {},
+            }
+
+        platform = str(result.auth_platform)
+        provider = LOGIN_PROVIDERS.get(platform)
+        if provider:
+            progress_message_id = getattr(
+                processing_message,
+                "message_id",
+                getattr(processing_message, "id", None),
+            )
+            if progress_message_id:
+                await ctx.edit_message(
+                    progress_message_id,
+                    f"🔐 {provider.display_name}要求登录，正在生成二维码...",
+                )
+            login_result = await run_browser_login(ctx, platform, user_id)
+            if login_result.success:
+                if progress_message_id:
+                    await ctx.edit_message(
+                        progress_message_id,
+                        "✅ 登录成功，正在自动重试下载...",
+                    )
+                result = await download_video(
+                    url,
+                    user_id,
+                    processing_message,
+                    audio_only=audio_only,
+                )
+            else:
+                return {
+                    "text": f"❌ {login_result.error_message or '扫码登录失败。'}",
+                    "ui": {},
+                }
 
     if not result.success:
         if result.error_message:
@@ -415,6 +511,7 @@ async def handle_download_menu_callback(ctx: UnifiedContext):
 def register_handlers(adapter_manager: Any):
     """Register stateless /download command and callbacks"""
     adapter_manager.on_command("download", download_command, description="下载视频或音频")
+    adapter_manager.on_command("login", login_command, description="扫码登录视频平台")
     adapter_manager.on_callback_query("^action_.*", handle_video_actions)
     adapter_manager.on_callback_query("^large_file_", handle_large_file_action)
     adapter_manager.on_callback_query("^dlm_", handle_download_menu_callback)

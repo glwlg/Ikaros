@@ -16,6 +16,10 @@ import services.ai_service as ai_service_module
 @pytest.fixture(autouse=True)
 def _native_kernel(monkeypatch):
     monkeypatch.setenv("IKAROS_KERNEL", "native")
+    monkeypatch.setattr(
+        "core.agent_orchestrator.runtime_config_store.is_feature_enabled",
+        lambda *_args, **_kwargs: True,
+    )
 
 
 class DummyContext:
@@ -161,6 +165,65 @@ async def test_orchestrator_intent_router_narrows_prompt_and_load_skill(monkeypa
 
     assert captured["allowed_skill_names"] == ["web_search"]
     assert "load_skill" in captured["tool_names"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_can_skip_routing_model_without_bypassing_policy(
+    monkeypatch,
+):
+    orchestrator = AgentOrchestrator()
+    captured = {}
+
+    async def unexpected_route(**_kwargs):
+        raise AssertionError("Routing model must not be called when disabled")
+
+    def fake_extension_route(_user_text, max_candidates=24):
+        captured["extension_limit"] = max_candidates
+        return [
+            ExtensionCandidate(
+                name="web_search",
+                description="网页搜索",
+                tool_name="ext_web_search",
+            ),
+            ExtensionCandidate(
+                name="download_video",
+                description="下载视频",
+                tool_name="ext_download_video",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        "core.agent_orchestrator.runtime_config_store.is_feature_enabled",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(orchestrator.extension_router, "route", fake_extension_route)
+    monkeypatch.setattr("core.agent_orchestrator.intent_router.route", unexpected_route)
+    monkeypatch.setattr(
+        orchestrator,
+        "_runtime_tool_allowed",
+        lambda **kwargs: kwargs["tool_name"] != "ext_download_video",
+    )
+
+    raw, loaded, decision = await orchestrator._resolve_extension_candidates(
+        message_history=[{"role": "user", "parts": [{"text": "找个视频"}]}],
+        routing_text="找个视频",
+        last_user_text="找个视频",
+        runtime_user_id="u1",
+        platform_name="telegram",
+    )
+
+    assert [candidate.name for candidate in raw] == [
+        "web_search",
+        "download_video",
+    ]
+    assert [candidate.name for candidate in loaded] == ["web_search"]
+    assert decision.request_mode == "chat"
+    assert decision.task_tracking is False
+    assert decision.candidate_skills == ["web_search"]
+    assert decision.reason == "routing_model_disabled"
+    assert captured == {
+        "extension_limit": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -397,7 +460,9 @@ async def test_orchestrator_task_mode_without_tracking_skips_task_tracking(monke
 
 def test_resolve_task_workspace_root_uses_selected_ops_candidate(tmp_path, monkeypatch):
     orchestrator = AgentOrchestrator()
-    monkeypatch.setattr("core.agent_orchestrator.X_DEPLOYMENT_STAGING_PATH", str(tmp_path))
+    monkeypatch.setattr(
+        "core.agent_orchestrator.X_DEPLOYMENT_STAGING_PATH", str(tmp_path)
+    )
 
     resolved = orchestrator._resolve_task_workspace_root(
         [
@@ -414,7 +479,9 @@ def test_resolve_task_workspace_root_uses_selected_ops_candidate(tmp_path, monke
 
 def test_resolve_task_workspace_root_skips_non_ops_candidate(tmp_path, monkeypatch):
     orchestrator = AgentOrchestrator()
-    monkeypatch.setattr("core.agent_orchestrator.X_DEPLOYMENT_STAGING_PATH", str(tmp_path))
+    monkeypatch.setattr(
+        "core.agent_orchestrator.X_DEPLOYMENT_STAGING_PATH", str(tmp_path)
+    )
 
     resolved = orchestrator._resolve_task_workspace_root(
         [

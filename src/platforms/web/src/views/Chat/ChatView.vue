@@ -557,7 +557,7 @@ onBeforeUnmount(() => {
       <p>与 IKAROS AI 助手对话，获取平台能力支持</p>
     </section>
 
-    <div class="chat-workbench grid h-full min-h-0 gap-0 md:grid-cols-[330px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)_300px]">
+    <div class="chat-workbench grid min-h-0 gap-0 md:grid-cols-[330px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)_300px]">
     <!-- Mobile overlay -->
     <div
       v-if="showSessions"
@@ -628,8 +628,8 @@ onBeforeUnmount(() => {
     </aside>
 
     <section class="chat-panel chat-canvas flex min-h-0 flex-col bg-[linear-gradient(180deg,_#ffffff_0%,_#f8fafc_100%)]" @drop="onDrop" @dragover.prevent>
-      <header class="chat-canvas-header flex items-center justify-between border-b border-slate-200 px-5 py-4">
-        <div class="flex items-center gap-3">
+      <header class="chat-canvas-header flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex min-w-0 items-center gap-3">
           <!-- Toggle sessions button (mobile) -->
           <button
             class="rounded-xl border border-slate-200 bg-white p-2 text-slate-700 transition hover:bg-slate-100 md:hidden"
@@ -638,14 +638,14 @@ onBeforeUnmount(() => {
             <PanelLeftOpen v-if="!showSessions" class="h-5 w-5" />
             <PanelLeftClose v-else class="h-5 w-5" />
           </button>
-          <div>
-            <div class="text-sm font-semibold text-slate-900">{{ currentSession?.title || '准备开始新的对话' }}</div>
-            <div class="mt-1 text-xs text-slate-500">
+          <div class="min-w-0">
+            <div class="line-clamp-2 break-words text-sm font-semibold text-slate-900 sm:line-clamp-1">{{ currentSession?.title || '准备开始新的对话' }}</div>
+            <div class="mt-1 truncate text-xs text-slate-500">
               {{ currentSession ? '当前会话已就绪' : '新建会话后即可开始对话' }}
             </div>
           </div>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex shrink-0 items-center gap-2 self-end sm:self-auto sm:gap-3">
           <div
             v-if="statusBadge"
             class="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs"
@@ -656,7 +656,7 @@ onBeforeUnmount(() => {
             <span class="h-2 w-2 rounded-full" :class="streamStatus === 'error' ? 'bg-rose-500' : 'bg-emerald-500'" />
             {{ statusBadge }}
           </div>
-          <div class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+          <div class="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500 sm:inline-flex">
             <MessageSquareText class="h-4 w-4 text-blue-600" />
             输入 / 使用命令
           </div>
@@ -896,7 +896,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .chat-page {
   display: grid;
-  min-height: calc(100vh - 154px);
+  height: calc(100vh - 154px);
+  min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--panel-border);
@@ -926,7 +927,6 @@ onBeforeUnmount(() => {
 
 .chat-workbench {
   min-height: 0;
-  height: 100%;
   overflow: hidden;
 }
 
@@ -1130,15 +1130,72 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 
-@media (max-width: 1280px) {
-  .chat-workbench {
-    min-height: auto;
-  }
+:global(.dark .chat-page),
+:global(.dark .chat-title-panel),
+:global(.dark .chat-info-panel) {
+  background: var(--color-bg-elevated);
+}
+
+:global(.dark .chat-sessions-rail),
+:global(.dark .chat-canvas) {
+  background: var(--color-bg-primary);
+}
+
+:global(.dark .chat-canvas-header),
+:global(.dark .chat-canvas-footer) {
+  background: color-mix(in srgb, var(--color-bg-elevated) 94%, transparent);
+}
+
+:global(.dark .chat-page .bg-white),
+:global(.dark .chat-page .bg-white\/70),
+:global(.dark .chat-page .bg-white\/80),
+:global(.dark .chat-page .bg-white\/90) {
+  background-color: var(--color-bg-elevated) !important;
+}
+
+:global(.dark .chat-page .bg-slate-50),
+:global(.dark .chat-page .bg-slate-50\/80),
+:global(.dark .chat-page .bg-slate-100) {
+  background-color: var(--color-bg-tertiary) !important;
+}
+
+:global(.dark .chat-page .bg-blue-50) {
+  background-color: var(--color-primary-50) !important;
+}
+
+:global(.dark .chat-page .border-slate-200),
+:global(.dark .chat-page .border-slate-300) {
+  border-color: var(--color-border-primary) !important;
+}
+
+:global(.dark .chat-page .border-blue-200) {
+  border-color: var(--color-primary-300) !important;
+}
+
+:global(.dark .chat-page .text-slate-950),
+:global(.dark .chat-page .text-slate-900) {
+  color: var(--color-text-primary) !important;
+}
+
+:global(.dark .chat-page .text-slate-800),
+:global(.dark .chat-page .text-slate-700),
+:global(.dark .chat-page .text-slate-600),
+:global(.dark .chat-page .text-slate-500),
+:global(.dark .chat-page .text-slate-400) {
+  color: var(--color-text-secondary) !important;
+}
+
+:global(.dark .chat-session-search),
+:global(.dark .chat-icon-only),
+:global(.dark .composer-box),
+:global(.dark .manage-command-btn) {
+  background: var(--color-bg-elevated) !important;
+  color: var(--color-text-primary);
 }
 
 @media (max-width: 768px) {
   .chat-page {
-    min-height: calc(100vh - 110px);
+    height: calc(100dvh - 154px);
   }
 }
 </style>

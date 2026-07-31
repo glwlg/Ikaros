@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
 import { createRecord, getCategories, getAccounts, type CategoryItem, type AccountItem } from '@/api/accounting'
 import { X, Delete, Loader2, ChevronRight } from 'lucide-vue-next'
 import { appendOperationLog, loadNamedItems, type NamedItem } from '@/utils/accountingLocal'
@@ -366,7 +366,40 @@ const handleSave = async () => {
     }
 }
 
+const systemKeyboardVisible = ref(false)
+let fullVisualViewportHeight = 0
+let visualViewportFrame: number | undefined
+
+const updateSystemKeyboardVisibility = () => {
+    visualViewportFrame = undefined
+    const viewport = window.visualViewport
+    if (!viewport) return
+
+    fullVisualViewportHeight = Math.max(fullVisualViewportHeight, viewport.height)
+    systemKeyboardVisible.value = fullVisualViewportHeight - viewport.height > 120
+}
+
+const scheduleSystemKeyboardVisibilityUpdate = () => {
+    if (visualViewportFrame !== undefined) {
+        window.cancelAnimationFrame(visualViewportFrame)
+    }
+    visualViewportFrame = window.requestAnimationFrame(updateSystemKeyboardVisibility)
+}
+
+const resetVisualViewportBaseline = () => {
+    fullVisualViewportHeight = 0
+    systemKeyboardVisible.value = false
+    scheduleSystemKeyboardVisibilityUpdate()
+}
+
 onMounted(async () => {
+    const viewport = window.visualViewport
+    if (viewport) {
+        fullVisualViewportHeight = viewport.height
+        viewport.addEventListener('resize', scheduleSystemKeyboardVisibilityUpdate)
+    }
+    window.addEventListener('orientationchange', resetVisualViewportBaseline)
+
     initDateTime()
     projects.value = loadNamedItems(props.bookId, 'projects')
     tags.value = loadNamedItems(props.bookId, 'tags')
@@ -383,6 +416,14 @@ onMounted(async () => {
     }
 })
 
+onBeforeUnmount(() => {
+    if (visualViewportFrame !== undefined) {
+        window.cancelAnimationFrame(visualViewportFrame)
+    }
+    window.visualViewport?.removeEventListener('resize', scheduleSystemKeyboardVisibilityUpdate)
+    window.removeEventListener('orientationchange', resetVisualViewportBaseline)
+})
+
 const keyRows = [
     ['C', '÷', '×', '⌫'],
     ['1', '2', '3', '-'],
@@ -394,12 +435,13 @@ const keyRows = [
 
 <template>
   <!-- Full screen overlay (mobile-first, safe areas) -->
-  <div class="fixed inset-0 z-50 flex flex-col bg-theme-primary accounting-fullscreen">
+  <Teleport to="body">
+  <div class="accounting-warm-dialog accounting-record-dialog fixed inset-0 z-[80] flex flex-col bg-theme-primary accounting-fullscreen">
     <!-- Header -->
-    <div class="flex items-center justify-between px-3 sm:px-4 py-2.5 sm:py-3 bg-accounting-brand text-white safe-top safe-x flex-shrink-0">
+    <div class="accounting-entry-header flex items-center justify-between px-3 sm:px-4 py-2.5 sm:py-3 safe-top safe-x flex-shrink-0">
       <button
         type="button"
-        class="accounting-touch-target inline-flex items-center justify-center rounded-xl p-2 -ml-1 active:bg-white/15"
+        class="accounting-touch-target inline-flex items-center justify-center rounded-full p-2 -ml-1"
         aria-label="关闭"
         @click="emit('close')"
       >
@@ -410,7 +452,7 @@ const keyRows = [
     </div>
 
     <!-- Scrollable Content -->
-    <div class="flex-1 min-h-0 overflow-auto accounting-scroll safe-x">
+    <div class="accounting-entry-sheet flex-1 min-h-0 overflow-auto accounting-scroll safe-x">
       <!-- Type Tabs -->
       <div class="flex px-4 pt-3 gap-2 overflow-x-auto no-scrollbar">
         <button
@@ -594,7 +636,7 @@ const keyRows = [
     </div>
 
     <!-- Calculator Keyboard -->
-    <div class="bg-theme-elevated border-t border-theme-secondary flex-shrink-0 safe-x safe-bottom">
+    <div v-show="!systemKeyboardVisible" class="accounting-entry-keypad bg-theme-elevated border-t border-theme-secondary flex-shrink-0 safe-x safe-bottom">
       <div class="grid grid-cols-4">
         <template v-for="(row, ri) in keyRows" :key="ri">
           <template v-for="key in row" :key="key">
@@ -659,4 +701,5 @@ const keyRows = [
       </div>
     </div>
   </div>
+  </Teleport>
 </template>

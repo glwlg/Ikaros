@@ -1,0 +1,479 @@
+/* IKAROS 主后台：极简编辑风。仅作用于桌面控制台及两页核心工作区。 */
+/* Override lazy-loaded scoped view CSS without changing their template or logic. */
+:root .ethereal-shell .ethereal-sidebar { width: 224px; padding: 22px 14px 18px; background: var(--color-bg-elevated); box-shadow: none; }
+:root .ethereal-shell .ethereal-topbar { min-height: 60px; padding: 0 28px; background: var(--color-bg-elevated); backdrop-filter: none; }
+:root .ethereal-shell .ethereal-main-scroll { padding: 22px 28px; }
+:root .ethereal-shell :is(.welcome-panel, .stat-card, .workspace-panel, .side-panel) { border-radius: 8px; box-shadow: none; }
+:root .ethereal-shell .welcome-panel { min-height: 104px; padding: 22px 24px; }
+:root .ethereal-shell .welcome-panel h1 { font-size: 22px; }
+:root .ethereal-shell .welcome-panel p { margin-top: 10px; font-size: 13px; }
+:root .ethereal-shell .stat-grid { gap: 14px; }
+:root .ethereal-shell .stat-card { grid-template-columns: 46px minmax(0, 1fr) 16px; gap: 14px; min-height: 100px; padding: 16px; }
+:root .ethereal-shell .stat-icon { width: 46px; height: 46px; border: 1px solid var(--color-border-secondary); border-radius: 50%; background: transparent; color: var(--color-text-primary); }
+:root .ethereal-shell :is(.tone-teal, .tone-violet) .stat-icon { background: transparent; color: var(--color-text-primary); }
+:root .ethereal-shell .dashboard-grid { grid-template-columns: minmax(0, 1fr) 360px; gap: 18px; }
+:root .ethereal-shell :is(.workspace-panel, .side-panel) { padding: 18px; }
+:root .ethereal-shell .workspace-grid { gap: 12px; margin-top: 14px; }
+:root .ethereal-shell .workspace-card { gap: 16px; min-height: 164px; padding: 18px; border-radius: 7px; box-shadow: none; }
+:root .ethereal-shell .workspace-icon { width: 34px; height: 34px; border: 1px solid var(--color-border-secondary); border-radius: 7px; background: transparent; color: var(--color-text-primary); }
+:root .ethereal-shell .side-stack { gap: 14px; }
+:root .ethereal-shell .status-grid { grid-template-columns: 1fr; gap: 14px; margin-top: 14px; }
+:root .ethereal-shell .chat-page { min-height: calc(100vh - 126px); border-radius: 8px; background: var(--color-bg-elevated); box-shadow: none; }
+:root .ethereal-shell .chat-title-panel { padding: 18px 20px; background: transparent; }
+:root .ethereal-shell .chat-title-panel h1 { font-size: 20px; }
+:root .ethereal-shell .chat-title-panel p { margin-top: 6px; font-size: 12px; }
+:root .ethereal-shell :is(.chat-sessions-rail, .chat-canvas, .chat-info-panel) { background: var(--color-bg-elevated); }
+:root .ethereal-shell .chat-sessions-rail { padding: 14px; }
+:root .ethereal-shell :is(.chat-session-search, .chat-icon-only) { height: 34px; border-radius: 6px; background: transparent; }
+:root .ethereal-shell .chat-primary-small { height: 34px; padding: 0 10px; border-radius: 6px; }
+:root .ethereal-shell .chat-sessions-rail .rounded-\[24px\] { border-radius: 7px !important; }
+:root .ethereal-shell :is(.chat-canvas-header, .chat-canvas-footer) { background: var(--color-bg-elevated) !important; backdrop-filter: none; }
+:root .ethereal-shell .chat-canvas-header { padding: 14px 18px; }
+:root .ethereal-shell .chat-messages-container { padding: 18px 24px; background: var(--color-bg-primary); }
+:root .ethereal-shell .message-bubble { border-radius: 8px !important; box-shadow: none !important; }
+:root .ethereal-shell .composer-box { border-radius: 7px !important; background: var(--color-bg-secondary) !important; box-shadow: none !important; }
+:root .ethereal-shell .chat-canvas-footer { padding: 14px 18px; }
+:root .ethereal-shell .info-section { padding: 18px; }
+.ethereal-shell {
+  --panel-border: var(--color-border-secondary);
+  --panel-muted: var(--color-bg-secondary);
+  --panel-soft: var(--color-bg-primary);
+  --text-strong: var(--color-text-primary);
+  --text-body: var(--color-text-secondary);
+  --text-muted: var(--color-text-muted);
+  --text-subtle: var(--color-text-tertiary);
+  --brand-blue: var(--color-primary-600);
+  --brand-blue-dark: var(--color-primary-700);
+  --brand-blue-soft: color-mix(in srgb, var(--color-primary-500) 9%, var(--color-bg-elevated));
+  --shadow-card: none;
+}
+
+.ethereal-shell .ethereal-sidebar {
+  width: 224px;
+  padding: 22px 14px 18px;
+  border-right-color: var(--color-border-secondary);
+  background: var(--color-bg-elevated);
+  box-shadow: none;
+}
+
+.ethereal-shell .ethereal-brand {
+  min-height: 54px;
+  padding: 0 10px;
+}
+
+.ethereal-shell .ethereal-logo-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--color-primary-600);
+  box-shadow: none;
+}
+
+.ethereal-shell .ethereal-brand-mark {
+  font-size: 20px;
+  letter-spacing: -0.04em;
+}
+
+.ethereal-shell .ethereal-brand-subtitle {
+  margin-top: 3px;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+}
+
+.ethereal-shell .ethereal-nav {
+  gap: 24px;
+  padding-top: 18px;
+}
+
+.ethereal-shell .ethereal-nav-block {
+  gap: 3px;
+}
+
+.ethereal-shell .ethereal-nav-label {
+  padding: 0 10px 7px;
+  font-size: 11px;
+}
+
+.ethereal-shell .ethereal-nav-item {
+  min-height: 36px;
+  gap: 11px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ethereal-shell .ethereal-nav-item:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.ethereal-shell .ethereal-nav-item.is-active {
+  position: relative;
+  border: 0;
+  background: color-mix(in srgb, var(--color-primary-500) 8%, var(--color-bg-elevated));
+  box-shadow: none;
+  color: var(--color-primary-700);
+  font-weight: 700;
+}
+
+.ethereal-shell .ethereal-nav-item.is-active::before {
+  position: absolute;
+  left: -14px;
+  width: 2px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--color-primary-600);
+  content: '';
+}
+
+.ethereal-shell .ethereal-nav-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.ethereal-shell .ethereal-sidebar-footer {
+  gap: 12px;
+  padding: 16px 0 0;
+}
+
+.ethereal-shell .ethereal-identity {
+  gap: 10px;
+  padding: 11px;
+  border-color: var(--color-border-secondary);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.ethereal-shell .ethereal-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
+}
+
+.ethereal-shell .ethereal-identity-name { font-size: 12px; }
+.ethereal-shell .ethereal-identity-email,
+.ethereal-shell .ethereal-identity-role { font-size: 10px; }
+.ethereal-shell .ethereal-logout { padding-left: 10px; font-size: 12px; }
+
+.ethereal-shell .ethereal-topbar {
+  min-height: 60px;
+  padding: 0 28px;
+  border-bottom-color: var(--color-border-secondary);
+  background: var(--color-bg-elevated);
+  backdrop-filter: none;
+}
+
+.ethereal-shell .ethereal-trail,
+.ethereal-shell .ethereal-trail strong { font-size: 13px; }
+.ethereal-shell .ethereal-trail { gap: 10px; }
+
+.ethereal-shell .ethereal-top-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.ethereal-shell .ethereal-main-scroll { padding: 22px 28px; }
+
+.ethereal-shell .ethereal-footer {
+  min-height: 42px;
+  padding: 0 28px;
+  border-top-color: var(--color-border-secondary);
+  background: var(--color-bg-elevated);
+  font-size: 11px;
+}
+
+/* Dashboard */
+.ethereal-shell .dashboard-page { gap: 18px; }
+
+.ethereal-shell .welcome-panel,
+.ethereal-shell .stat-card,
+.ethereal-shell .workspace-panel,
+.ethereal-shell .side-panel {
+  border-color: var(--color-border-secondary);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.ethereal-shell .welcome-panel {
+  min-height: 104px;
+  padding: 22px 24px;
+}
+
+.ethereal-shell .welcome-panel h1 {
+  font-size: 22px;
+  letter-spacing: -0.035em;
+}
+
+.ethereal-shell .welcome-panel p { margin-top: 10px; font-size: 13px; }
+.ethereal-shell .welcome-status { gap: 8px; font-size: 12px; }
+
+.ethereal-shell .status-pill {
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 10px;
+}
+
+.ethereal-shell .stat-grid { gap: 14px; }
+
+.ethereal-shell .stat-card {
+  grid-template-columns: 46px minmax(0, 1fr) 16px;
+  gap: 14px;
+  min-height: 100px;
+  padding: 16px;
+}
+
+.ethereal-shell .stat-icon {
+  width: 46px;
+  height: 46px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-primary);
+}
+
+.ethereal-shell .stat-icon svg { width: 22px; height: 22px; }
+.ethereal-shell .tone-teal .stat-icon,
+.ethereal-shell .tone-violet .stat-icon { background: transparent; color: var(--color-text-primary); }
+.ethereal-shell .stat-label { font-size: 12px; }
+.ethereal-shell .stat-value { margin-top: 3px; font-size: 23px; }
+.ethereal-shell .stat-copy p { margin-top: 5px; font-size: 11px; line-height: 1.45; }
+
+.ethereal-shell .dashboard-grid {
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 18px;
+}
+
+.ethereal-shell .workspace-panel { padding: 18px; }
+.ethereal-shell .section-heading h2,
+.ethereal-shell .side-heading h2 { font-size: 17px; letter-spacing: -0.025em; }
+.ethereal-shell .workspace-grid { gap: 12px; margin-top: 14px; }
+
+.ethereal-shell .workspace-card {
+  gap: 16px;
+  min-height: 164px;
+  padding: 18px;
+  border-color: var(--color-border-secondary);
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+.ethereal-shell .workspace-card:hover { border-color: var(--color-primary-300); box-shadow: none; }
+
+.ethereal-shell .workspace-icon {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-primary);
+}
+
+.ethereal-shell .workspace-icon svg { width: 18px; height: 18px; }
+.ethereal-shell .workspace-card h3 { font-size: 15px; }
+.ethereal-shell .workspace-card p { margin-top: 8px; font-size: 12px; line-height: 1.55; }
+.ethereal-shell .workspace-arrow { right: 16px; bottom: 16px; }
+.ethereal-shell .side-stack { gap: 14px; }
+.ethereal-shell .side-panel { padding: 18px; }
+.ethereal-shell .side-heading a { font-size: 12px; }
+.ethereal-shell .activity-list { gap: 10px; margin-top: 14px; }
+
+.ethereal-shell .activity-item {
+  grid-template-columns: 6px 28px minmax(0, 1fr) 54px;
+  gap: 9px;
+}
+
+.ethereal-shell .activity-dot { width: 6px; height: 6px; }
+
+.ethereal-shell .activity-icon {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 6px;
+  background: transparent;
+}
+
+.ethereal-shell .activity-copy h3 { font-size: 12px; }
+.ethereal-shell .activity-copy p,
+.ethereal-shell .activity-item time { margin-top: 2px; font-size: 10px; }
+.ethereal-shell .status-grid { grid-template-columns: 1fr; gap: 14px; margin-top: 14px; }
+.ethereal-shell .status-list { gap: 12px; }
+
+.ethereal-shell .status-row {
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.ethereal-shell .status-row span { width: 15px; height: 15px; }
+
+.ethereal-shell .diagnostic-card {
+  border-color: var(--color-border-secondary);
+  border-radius: 7px;
+  padding: 12px;
+}
+
+.ethereal-shell .diagnostic-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ethereal-shell .diagnostic-metrics strong { font-size: 14px; }
+
+/* Chat */
+.ethereal-shell .chat-page {
+  height: calc(100vh - 146px);
+  min-height: 0;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  box-shadow: none;
+}
+
+.ethereal-shell .chat-title-panel {
+  padding: 18px 20px;
+  border-bottom-color: var(--color-border-secondary);
+  background: transparent;
+}
+
+.ethereal-shell .chat-title-panel h1 { font-size: 20px; letter-spacing: -0.035em; }
+.ethereal-shell .chat-title-panel p { margin-top: 6px; font-size: 12px; }
+.ethereal-shell .chat-sessions-rail,
+.ethereal-shell .chat-canvas,
+.ethereal-shell .chat-info-panel { background: var(--color-bg-elevated); }
+
+.ethereal-shell .chat-sessions-rail {
+  padding: 14px;
+  border-right-color: var(--color-border-secondary);
+}
+
+.ethereal-shell .chat-sessions-rail .text-lg { font-size: 15px; }
+
+.ethereal-shell .chat-primary-small {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.ethereal-shell .chat-session-search,
+.ethereal-shell .chat-icon-only {
+  height: 34px;
+  border-color: var(--color-border-secondary);
+  border-radius: 6px;
+  background: transparent;
+}
+
+.ethereal-shell .chat-icon-only { width: 34px; }
+.ethereal-shell .chat-sessions-rail .rounded-\[24px\] { border-radius: 7px !important; }
+
+.ethereal-shell .chat-sessions-rail .bg-white,
+.ethereal-shell .chat-sessions-rail .bg-slate-50,
+.ethereal-shell .chat-sessions-rail .bg-slate-50\/80 { background: transparent !important; }
+
+.ethereal-shell .chat-sessions-rail .border-slate-200,
+.ethereal-shell .chat-sessions-rail .border-slate-300 { border-color: var(--color-border-secondary) !important; }
+
+.ethereal-shell .chat-sessions-rail .bg-blue-50,
+.ethereal-shell .chat-page .bg-blue-50 {
+  background: color-mix(in srgb, var(--color-primary-500) 8%, var(--color-bg-elevated)) !important;
+}
+
+.ethereal-shell .chat-sessions-rail .border-blue-400,
+.ethereal-shell .chat-page .border-blue-200 { border-color: var(--color-primary-300) !important; }
+
+.ethereal-shell .chat-canvas-header,
+.ethereal-shell .chat-canvas-footer {
+  border-color: var(--color-border-secondary) !important;
+  background: var(--color-bg-elevated) !important;
+  backdrop-filter: none;
+}
+
+.ethereal-shell .chat-canvas-header { padding: 14px 18px; }
+
+.ethereal-shell .chat-messages-container {
+  padding: 18px 24px;
+  background: var(--color-bg-primary);
+}
+
+.ethereal-shell .message-bubble {
+  border-color: var(--color-border-secondary) !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+.ethereal-shell .chat-page .bg-white,
+.ethereal-shell .chat-page .bg-white\/70,
+.ethereal-shell .chat-page .bg-white\/80,
+.ethereal-shell .chat-page .bg-white\/90 { background-color: var(--color-bg-elevated) !important; }
+
+.ethereal-shell .chat-page .bg-slate-50,
+.ethereal-shell .chat-page .bg-slate-100 { background-color: var(--color-bg-secondary) !important; }
+
+.ethereal-shell .chat-page .border-slate-200,
+.ethereal-shell .chat-page .border-slate-300 { border-color: var(--color-border-secondary) !important; }
+
+.ethereal-shell .chat-page .text-slate-950,
+.ethereal-shell .chat-page .text-slate-900 { color: var(--color-text-primary) !important; }
+
+.ethereal-shell .chat-page :is(.text-slate-800, .text-slate-700, .text-slate-600, .text-slate-500, .text-slate-400) {
+  color: var(--color-text-secondary) !important;
+}
+
+.ethereal-shell .chat-page .bg-blue-500 { background: var(--color-primary-600) !important; }
+
+.ethereal-shell .composer-box {
+  border-color: var(--color-border-primary) !important;
+  border-radius: 7px !important;
+  background: var(--color-bg-secondary) !important;
+  box-shadow: none !important;
+}
+
+.ethereal-shell .chat-canvas-footer { padding: 14px 18px; }
+.ethereal-shell .chat-info-panel { border-left-color: var(--color-border-secondary); }
+
+.ethereal-shell .info-section {
+  padding: 18px;
+  border-bottom-color: var(--color-border-secondary);
+}
+
+.ethereal-shell .info-heading h2 { font-size: 14px; }
+.ethereal-shell .info-list { gap: 14px; margin-top: 16px; }
+.ethereal-shell .info-list dt { font-size: 11px; }
+.ethereal-shell .info-list dd { margin-top: 5px; font-size: 12px; }
+.ethereal-shell .quick-command-list { gap: 9px; margin-top: 14px; }
+
+.ethereal-shell .manage-command-btn {
+  margin-top: 16px;
+  border-color: var(--color-border-secondary);
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+@media (max-width: 1600px) {
+  .ethereal-shell .dashboard-grid { grid-template-columns: minmax(0, 1fr) 330px; }
+}
+
+@media (max-width: 1280px) {
+  .ethereal-shell .ethereal-sidebar { width: 208px; }
+  .ethereal-shell .dashboard-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 1024px) {
+  .ethereal-shell .chat-page { height: calc(100dvh - 154px); }
+}
+
+@media (max-width: 640px) {
+  .ethereal-shell .chat-title-panel { padding: 14px 16px; }
+  .ethereal-shell .chat-canvas-header { padding: 12px 14px; }
+  .ethereal-shell .chat-messages-container { padding: 14px; }
+  .ethereal-shell .chat-canvas-footer { padding: 12px 14px; }
+}

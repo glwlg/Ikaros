@@ -101,5 +101,6 @@ class ModelsLatencyCheckRequest(BaseModel):
     provider_name: str
     base_url: str | None = None
     api_key: str | None = None
+    headers: dict[str, str] | None = None
     api_style: str | None = None
     model_id: str

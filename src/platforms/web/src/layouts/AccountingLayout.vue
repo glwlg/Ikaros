@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute, RouterView, RouterLink } from 'vue-router'
-import { Home, Wallet, BarChart3, Grid2x2, UserCircle, ArrowLeft } from 'lucide-vue-next'
+import { Home, Wallet, BarChart3, Grid2x2, UserCircle, Bell, Menu } from 'lucide-vue-next'
 import AccountingDialogHost from '@/components/accounting/AccountingDialogHost.vue'
 import AccountingToastHost from '@/components/accounting/AccountingToastHost.vue'
 
@@ -24,6 +24,82 @@ const isActiveTab = (path: string) => {
 
 const isPWA = typeof window !== 'undefined' &&
     (window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && (navigator as any).standalone))
+
+const isEditableField = (target: EventTarget | null) => {
+    if (target instanceof HTMLTextAreaElement) return true
+    if (!(target instanceof HTMLInputElement)) return false
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(target.type)
+}
+
+const isIOSStandalone = () => {
+    const userAgent = navigator.userAgent
+    const isIOS = /iPad|iPhone|iPod/.test(userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    return isIOS && isPWA
+}
+
+let observedViewport: VisualViewport | null = null
+let viewportFrame: number | undefined
+let viewportWasReduced = false
+
+const resetDocumentScroll = () => {
+    document.scrollingElement?.scrollTo(0, 0)
+    document.documentElement.scrollTop = 0
+    document.body.scrollTop = 0
+    window.scrollTo(0, 0)
+}
+
+const stopViewportRecovery = () => {
+    if (viewportFrame !== undefined) {
+        window.cancelAnimationFrame(viewportFrame)
+        viewportFrame = undefined
+    }
+    observedViewport?.removeEventListener('resize', recoverViewportAfterKeyboard)
+    observedViewport?.removeEventListener('scroll', recoverViewportAfterKeyboard)
+    observedViewport = null
+    viewportWasReduced = false
+}
+
+const recoverViewportAfterKeyboard = () => {
+    if (viewportFrame !== undefined) window.cancelAnimationFrame(viewportFrame)
+    viewportFrame = window.requestAnimationFrame(() => {
+        viewportFrame = undefined
+        const viewport = observedViewport
+        if (!viewport) return
+
+        const rootHeight = document.documentElement.getBoundingClientRect().height
+        if (viewport.height < rootHeight - 1) {
+            viewportWasReduced = true
+            return
+        }
+        if (!viewportWasReduced) return
+
+        resetDocumentScroll()
+        stopViewportRecovery()
+    })
+}
+
+const armViewportRecovery = (event: FocusEvent) => {
+    if (!isEditableField(event.target)) return
+
+    stopViewportRecovery()
+    const viewport = window.visualViewport
+    if (!viewport) return
+
+    observedViewport = viewport
+    viewport.addEventListener('resize', recoverViewportAfterKeyboard)
+    viewport.addEventListener('scroll', recoverViewportAfterKeyboard)
+}
+
+onMounted(() => {
+    if (!isIOSStandalone()) return
+    document.addEventListener('focusin', armViewportRecovery, true)
+})
+
+onBeforeUnmount(() => {
+    document.removeEventListener('focusin', armViewportRecovery, true)
+    stopViewportRecovery()
+})
 
 // Hide layout chrome on sub-pages with own headers
 const isSubPage = computed(() => [
@@ -49,17 +125,15 @@ const isSubPage = computed(() => [
   <div class="accounting-shell">
     <div
       v-if="!isSubPage"
-      class="accounting-header safe-top safe-x"
+      class="accounting-header"
     >
-      <RouterLink
-        v-if="!isPWA"
-        to="/home"
-        class="accounting-back-link"
-      >
-        <ArrowLeft class="w-4 h-4" />
-        <span>返回</span>
+      <RouterLink to="/home" class="accounting-header-icon" aria-label="返回主应用">
+        <Menu class="w-5 h-5" />
       </RouterLink>
-      <span class="text-white font-semibold tracking-wide">智能记账</span>
+      <span class="accounting-header-title">智能记账</span>
+      <span class="accounting-header-icon accounting-header-bell" aria-hidden="true">
+        <Bell class="w-5 h-5" />
+      </span>
     </div>
 
     <div class="accounting-main accounting-scroll">
@@ -68,7 +142,7 @@ const isSubPage = computed(() => [
 
     <nav
       v-if="!isSubPage"
-      class="accounting-tabbar safe-x"
+      class="accounting-tabbar"
       aria-label="记账主导航"
     >
       <RouterLink
@@ -94,17 +168,12 @@ const isSubPage = computed(() => [
 
 <style scoped>
 .accounting-shell {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  height: 100%;
-  height: 100dvh;
-  max-height: 100dvh;
+  min-height: 0;
   overflow: hidden;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--color-primary-500) 6%, var(--color-bg-primary)) 0%,
-    var(--color-bg-primary) 100%
-  );
+  background: transparent;
 }
 
 .accounting-header {
@@ -114,29 +183,14 @@ const isSubPage = computed(() => [
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 48px;
-  padding: 10px 16px;
-  background: linear-gradient(135deg, var(--color-primary-600), var(--color-primary-500));
-  box-shadow: var(--shadow-sm);
+  min-height: 64px;
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
+  padding-bottom: 12px;
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  background: transparent;
+  box-shadow: none;
   flex-shrink: 0;
-}
-
-.accounting-back-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 4px 8px 4px 2px;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 14px;
-  font-weight: 500;
-  border-radius: 10px;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.accounting-back-link:active {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
 }
 
 .accounting-main {
@@ -154,11 +208,11 @@ const isSubPage = computed(() => [
   display: flex;
   flex-shrink: 0;
   border-top: 1px solid var(--color-border-secondary);
-  background: color-mix(in srgb, var(--color-bg-elevated) 92%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+  background: color-mix(in srgb, var(--color-bg-elevated) 94%, #ffe9d8);
+  box-shadow: 0 -8px 24px rgba(111, 66, 38, 0.08);
+  padding-right: env(safe-area-inset-right, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
 }
 
 .accounting-tab {

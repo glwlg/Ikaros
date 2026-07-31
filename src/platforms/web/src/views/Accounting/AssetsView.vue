@@ -18,7 +18,6 @@ import {
 } from 'lucide-vue-next'
 import * as echarts from 'echarts'
 import { toIsoLocal } from './statsRange'
-import netWorthBg from '@/assets/net-worth-ocean.svg'
 import { accountingConfirm } from '@/utils/accountingDialog'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
 import {
@@ -427,7 +426,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="pageRef"
-    class="accounting-page-pad"
+    class="accounting-page-pad accounting-assets-page"
     @touchstart="handleTouchStart"
     @touchmove="handleTouchMove"
     @touchend="handleTouchEnd"
@@ -450,13 +449,7 @@ onBeforeUnmount(() => {
 
     <!-- Net Worth Card -->
     <div
-      class="mx-3 sm:mx-4 rounded-3xl p-4 sm:p-5 text-white shadow-lg relative overflow-hidden cursor-pointer"
-      :style="{
-        backgroundColor: '#0b5d8f',
-        backgroundImage: `linear-gradient(135deg, rgba(6, 30, 78, 0.55), rgba(8, 95, 150, 0.38)), url('${netWorthBg}')`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-      }"
+      class="accounting-net-worth-card mx-3 sm:mx-4 rounded-3xl p-4 sm:p-5 text-white shadow-lg relative overflow-hidden cursor-pointer"
       @click="goBalanceTrend('net')"
     >
       <div class="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_20%_20%,rgba(255,255,255,0.35),transparent_45%),radial-gradient(circle_at_80%_70%,rgba(255,255,255,0.18),transparent_45%)]" />

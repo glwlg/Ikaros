@@ -55,6 +55,54 @@ async def test_learned_generate_image_uses_context_text_as_prompt(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_learned_generate_image_retries_opencodex_without_bearer_auth(
+    monkeypatch,
+):
+    async def _fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    class _RejectedImages:
+        def generate(self, **kwargs):
+            raise RuntimeError(
+                "Built-in image generation needs an OpenAI upstream, "
+                "but none is configured in opencodex."
+            )
+
+    class _CompatibleImages:
+        def generate(self, **kwargs):
+            payload = base64.b64encode(b"opencodex-image-bytes").decode("utf-8")
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=payload)])
+
+    regular_client = SimpleNamespace(images=_RejectedImages())
+    compatible_client = SimpleNamespace(images=_CompatibleImages())
+    client_calls: list[bool] = []
+
+    def _fake_get_client(_model_key, is_async=False, *, suppress_bearer_auth=False):
+        assert is_async is False
+        client_calls.append(suppress_bearer_auth)
+        return compatible_client if suppress_bearer_auth else regular_client
+
+    monkeypatch.setattr(generate_image_module.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(
+        generate_image_module,
+        "get_image_generation_model",
+        lambda: "proxy/gpt-image-2",
+    )
+    monkeypatch.setattr(
+        generate_image_module,
+        "get_client_for_model",
+        _fake_get_client,
+    )
+
+    ctx = SimpleNamespace(message=SimpleNamespace(text="画一只小狗"))
+    result = await generate_image_module.execute(ctx, {}, runtime=None)
+
+    assert client_calls == [False, True]
+    assert result.get("task_outcome") == "done"
+    assert result.get("files")
+
+
+@pytest.mark.asyncio
 async def test_learned_generate_image_returns_recoverable_failure_when_prompt_missing():
     ctx = SimpleNamespace(message=SimpleNamespace(text=""))
 

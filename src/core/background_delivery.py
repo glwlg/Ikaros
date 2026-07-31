@@ -209,6 +209,17 @@ async def _send_document(
     return False
 
 
+async def _mark_stock_push_chat_activity(platform: str, chat_id: str) -> None:
+    try:
+        from extension.skills.learned.stock_watch.scripts.store import (
+            mark_stock_push_chat_activity,
+        )
+
+        await mark_stock_push_chat_activity(platform, chat_id)
+    except Exception:
+        logger.debug("Failed to mark stock push chat activity", exc_info=True)
+
+
 async def _send_text_chunk(
     *,
     adapter: Any,
@@ -233,6 +244,7 @@ async def _send_text_chunk(
             result = send_message(**kwargs)
             if inspect.isawaitable(result):
                 result = await result
+            await _mark_stock_push_chat_activity(platform, chat_id)
             _publish_runtime_background_event(
                 runtime_session_id=runtime_session_id,
                 runtime_turn_id=runtime_turn_id,
@@ -261,6 +273,7 @@ async def _send_text_chunk(
             )
             if inspect.isawaitable(result):
                 result = await result
+            await _mark_stock_push_chat_activity(platform, chat_id)
             _publish_runtime_background_event(
                 runtime_session_id=runtime_session_id,
                 runtime_turn_id=runtime_turn_id,

@@ -15,7 +15,7 @@ const isFullscreen = computed(() =>
   <div v-if="isPublicLayout" class="w-full min-h-screen">
     <RouterView />
   </div>
-  <!-- Fullscreen modules (accounting etc) — no sidebar; use dvh-friendly height -->
+  <!-- Fullscreen modules (accounting etc) -->
   <div v-else-if="isFullscreen" class="accounting-fullscreen w-full">
     <RouterView />
   </div>
@@ -56,21 +56,113 @@ html, body {
 }
 
 :root.dark {
-  --color-bg-primary: #ffffff;
-  --color-bg-secondary: #f7f9fc;
-  --color-bg-tertiary: #f1f5f9;
-  --color-bg-elevated: #ffffff;
-  --color-text-primary: #101828;
-  --color-text-secondary: #344054;
-  --color-text-tertiary: #667085;
-  --color-text-muted: #98a2b3;
-  --color-border-primary: #e5ebf3;
-  --color-border-secondary: #edf2f7;
+  --panel-border: var(--color-border-primary);
+  --panel-muted: var(--color-bg-tertiary);
+  --panel-soft: var(--color-bg-secondary);
+  --text-strong: var(--color-text-primary);
+  --text-body: var(--color-text-secondary);
+  --text-muted: var(--color-text-tertiary);
+  --text-subtle: var(--color-text-muted);
+  --brand-blue: var(--color-primary-500);
+  --brand-blue-dark: var(--color-primary-600);
+  --brand-blue-soft: var(--color-primary-50);
+  --shadow-card: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+/* Legacy console pages use Tailwind's light utilities alongside theme tokens. */
+:root.dark :is(.bg-white, .bg-white\/70, .bg-white\/80, .bg-white\/90) {
+  background-color: var(--color-bg-elevated) !important;
+}
+
+:root.dark :is(.bg-slate-50, .bg-slate-50\/80, .bg-slate-100, .bg-gray-50, .bg-gray-100) {
+  background-color: var(--color-bg-tertiary) !important;
+}
+
+:root.dark :is(.bg-slate-200, .bg-gray-200) {
+  background-color: var(--color-border-primary) !important;
+}
+
+:root.dark :is(.border-slate-100, .border-slate-200, .border-slate-300, .border-gray-100, .border-gray-200, .border-gray-300) {
+  border-color: var(--color-border-primary) !important;
+}
+
+:root.dark :is(.text-slate-950, .text-slate-900, .text-slate-800, .text-gray-950, .text-gray-900, .text-gray-800) {
+  color: var(--color-text-primary) !important;
+}
+
+:root.dark :is(.text-slate-700, .text-slate-600, .text-slate-500, .text-slate-400, .text-gray-700, .text-gray-600, .text-gray-500, .text-gray-400) {
+  color: var(--color-text-secondary) !important;
+}
+
+:root.dark :is(
+  .models-page .model-overview-card,
+  .models-page .model-stat-card,
+  .models-page .models-hero,
+  .models-page .models-surface,
+  .models-page .loading-card,
+  .models-page .route-table-card,
+  .models-page .provider-quick-panel,
+  .models-page .provider-list-panel,
+  .models-page .provider-detail-panel,
+  .models-page .role-card,
+  .models-page .matrix-panel,
+  .models-page .provider-card,
+  .models-page .action-menu,
+  .models-page .secondary-btn,
+  .models-page .danger-btn,
+  .models-page .table-action,
+  .models-page .table-menu,
+  .models-page .provider-head button,
+  .models-page .provider-list-head button,
+  .models-page .toggle-chip-row button,
+  .models-page .pool-chip-list button,
+  .runtime-page .runtime-hero,
+  .runtime-page .runtime-card,
+  .runtime-page .loading-card,
+  .runtime-page .secondary-btn,
+  .runtime-page .doc-head button,
+  .runtime-page .side-card-head button,
+  .skills-page .skills-hero,
+  .skills-page .filter-panel,
+  .skills-page .skills-table-panel,
+  .skills-page .secondary-action,
+  .skills-page .filter-select,
+  .skills-page .skills-search,
+  .skills-page .refresh-btn,
+  .skills-page .row-menu
+) {
+  background-color: var(--color-bg-elevated) !important;
+}
+
+:root.dark :is(
+  .models-page .route-table-wrap th,
+  .models-page .model-table-wrap th,
+  .models-page .matrix-table-wrap th,
+  .models-page .action-menu button:hover,
+  .models-page .capability-list span,
+  .models-page .model-edit-row td,
+  .models-page .compat,
+  .runtime-page .channel-item,
+  .runtime-page .toggle-row,
+  .runtime-page .sequence-card li span,
+  .skills-page .tag-list span
+) {
+  background-color: var(--color-bg-tertiary) !important;
+}
+
+:root.dark :is(
+  .models-page .route-table-wrap td,
+  .models-page .model-table-wrap td,
+  .models-page .matrix-table-wrap td,
+  .models-page .provider-item,
+  .skills-page td
+) {
+  border-color: var(--color-border-secondary) !important;
 }
 
 body {
-  background: #f7f9fc;
-  color: var(--text-body);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
   font-family: var(--font-body);
   letter-spacing: 0;
 }
@@ -119,22 +211,24 @@ button:disabled {
 input:not([type='checkbox']):not([type='radio']):not([type='file']),
 textarea,
 select {
-  border-color: var(--panel-border) !important;
-  background: #ffffff !important;
-  color: var(--text-strong) !important;
+  border-color: var(--color-border-primary);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  -webkit-text-fill-color: var(--color-text-primary);
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.02);
 }
 
 input::placeholder,
 textarea::placeholder {
-  color: var(--text-subtle);
+  color: var(--color-text-muted);
+  -webkit-text-fill-color: var(--color-text-muted);
 }
 
 input:focus,
 textarea:focus,
 select:focus {
-  border-color: #7fb2ff !important;
-  box-shadow: 0 0 0 3px rgba(47, 124, 246, 0.10) !important;
+  border-color: var(--color-border-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-border-focus) 18%, transparent);
 }
 
 table {
@@ -143,11 +237,11 @@ table {
 }
 
 thead {
-  background: #f8fafc;
+  background: var(--panel-muted);
 }
 
 tbody {
-  background: #ffffff;
+  background: var(--color-bg-elevated);
 }
 
 .bg-slate-950 {

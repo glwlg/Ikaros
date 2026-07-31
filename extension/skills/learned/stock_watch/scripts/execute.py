@@ -23,11 +23,15 @@ if str(SCRIPT_ROOT) not in sys.path:
 from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
 from extension.skills.learned.stock_watch.scripts.store import (
     add_watchlist_stock,
+    clear_last_stock_push_message,
     get_all_watchlist_users,
+    get_editable_stock_push_message_id,
     get_last_stock_push_prices,
     get_stock_delivery_target,
     get_user_watchlist,
+    mark_stock_push_chat_activity,
     remove_watchlist_stock,
+    save_last_stock_push_message,
     save_last_stock_push_prices,
     set_stock_delivery_target,
 )
@@ -50,7 +54,7 @@ else:
 
 logger = logging.getLogger(__name__)
 STOCK_MENU_NS = "stkm"
-STOCK_PUSH_INTERVAL_SEC = 10 * 60
+STOCK_PUSH_INTERVAL_SEC = 60
 
 
 def _stock_enabled(ctx: UnifiedContext) -> bool:
@@ -74,6 +78,18 @@ def _current_delivery_target(ctx: UnifiedContext) -> dict[str, str]:
         "platform": str(ctx.message.platform or "telegram").strip() or "telegram",
         "chat_id": str(getattr(ctx.message.chat, "id", "") or "").strip(),
     }
+
+
+async def note_stock_chat_activity(ctx: UnifiedContext) -> None:
+    """Invalidate in-place stock push editing after any newer chat activity."""
+    try:
+        platform = str(getattr(ctx.message, "platform", "") or "").strip()
+        chat_id = str(getattr(getattr(ctx.message, "chat", None), "id", "") or "").strip()
+        if not platform or not chat_id:
+            return
+        await mark_stock_push_chat_activity(platform, chat_id)
+    except Exception:
+        logger.debug("Failed to mark stock push chat activity", exc_info=True)
 
 
 async def _ensure_default_stock_delivery_target(
@@ -262,6 +278,167 @@ def is_trading_time(now: datetime.datetime | None = None) -> bool:
     )
 
 
+def _message_id_from_result(result) -> str:
+    return str(
+        getattr(result, "message_id", "")
+        or getattr(result, "id", "")
+        or ""
+    ).strip()
+
+
+def _platform_supports_edit(adapter, platform: str) -> bool:
+    if adapter is not None and hasattr(adapter, "can_update_message"):
+        try:
+            return bool(adapter.can_update_message)
+        except Exception:
+            pass
+    return str(platform or "").strip().lower() in {"telegram", "discord", "web"}
+
+
+def _build_stock_push_context(platform: str, chat_id: str, adapter):
+    from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
+
+    chat = Chat(id=str(chat_id), type="private")
+    user = User(id=str(chat_id), username="stock_watch")
+    message = UnifiedMessage(
+        id="stock-push",
+        platform=str(platform or "").strip().lower() or "telegram",
+        user=user,
+        chat=chat,
+        date=datetime.datetime.now(),
+        type=MessageType.TEXT,
+        text="",
+    )
+    return UnifiedContext(
+        message=message,
+        platform_ctx=None,
+        platform_event=None,
+        _adapter=adapter,
+        user=user,
+    )
+
+
+async def _send_stock_push_message(
+    *,
+    adapter,
+    platform: str,
+    chat_id: str,
+    text: str,
+) -> str:
+    send_message = getattr(adapter, "send_message", None)
+    if not callable(send_message):
+        return ""
+    result = send_message(
+        chat_id=chat_id,
+        text=text,
+        disable_web_page_preview=True,
+    )
+    if hasattr(result, "__await__"):
+        result = await result
+    return _message_id_from_result(result)
+
+
+async def _edit_stock_push_message(
+    *,
+    adapter,
+    platform: str,
+    chat_id: str,
+    message_id: str,
+    text: str,
+) -> bool:
+    edit_text = getattr(adapter, "edit_text", None)
+    if not callable(edit_text):
+        return False
+    try:
+        ctx = _build_stock_push_context(platform, chat_id, adapter)
+        result = edit_text(ctx, message_id, text)
+        if hasattr(result, "__await__"):
+            await result
+        return True
+    except Exception as exc:
+        # Telegram returns "message is not modified" when content is unchanged.
+        if "message is not modified" in str(exc).lower():
+            return True
+        logger.warning(
+            "Stock push edit failed platform=%s chat=%s message_id=%s err=%s",
+            platform,
+            chat_id,
+            message_id,
+            exc,
+        )
+        return False
+
+
+async def _deliver_stock_push(
+    *,
+    user_id: int | str,
+    platform: str,
+    chat_id: str,
+    text: str,
+) -> tuple[bool, str, bool]:
+    from core.platform.registry import adapter_manager
+
+    safe_platform = str(platform or "").strip().lower()
+    safe_chat_id = str(chat_id or "").strip()
+    payload = str(text or "").strip()
+    if not safe_platform or not safe_chat_id or not payload:
+        return False, "", False
+
+    try:
+        adapter = adapter_manager.get_adapter(safe_platform)
+    except Exception:
+        adapter = None
+    if adapter is None:
+        return False, "", False
+
+    editable_message_id = ""
+    if _platform_supports_edit(adapter, safe_platform):
+        editable_message_id = await get_editable_stock_push_message_id(
+            user_id,
+            platform=safe_platform,
+            chat_id=safe_chat_id,
+        )
+
+    if editable_message_id:
+        edited = await _edit_stock_push_message(
+            adapter=adapter,
+            platform=safe_platform,
+            chat_id=safe_chat_id,
+            message_id=editable_message_id,
+            text=payload,
+        )
+        if edited:
+            await save_last_stock_push_message(
+                user_id,
+                platform=safe_platform,
+                chat_id=safe_chat_id,
+                message_id=editable_message_id,
+                text=payload,
+            )
+            return True, editable_message_id, True
+        await clear_last_stock_push_message(user_id)
+
+    message_id = await _send_stock_push_message(
+        adapter=adapter,
+        platform=safe_platform,
+        chat_id=safe_chat_id,
+        text=payload,
+    )
+    if not message_id:
+        return False, "", False
+    if _platform_supports_edit(adapter, safe_platform):
+        await save_last_stock_push_message(
+            user_id,
+            platform=safe_platform,
+            chat_id=safe_chat_id,
+            message_id=message_id,
+            text=payload,
+        )
+    else:
+        await clear_last_stock_push_message(user_id)
+    return True, message_id, False
+
+
 async def stock_push_job() -> None:
     """交易时段定时推送自选股行情。"""
     if not is_trading_time():
@@ -273,8 +450,8 @@ async def stock_push_job() -> None:
     from core.scheduler import (
         _remember_proactive_delivery_target,
         _resolve_proactive_delivery_target,
-        send_via_adapter,
     )
+    from core.background_delivery import _record_background_history
 
     try:
         users_with_platform = await get_all_watchlist_users()
@@ -322,23 +499,38 @@ async def stock_push_job() -> None:
                     )
                     continue
 
-                await send_via_adapter(
+                delivered, message_id, edited = await _deliver_stock_push(
+                    user_id=user_id,
+                    platform=target_platform,
                     chat_id=target_chat_id,
                     text=message,
-                    platform=target_platform,
-                    user_id=user_id,
-                    record_history=True,
                 )
+                if not delivered:
+                    logger.warning(
+                        "Stock push failed: user=%s platform=%s chat=%s",
+                        user_id,
+                        target_platform,
+                        target_chat_id,
+                    )
+                    continue
+
                 await save_last_stock_push_prices(user_id, quotes)
                 await _remember_proactive_delivery_target(
                     user_id,
                     target_platform,
                     target_chat_id,
                 )
+                if not edited:
+                    await _record_background_history(
+                        user_id=str(user_id or ""),
+                        text=message,
+                    )
                 logger.info(
-                    "Sent stock quotes to user %s on %s",
+                    "Sent stock quotes to user %s on %s message_id=%s edited=%s",
                     user_id,
                     target_platform,
+                    message_id or "-",
+                    edited,
                 )
             except Exception as exc:
                 logger.error(
@@ -388,6 +580,7 @@ def register_handlers(adapter_manager):
     from core.config import is_user_allowed
 
     async def cmd_stock(ctx):
+        await note_stock_chat_activity(ctx)
         if not await is_user_allowed(ctx.message.user.id):
             return
         if not _stock_enabled(ctx):
@@ -615,6 +808,7 @@ async def add_single_stock(ctx: UnifiedContext, user_id: int, stock_name: str) -
 
 async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
     """处理用户点击选择股票的回调"""
+    await note_stock_chat_activity(ctx)
     if not _stock_enabled(ctx):
         await ctx.reply(channel_feature_denied_text("stock"))
         return

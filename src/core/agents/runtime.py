@@ -18,6 +18,7 @@ class AgentsModelConfig:
     force_responses_model: bool = False
     tracing_disabled: bool = True
     timeout: float = 600.0
+    headers: dict[str, str] | None = None
 
 
 _UNEXECUTED_TOOL_PATTERNS = [
@@ -84,6 +85,7 @@ def resolve_agents_model_config(
     from core.model_config import (
         get_api_key_for_model,
         get_base_url_for_model,
+        get_headers_for_model,
         get_model_id_for_api,
         select_model_for_role,
     )
@@ -96,6 +98,7 @@ def resolve_agents_model_config(
     base_url = os.getenv("OPENAI_BASE_URL") or get_base_url_for_model(
         resolved_model_key
     )
+    headers = get_headers_for_model(resolved_model_key)
     resolved_provider = str(
         provider or os.getenv("OPENAI_PROVIDER") or ""
     ).strip().lower() or _infer_provider(base_url)
@@ -109,6 +112,7 @@ def resolve_agents_model_config(
         api_key=str(api_key or "").strip(),
         base_url=str(base_url or "").strip() or None,
         model=str(os.getenv("OPENAI_MODEL") or model_id or "").strip(),
+        headers=headers,
         provider=resolved_provider,
         force_responses_model=force_responses_model,
         tracing_disabled=tracing_disabled,
@@ -141,6 +145,8 @@ def build_agent_model(
     }
     if config.base_url:
         client_kwargs["base_url"] = config.base_url
+    if config.headers:
+        client_kwargs["default_headers"] = dict(config.headers)
     client = resolved_client_factory(**client_kwargs)
 
     provider = str(config.provider or "openai").strip().lower()

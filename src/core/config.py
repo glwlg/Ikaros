@@ -2,8 +2,10 @@
 配置模块 - 管理环境变量和常量
 """
 
+import json
 import os
 import shlex
+
 from dotenv import load_dotenv
 
 from core.app_paths import data_dir, env_path, models_config_path, project_root
@@ -72,7 +74,12 @@ _clients_cache = {}
 _wrapped_clients_cache = {}
 
 
-def get_client_for_model(model_key: str | None = None, is_async: bool = True):
+def get_client_for_model(
+    model_key: str | None = None,
+    is_async: bool = True,
+    *,
+    suppress_bearer_auth: bool = False,
+):
     """获取指定模型对应的 OpenAI 客户端"""
     if OpenAI is None or AsyncOpenAI is None:
         return None
@@ -82,22 +89,39 @@ def get_client_for_model(model_key: str | None = None, is_async: bool = True):
         get_api_key_for_model,
         get_base_url_for_model,
         get_current_model,
+        get_headers_for_model,
     )
     from core.llm_usage_store import wrap_openai_client
 
     key = model_key or get_current_model()
     api_key = get_api_key_for_model(key)
     base_url = get_base_url_for_model(key)
+    headers = get_headers_for_model(key)
+
+    if suppress_bearer_auth:
+        headers = {
+            name: value
+            for name, value in headers.items()
+            if name.lower() != "authorization"
+        }
+        headers["Authorization"] = ""
 
     if not api_key:
         return None
 
-    cache_key = f"{api_key}:{base_url}:{is_async}"
+    headers_key = json.dumps(headers, ensure_ascii=False, sort_keys=True)
+    cache_key = f"{api_key}:{base_url}:{headers_key}:{is_async}"
     if cache_key not in _clients_cache:
+        client_kwargs = {
+            "api_key": api_key,
+            "base_url": base_url,
+        }
+        if headers:
+            client_kwargs["default_headers"] = headers
         if is_async:
-            _clients_cache[cache_key] = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            _clients_cache[cache_key] = AsyncOpenAI(**client_kwargs)
         else:
-            _clients_cache[cache_key] = OpenAI(api_key=api_key, base_url=base_url)
+            _clients_cache[cache_key] = OpenAI(**client_kwargs)
 
     wrapper_key = f"{cache_key}:{str(key or '').strip() or '__default__'}"
     if wrapper_key not in _wrapped_clients_cache:

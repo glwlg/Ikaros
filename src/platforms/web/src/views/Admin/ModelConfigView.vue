@@ -67,11 +67,18 @@ interface ModelForm {
     extras: Record<string, unknown>
 }
 
+interface HeaderForm {
+    uid: string
+    name: string
+    value: string
+}
+
 interface ProviderForm {
     uid: string
     name: string
     baseUrl: string
     apiKey: string
+    headers: HeaderForm[]
     api: string
     models: ModelForm[]
     extras: Record<string, unknown>
@@ -112,6 +119,7 @@ interface QuickRoleForm {
     providerName: string
     baseUrl: string
     apiKey: string
+    headers: Record<string, string>
     apiStyle: string
     modelId: string
     displayName: string
@@ -167,6 +175,7 @@ const createDefaultQuickRole = (role: QuickRoleKey): QuickRoleForm => ({
     providerName: '',
     baseUrl: '',
     apiKey: '',
+    headers: {},
     apiStyle: 'openai-completions',
     modelId: '',
     displayName: '',
@@ -293,10 +302,36 @@ const createEmptyProvider = (): ProviderForm => ({
     name: '',
     baseUrl: '',
     apiKey: '',
+    headers: [],
     api: 'openai-completions',
     models: [],
     extras: {},
 })
+
+const providerHeadersPayload = (provider: ProviderForm) => {
+    const headers: Record<string, string> = {}
+    const seenNames = new Set<string>()
+    for (const header of provider.headers) {
+        const name = header.name.trim()
+        const value = header.value
+        if (!name && !value) {
+            continue
+        }
+        if (!name) {
+            throw new Error(`${provider.name || 'Provider'} 存在空的 Header 名称`)
+        }
+        if (name.includes('\n') || name.includes('\r') || value.includes('\n') || value.includes('\r')) {
+            throw new Error(`${provider.name || 'Provider'} 的 Header 不能包含换行符`)
+        }
+        const normalizedName = name.toLowerCase()
+        if (seenNames.has(normalizedName)) {
+            throw new Error(`${provider.name || 'Provider'} 的 Header 名称重复：${name}`)
+        }
+        seenNames.add(normalizedName)
+        headers[name] = value.trim()
+    }
+    return headers
+}
 
 const availableModelOptions = computed<ModelOption[]>(() => {
     const form = modelConfigForm.value
@@ -334,6 +369,7 @@ const sameQuickRole = (left: QuickRoleForm, right: QuickRoleForm) =>
     left.providerName === right.providerName
     && left.baseUrl === right.baseUrl
     && left.apiKey === right.apiKey
+    && JSON.stringify(left.headers) === JSON.stringify(right.headers)
     && left.apiStyle === right.apiStyle
     && left.modelId === right.modelId
     && left.displayName === right.displayName
@@ -346,6 +382,7 @@ const hydrateQuickRole = (role: QuickRoleKey, payload: ModelsQuickRoleSnapshot) 
         providerName: payload.provider_name || '',
         baseUrl: payload.base_url || '',
         apiKey: payload.api_key || '',
+        headers: { ...(payload.headers || {}) },
         apiStyle: payload.api_style || 'openai-completions',
         modelId: payload.model_id || '',
         displayName: payload.display_name || '',
@@ -522,6 +559,7 @@ const runLatencyForEntry = async (role: RoleKey, provider: ProviderForm, model: 
         provider_name: providerName,
         base_url: provider.baseUrl.trim(),
         api_key: provider.apiKey,
+        headers: providerHeadersPayload(provider),
         api_style: provider.api.trim() || 'openai-completions',
         model_id: modelId,
     })
@@ -573,6 +611,7 @@ const serializeProviderConfig = (provider: ProviderForm) => {
                 ...provider.extras,
                 baseUrl: provider.baseUrl.trim(),
                 apiKey: provider.apiKey,
+                headers: providerHeadersPayload(provider),
                 api: provider.api.trim() || 'openai-completions',
                 models: provider.models.map(model => ({
                     ...model.extras,
@@ -824,6 +863,7 @@ const syncQuickRoleFromModelConfigForm = (role: QuickRoleKey) => {
             providerName: entry.provider.name,
             baseUrl: entry.provider.baseUrl,
             apiKey: entry.provider.apiKey,
+            headers: providerHeadersPayload(entry.provider),
             apiStyle: entry.provider.api || 'openai-completions',
             modelId: entry.model.id,
             displayName: entry.model.name,
@@ -857,6 +897,7 @@ const testRoutingLatency = async () => {
             provider_name: routing.providerName.trim(),
             base_url: routing.baseUrl.trim(),
             api_key: routing.apiKey,
+            headers: routing.headers,
             api_style: routing.apiStyle.trim() || 'openai-completions',
             model_id: routing.modelId.trim(),
         })
@@ -915,9 +956,14 @@ const hydrateModelsConfigForm = (payload: Record<string, unknown>) => {
             name: providerName,
             baseUrl: String(rawProvider.baseUrl || '').trim(),
             apiKey: String(rawProvider.apiKey || ''),
+            headers: Object.entries(asObject(rawProvider.headers) || {}).map(([name, value]) => ({
+                uid: nextUid('header'),
+                name,
+                value: String(value ?? ''),
+            })),
             api: String(rawProvider.api || '').trim() || 'openai-completions',
             models: [],
-            extras: omitKeys(rawProvider, ['baseUrl', 'apiKey', 'api', 'models']),
+            extras: omitKeys(rawProvider, ['baseUrl', 'apiKey', 'headers', 'api', 'models']),
         }
 
         const rawModels = Array.isArray(rawProvider.models) ? rawProvider.models : []
@@ -1075,6 +1121,22 @@ const addProviderModel = (providerUid: string) => {
         return
     }
     provider.models.push(createEmptyModel())
+}
+
+const addProviderHeader = (providerUid: string) => {
+    const provider = modelConfigForm.value?.providers.find(item => item.uid === providerUid)
+    if (!provider) {
+        return
+    }
+    provider.headers.push({ uid: nextUid('header'), name: '', value: '' })
+}
+
+const removeProviderHeader = (providerUid: string, headerUid: string) => {
+    const provider = modelConfigForm.value?.providers.find(item => item.uid === providerUid)
+    if (!provider) {
+        return
+    }
+    provider.headers = provider.headers.filter(header => header.uid !== headerUid)
 }
 
 const detachModelFromRoles = (modelUid: string) => {
@@ -1268,10 +1330,19 @@ const buildModelsConfigSubmission = () => {
             })
         }
 
+        let headers: Record<string, string>
+        try {
+            headers = providerHeadersPayload(provider)
+        } catch (error) {
+            modelsConfigError.value = error instanceof Error ? error.message : 'Header 配置无效'
+            return null
+        }
+
         providersPayload[providerName] = {
             ...provider.extras,
             baseUrl: provider.baseUrl.trim(),
             apiKey: provider.apiKey,
+            headers,
             api: provider.api.trim() || 'openai-completions',
             models: modelsPayload,
         }
@@ -1621,6 +1692,23 @@ onMounted(load)
                 <label><span>API Key</span><input v-model="selectedProvider.apiKey" type="password" placeholder="sk-..."></label>
                 <label><span>超时（秒）</span><input type="number" value="30"></label>
                 <label><span>最大重试</span><input type="number" value="3"></label>
+              </div>
+              <div class="custom-headers-block">
+                <div class="custom-headers-head">
+                  <div>
+                    <strong>自定义 Headers</strong>
+                    <span>连接测试和所有模型请求都会携带这些请求头</span>
+                  </div>
+                  <button type="button" class="secondary-btn small" @click="addProviderHeader(selectedProvider.uid)"><Plus class="h-4 w-4" />新增 Header</button>
+                </div>
+                <div v-if="selectedProvider.headers.length" class="custom-header-list">
+                  <div v-for="header in selectedProvider.headers" :key="header.uid" class="custom-header-row">
+                    <input v-model="header.name" type="text" placeholder="Header 名称，如 opencodex-api-key">
+                    <input v-model="header.value" type="password" placeholder="Header 值">
+                    <button type="button" class="icon-danger-btn" title="删除 Header" @click="removeProviderHeader(selectedProvider.uid, header.uid)"><Trash2 class="h-4 w-4" /></button>
+                  </div>
+                </div>
+                <p v-else class="custom-headers-empty">暂未配置自定义 Header</p>
               </div>
               <div class="connection-line" :class="providerConnectionClass(selectedProvider)">
                 <i />{{ providerConnectionSummary(selectedProvider) }}
@@ -2546,6 +2634,74 @@ onMounted(load)
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) 140px 140px;
 }
 
+.custom-headers-block {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.custom-headers-head,
+.custom-header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.custom-headers-head {
+  justify-content: space-between;
+}
+
+.custom-headers-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.custom-headers-head strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.custom-headers-head span,
+.custom-headers-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.custom-header-list {
+  display: grid;
+  gap: 10px;
+}
+
+.custom-header-row input {
+  min-width: 0;
+  height: 40px;
+  flex: 1;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fff;
+}
+
+.icon-danger-btn {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border: 1px solid #fecdd3;
+  border-radius: 8px;
+  background: #fff;
+  color: #e11d48;
+}
+
+.custom-headers-empty {
+  margin: 0;
+}
+
 .provider-form-grid label,
 .role-card label,
 .mode-field {
@@ -2831,6 +2987,16 @@ onMounted(load)
   .interface-grid,
   .role-pool-grid {
     grid-template-columns: 1fr;
+  }
+
+  .custom-headers-head,
+  .custom-header-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .icon-danger-btn {
+    width: 100%;
   }
 
   .models-actions,

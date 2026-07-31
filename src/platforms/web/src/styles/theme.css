@@ -158,14 +158,13 @@
    主题切换过渡动画
    ======================================== */
 
-/* 基础过渡设置 - 所有颜色变化都会有平滑过渡 */
-*,
-*::before,
-*::after {
-    transition-property: background-color, border-color, color, fill, stroke;
-    transition-duration: 200ms;
-    transition-timing-function: ease-in-out;
-}
+/*
+ * 主题切换必须即时完成。
+ *
+ * 不要在此为所有节点设置颜色过渡：一次主题切换会让整页的背景、文字和
+ * 边框同时参与动画，在内容较多的页面和移动端会造成持续重绘并阻塞交互。
+ * 需要动效的控件应自行使用 .theme-transition 或组件内的 transition。
+ */
 
 /* 排除特定元素 - 这些元素不应该有过渡效果 */
 .no-theme-transition,

@@ -1,0 +1,307 @@
+/* 暖色家用记账主题：仅作用于 accounting 模块，不影响主应用主题。 */
+.accounting-shell,
+.accounting-warm-dialog {
+  --color-bg-primary: #fffaf4;
+  --color-bg-secondary: #fff2e7;
+  --color-bg-tertiary: #f9e4d3;
+  --color-bg-elevated: #fffdf9;
+  --color-text-primary: #422619;
+  --color-text-secondary: #765f53;
+  --color-text-tertiary: #947d70;
+  --color-text-muted: #a58f82;
+  --color-border-primary: #f0ded0;
+  --color-border-secondary: #f6e8dc;
+  --color-border-focus: #ff7650;
+  --color-primary-50: #fff0e9;
+  --color-primary-100: #ffdfd1;
+  --color-primary-200: #ffc2aa;
+  --color-primary-300: #ffa07d;
+  --color-primary-400: #ff8962;
+  --color-primary-500: #ff7048;
+  --color-primary-600: #f35e38;
+  --color-primary-700: #c9482a;
+  --color-primary-800: #84331f;
+  --color-primary-900: #4c2016;
+  --color-accounting-brand: #ff7048;
+  --color-accounting-brand-strong: #f35e38;
+  --color-accounting-expense: #ef5350;
+  --color-accounting-income: #159b82;
+  --color-accounting-transfer: #e39a2f;
+  --shadow-sm: 0 4px 16px rgba(111, 66, 38, 0.07);
+  --shadow-md: 0 10px 26px rgba(111, 66, 38, 0.11);
+  --shadow-lg: 0 18px 38px rgba(111, 66, 38, 0.14);
+  --shadow-xl: 0 24px 50px rgba(111, 66, 38, 0.18);
+}
+
+.accounting-shell.accounting-shell {
+  position: relative;
+  isolation: isolate;
+  background: #fffaf4 !important;
+}
+
+.accounting-shell::before {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 15rem;
+  content: '';
+  background:
+    linear-gradient(180deg, rgba(255, 247, 237, 0.02), #fffaf4 95%),
+    url('../assets/accounting-warm-header.png') right top / auto 100% no-repeat;
+  pointer-events: none;
+}
+
+.accounting-main {
+  position: relative;
+  z-index: 1;
+}
+
+.accounting-header-icon {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 999px;
+  background: rgba(255, 253, 249, 0.76);
+  box-shadow: 0 6px 18px rgba(105, 57, 30, 0.1);
+  color: #57301d;
+}
+
+.accounting-header-title {
+  flex: 1;
+  color: #422619;
+  font-size: 1.65rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.accounting-header-bell {
+  opacity: 0.94;
+}
+
+.accounting-page-pad {
+  position: relative;
+}
+
+.accounting-ledger-select {
+  min-height: 40px;
+  padding: 0 2px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.accounting-month-switcher,
+.accounting-summary-card,
+.accounting-more-section,
+.accounting-profile-card,
+.accounting-tool-grid {
+  border-color: rgba(236, 212, 194, 0.88) !important;
+  box-shadow: 0 12px 28px rgba(118, 74, 48, 0.1) !important;
+}
+
+.accounting-month-switcher {
+  min-height: 70px;
+  border-radius: 24px !important;
+  background: rgba(255, 253, 249, 0.93) !important;
+}
+
+.accounting-summary-card {
+  border-radius: 26px !important;
+  background: rgba(255, 253, 249, 0.94) !important;
+}
+
+.accounting-summary-card > div:first-child {
+  padding: 20px 18px 4px !important;
+}
+
+.accounting-summary-card > div:last-child {
+  padding: 0 4px 8px;
+}
+
+.accounting-shell .accounting-page-pad > .mx-4.rounded-2xl,
+.accounting-shell .accounting-page-pad > .mx-3.rounded-2xl,
+.accounting-shell .accounting-page-pad > .mx-3.rounded-3xl {
+  border-color: rgba(236, 212, 194, 0.88) !important;
+  box-shadow: 0 12px 28px rgba(118, 74, 48, 0.1) !important;
+}
+
+.accounting-net-worth-card {
+  min-height: 220px;
+  border-radius: 28px !important;
+}
+
+.accounting-more-page,
+.accounting-profile-page,
+.accounting-stats-page,
+.accounting-assets-page {
+  padding-top: 2px;
+}
+
+.accounting-more-section {
+  border: 1px solid rgba(236, 212, 194, 0.88);
+  border-radius: 28px;
+  background: rgba(255, 253, 249, 0.88);
+  padding: 20px;
+}
+
+.accounting-section-accent {
+  display: block;
+  width: 30px;
+  height: 4px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ff7048, #ff9c67);
+}
+
+.accounting-more-tile {
+  min-height: 110px;
+  border-radius: 20px !important;
+  background: rgba(255, 255, 255, 0.72) !important;
+  box-shadow: 0 8px 18px rgba(111, 66, 38, 0.06);
+}
+
+.accounting-more-tile > div > div:first-child {
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #ff9a6b, #ff7048) !important;
+}
+
+.accounting-more-tile:nth-child(2n) > div > div:first-child {
+  background: linear-gradient(135deg, #7bceb0, #1b9f87) !important;
+}
+
+.accounting-more-tile:nth-child(3n) > div > div:first-child {
+  background: linear-gradient(135deg, #ffd170, #f5a534) !important;
+}
+
+.accounting-profile-card {
+  min-height: 156px;
+  background:
+    radial-gradient(circle at 82% 12%, rgba(255, 199, 138, 0.38), transparent 30%),
+    linear-gradient(135deg, #ff9b70, #ff7048 62%, #f5633d) !important;
+}
+
+.accounting-tool-grid {
+  padding-top: 20px !important;
+  padding-bottom: 20px !important;
+}
+
+.accounting-tool-coral,
+.accounting-tool-gold,
+.accounting-tool-sage,
+.accounting-tool-teal {
+  background: linear-gradient(135deg, #ff9a6b, #ff7048);
+}
+
+.accounting-tool-gold { background: linear-gradient(135deg, #ffd06e, #f6ac3e); }
+.accounting-tool-sage { background: linear-gradient(135deg, #8bd5a9, #30a879); }
+.accounting-tool-teal { background: linear-gradient(135deg, #65c9c5, #1aa697); }
+
+.accounting-shell .bg-white,
+.accounting-shell .bg-slate-50 {
+  background-color: var(--color-bg-elevated);
+}
+
+.accounting-shell .border-gray-100,
+.accounting-shell .border-gray-200,
+.accounting-shell .divide-gray-50 {
+  border-color: var(--color-border-secondary);
+}
+
+.accounting-shell .bg-gray-50,
+.accounting-shell .hover\:bg-gray-50:hover,
+.accounting-shell .hover\:bg-slate-700:hover {
+  background-color: var(--color-bg-secondary);
+}
+
+.accounting-shell .text-indigo-400,
+.accounting-shell .text-indigo-500,
+.accounting-shell .text-indigo-600 {
+  color: var(--color-accounting-brand);
+}
+
+.accounting-shell .bg-indigo-500,
+.accounting-shell .bg-indigo-600 {
+  background-color: var(--color-accounting-brand);
+}
+
+.accounting-shell .hover\:bg-indigo-50:hover {
+  background-color: var(--color-bg-secondary);
+}
+
+.accounting-shell .rounded-2xl,
+.accounting-shell .rounded-3xl {
+  box-shadow: var(--shadow-sm);
+}
+
+.accounting-net-worth-card {
+  background:
+    radial-gradient(circle at 88% 8%, rgba(255, 205, 146, 0.3), transparent 29%),
+    linear-gradient(135deg, #0c746e, #159b82 62%, #32b99a) !important;
+}
+
+.accounting-fab-primary {
+  background: linear-gradient(135deg, #ff8b5f, var(--color-accounting-brand)) !important;
+}
+
+.accounting-fab-secondary {
+  background: linear-gradient(135deg, #ffd36e, #f6a72c) !important;
+  color: #5b3610 !important;
+}
+
+.accounting-record-dialog {
+  background:
+    linear-gradient(180deg, rgba(255, 250, 244, 0.04), rgba(255, 250, 244, 0.82) 26%),
+    url('../assets/accounting-warm-header.png') right top / auto 230px no-repeat,
+    var(--color-bg-primary) !important;
+}
+
+.accounting-entry-header {
+  min-height: 70px;
+  color: #422619;
+}
+
+.accounting-entry-header button {
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  background: rgba(255, 253, 249, 0.76);
+  color: #57301d;
+  box-shadow: 0 6px 18px rgba(105, 57, 30, 0.1);
+}
+
+.accounting-entry-header span {
+  color: #422619;
+  font-size: 1.35rem;
+}
+
+.accounting-entry-sheet {
+  margin: 0 12px;
+  border: 1px solid rgba(236, 212, 194, 0.9);
+  border-radius: 28px 28px 0 0;
+  background: rgba(255, 253, 249, 0.97);
+  box-shadow: 0 -4px 18px rgba(111, 66, 38, 0.04);
+}
+
+.accounting-entry-keypad {
+  border-color: rgba(236, 212, 194, 0.9) !important;
+  background: rgba(255, 253, 249, 0.98) !important;
+}
+
+.accounting-detail-header {
+  min-height: 68px;
+  background:
+    linear-gradient(90deg, rgba(255, 248, 240, 0.75), rgba(255, 184, 124, 0.06)),
+    url('../assets/accounting-warm-header.png') right center / auto 210px no-repeat,
+    #ffe6d1;
+  color: #422619;
+  box-shadow: 0 4px 16px rgba(111, 66, 38, 0.08);
+}
+
+.accounting-detail-header button,
+.accounting-detail-header button:hover {
+  color: #422619;
+}

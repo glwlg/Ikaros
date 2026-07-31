@@ -20,14 +20,12 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 确保 body 和 #app 正确填充视口（优先 dvh，兼容旧浏览器） */
+/* Keep the document root at the layout viewport. Fullscreen routes own their viewport. */
 html, body, #app {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
-  min-height: 100vh;
-  min-height: 100dvh;
   overflow: hidden;
 }
 
@@ -65,11 +63,11 @@ body {
   padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
 }
 
-/* 全屏壳：避开移动浏览器 100vh 地址栏跳动 */
+/* Fullscreen children fill their parent without creating another viewport-sized document. */
 .accounting-fullscreen {
   height: 100%;
-  height: 100dvh;
-  max-height: 100dvh;
+  min-height: 0;
+  max-height: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -146,8 +144,8 @@ select.accounting-field {
 }
 
 select.accounting-field option {
-  color: #1c2024;
-  background: #ffffff;
+  color: var(--color-text-primary, #1c2024);
+  background: var(--color-bg-elevated, #ffffff);
 }
 
 /* 带左侧图标的搜索框：给足左内边距，去掉 WebKit 原生 search 装饰 */

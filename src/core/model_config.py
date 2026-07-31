@@ -150,6 +150,7 @@ class ProviderConfig:
     apiKey: str
     api: str = "openai-completions"
     models: list[ModelConfig] = field(default_factory=list)
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -708,6 +709,14 @@ def _parse_models_config_data(data: dict[str, Any]) -> ModelsConfig:
             baseUrl=provider_data["baseUrl"],
             apiKey=provider_data.get("apiKey", ""),
             api=provider_data.get("api", "openai-completions"),
+            headers={
+                str(key): str(value)
+                for key, value in (
+                    provider_data.get("headers")
+                    if isinstance(provider_data.get("headers"), dict)
+                    else {}
+                ).items()
+            },
             models=models,
         )
 
@@ -1051,6 +1060,16 @@ def get_base_url_for_model(model_key: Optional[str] = None) -> Optional[str]:
         if provider_config:
             return provider_config.baseUrl
     return None
+
+
+def get_headers_for_model(model_key: Optional[str] = None) -> dict[str, str]:
+    """获取模型提供商配置的自定义请求头。"""
+    _ensure_models_loaded()
+    if _model_manager:
+        provider_config = _model_manager.get_provider_config(model_key)
+        if provider_config:
+            return dict(provider_config.headers)
+    return {}
 
 
 def get_routing_model() -> str:

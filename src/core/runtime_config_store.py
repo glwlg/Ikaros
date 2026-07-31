@@ -44,6 +44,7 @@ class RuntimeConfigStore:
                 "web_chat_uploads": True,
                 "web_chat_tts": True,
                 "admin_console": True,
+                "routing_model_enabled": True,
             },
             "voice_output": {
                 "enabled": False,
@@ -108,6 +109,16 @@ class RuntimeConfigStore:
         if not isinstance(platforms, dict):
             return default
         value = platforms.get(str(platform or "").strip().lower())
+        if value is None:
+            return default
+        return bool(value)
+
+    def is_feature_enabled(self, feature: str, *, default: bool = False) -> bool:
+        payload = self.read()
+        features = payload.get("features")
+        if not isinstance(features, dict):
+            return default
+        value = features.get(str(feature or "").strip())
         if value is None:
             return default
         return bool(value)

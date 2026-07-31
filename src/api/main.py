@@ -102,13 +102,11 @@ PWA_PAGE_OVERRIDES = (
         "prefix": "accounting",
         "manifest": "/accounting-manifest.webmanifest",
         "title": "智能记账",
-        "status_bar": "black-translucent",
     },
     {
         "prefix": "modules/cameras",
         "manifest": "/cameras-manifest.webmanifest",
         "title": "实时监控",
-        "status_bar": "black-translucent",
     },
 )
 
@@ -138,13 +136,10 @@ def _serve_spa_html(full_path: str) -> FileResponse | HTMLResponse:
             with open(index_path, "r", encoding="utf-8") as f:
                 html = f.read()
             apple_title = pwa_override["title"]
-            status_bar_style = pwa_override["status_bar"]
             html = html.replace(
                 "/manifest.webmanifest", pwa_override["manifest"]
             )
             apple_tags = f"""
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="{status_bar_style}" />
   <meta name="apple-mobile-web-app-title" content="{apple_title}" />
   <link rel="apple-touch-icon" href="/logo.png" />
 </head>"""

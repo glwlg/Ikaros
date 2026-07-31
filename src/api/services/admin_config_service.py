@@ -192,6 +192,41 @@ def _normalize_model_id(value: Any) -> str:
     return model_id
 
 
+def _normalize_provider_headers(value: Any, *, field_name: str) -> dict[str, str]:
+    if value is None or value == "":
+        return {}
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail=f"{field_name} 必须是对象")
+
+    headers: dict[str, str] = {}
+    seen_names: set[str] = set()
+    for raw_name, raw_value in value.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field_name} 的名称和值必须是字符串",
+            )
+        name = raw_name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail=f"{field_name} 包含空名称")
+        if (
+            "\r" in name
+            or "\n" in name
+            or "\r" in raw_value
+            or "\n" in raw_value
+        ):
+            raise HTTPException(status_code=400, detail=f"{field_name} 不能包含换行符")
+        normalized_name = name.lower()
+        if normalized_name in seen_names:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field_name} 包含重复名称: {name}",
+            )
+        seen_names.add(normalized_name)
+        headers[name] = raw_value.strip()
+    return headers
+
+
 def _default_models_payload() -> dict[str, Any]:
     return {
         "model": {},
@@ -412,6 +447,10 @@ def _normalize_models_document(payload: dict[str, Any]) -> dict[str, Any]:
                 "baseUrl": _safe_text(raw_provider.get("baseUrl")),
                 "apiKey": _safe_text(raw_provider.get("apiKey")),
                 "api": _safe_text(raw_provider.get("api")) or "openai-completions",
+                "headers": _normalize_provider_headers(
+                    raw_provider.get("headers"),
+                    field_name=f"providers.{provider_name}.headers",
+                ),
                 "models": normalized_provider_models,
             }
         )
@@ -558,6 +597,7 @@ def _model_role_editor_snapshot(role: str) -> dict[str, Any]:
             "provider_name": provider_name,
             "base_url": provider.baseUrl,
             "api_key": provider.apiKey,
+            "headers": dict(provider.headers),
             "api_style": provider.api,
             "model_id": model.id,
             "display_name": model.name,
@@ -615,6 +655,10 @@ async def run_models_latency_check(
     api_style = _safe_text(payload.api_style) or "openai-completions"
     base_url = _safe_text(payload.base_url)
     api_key = str(payload.api_key or "").strip()
+    headers = _normalize_provider_headers(
+        payload.headers,
+        field_name="headers",
+    )
 
     if api_style != "openai-completions":
         raise HTTPException(
@@ -631,6 +675,8 @@ async def run_models_latency_check(
     }
     if base_url:
         client_kwargs["base_url"] = base_url
+    if headers:
+        client_kwargs["default_headers"] = headers
     client = AsyncOpenAI(**client_kwargs)
 
     started = time.perf_counter()

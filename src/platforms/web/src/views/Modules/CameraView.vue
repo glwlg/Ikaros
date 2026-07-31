@@ -55,6 +55,14 @@ declare global {
             config: MediaMTXWebRTCReaderConfig
         ) => MediaMTXWebRTCReaderInstance
     }
+
+    interface HTMLVideoElement {
+        webkitPresentationMode?: 'inline' | 'picture-in-picture' | 'fullscreen'
+        webkitSetPresentationMode?: (
+            mode: 'inline' | 'picture-in-picture' | 'fullscreen'
+        ) => void
+        webkitSupportsPresentationMode?: (mode: string) => boolean
+    }
 }
 
 interface CameraForm {
@@ -108,6 +116,7 @@ let readerScriptPromise: Promise<void> | null = null
 let previewFrameId: number | null = null
 let pipFrameId: number | null = null
 let pipCanvasStream: MediaStream | null = null
+let pipWarmupPromise: Promise<boolean> | null = null
 let zoomPan:
     | {
         pointerId: number
@@ -155,6 +164,16 @@ const canUseDigitalZoom = computed(() =>
 const canOpenZoomPip = computed(() =>
     canUseDirectWebRtc.value && directStreamReady.value && isPictureInPictureSupported()
 )
+const canUseZoomedCanvasPip = () => canUseCanvasCaptureStream()
+
+const prefersNativePictureInPicture = () => {
+    if (typeof navigator === 'undefined') return false
+    const ua = navigator.userAgent || ''
+    const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+        (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1)
+    const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|FxiOS|EdgiOS|Android/i.test(ua)
+    return isIOS || isSafari
+}
 const zoomLabel = computed(() =>
     `${digitalZoom.value.toFixed(2).replace(/\.00$/, '').replace(/0$/, '')}x`
 )
@@ -350,9 +369,32 @@ const stopPtz = async (forceOrEvent: boolean | Event = false) => {
 
 const isPictureInPictureSupported = () =>
     typeof document !== 'undefined' &&
-    document.pictureInPictureEnabled &&
     typeof HTMLVideoElement !== 'undefined' &&
-    typeof HTMLVideoElement.prototype.requestPictureInPicture === 'function'
+    (
+        (
+            !!document.pictureInPictureEnabled &&
+            typeof HTMLVideoElement.prototype.requestPictureInPicture === 'function'
+        ) ||
+        typeof HTMLVideoElement.prototype.webkitSetPresentationMode === 'function'
+    )
+
+const isPipActiveForVideo = (video: HTMLVideoElement | null | undefined) =>
+    !!video && (
+        document.pictureInPictureElement === video ||
+        video.webkitPresentationMode === 'picture-in-picture'
+    )
+
+const canUseCanvasCaptureStream = () =>
+    typeof HTMLCanvasElement !== 'undefined' &&
+    typeof HTMLCanvasElement.prototype.captureStream === 'function'
+
+const isVideoReadyForPictureInPicture = (video: HTMLVideoElement | null | undefined) =>
+    !!video &&
+    !video.paused &&
+    !video.ended &&
+    video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+    video.videoWidth > 0 &&
+    video.videoHeight > 0
 
 const clampZoom = (value: number) => {
     const stepped = Math.round(value / DIGITAL_ZOOM_STEP) * DIGITAL_ZOOM_STEP
@@ -516,6 +558,9 @@ const startPreviewRenderer = () => {
         if (directStreamReady.value) {
             drawZoomedFrame(previewCanvasRef.value)
             drawOverviewFrame()
+            if (canOpenZoomPip.value && !pipCanvasStream && !prefersNativePictureInPicture()) {
+                void ensurePipWarmup()
+            }
         }
         previewFrameId = window.requestAnimationFrame(render)
     }
@@ -565,6 +610,7 @@ const stopDirectWebRtc = () => {
     directStreamGeneration += 1
     directStreamReady.value = false
     directStreamError.value = ''
+    stopPipCanvasStream()
     stopPreviewRenderer()
     if (mediamtxReader) {
         mediamtxReader.close()
@@ -621,6 +667,9 @@ const startDirectWebRtc = async () => {
                 directStreamReady.value = true
                 directStreamError.value = ''
                 startPreviewRenderer()
+                if (!prefersNativePictureInPicture()) {
+                    void ensurePipWarmup()
+                }
             },
         })
     } catch (error: any) {
@@ -639,6 +688,7 @@ const stopPipCanvasStream = () => {
         pipCanvasStream.getTracks().forEach((track) => track.stop())
         pipCanvasStream = null
     }
+    pipWarmupPromise = null
     if (pipVideoRef.value) {
         pipVideoRef.value.pause()
         pipVideoRef.value.srcObject = null
@@ -650,44 +700,240 @@ const drawZoomedPipFrame = () => {
     pipFrameId = window.requestAnimationFrame(drawZoomedPipFrame)
 }
 
-const toggleZoomedPictureInPicture = async () => {
-    const pipVideo = pipVideoRef.value
-    const canvas = pipCanvasRef.value
-    const source = liveVideoRef.value
-    if (!pipVideo || !canvas || !source || !canOpenZoomPip.value) return
-
-    try {
-        if (document.pictureInPictureElement === pipVideo) {
-            await document.exitPictureInPicture()
-            return
-        }
-        if (document.pictureInPictureElement) {
-            await document.exitPictureInPicture()
-        }
-        stopPipCanvasStream()
-        canvas.width = source.videoWidth || 1280
-        canvas.height = source.videoHeight || 720
-        pipCanvasStream = canvas.captureStream(24)
-        pipVideo.srcObject = pipCanvasStream
-        drawZoomedPipFrame()
-        await pipVideo.play()
-        await pipVideo.requestPictureInPicture()
-    } catch (error: any) {
-        alert(error?.message || '画中画打开失败')
-        stopPipCanvasStream()
-    }
-}
-
-const handlePipEnter = () => {
-    pipActive.value = true
+const startPipRenderer = () => {
     if (pipFrameId === null) {
         drawZoomedPipFrame()
     }
 }
 
+const syncPipVideoMetrics = (
+    video: HTMLVideoElement,
+    width: number,
+    height: number
+) => {
+    // iOS often refuses PiP when the element is 1x1 / zero-sized.
+    video.width = width
+    video.height = height
+    video.style.width = `${Math.max(2, Math.round(width / 4))}px`
+    video.style.height = `${Math.max(2, Math.round(height / 4))}px`
+}
+
+const ensurePipWarmup = async () => {
+    if (pipWarmupPromise) return pipWarmupPromise
+
+    pipWarmupPromise = (async () => {
+        const pipVideo = pipVideoRef.value
+        const canvas = pipCanvasRef.value
+        const source = liveVideoRef.value
+        if (
+            !pipVideo ||
+            !canvas ||
+            !source ||
+            !canOpenZoomPip.value ||
+            !canUseZoomedCanvasPip() ||
+            source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+            source.videoWidth <= 0 ||
+            source.videoHeight <= 0
+        ) {
+            return false
+        }
+
+        const width = source.videoWidth || 1280
+        const height = source.videoHeight || 720
+        ensureCanvasSize(canvas, width, height)
+        drawZoomedFrame(canvas)
+        syncPipVideoMetrics(pipVideo, width, height)
+
+        const streamEnded = !!pipCanvasStream?.getTracks().some((track) => track.readyState === 'ended')
+        if (!pipCanvasStream || streamEnded || pipVideo.srcObject !== pipCanvasStream) {
+            if (pipCanvasStream) {
+                pipCanvasStream.getTracks().forEach((track) => track.stop())
+                pipCanvasStream = null
+            }
+            pipCanvasStream = canvas.captureStream(24)
+            pipVideo.srcObject = pipCanvasStream
+        }
+
+        startPipRenderer()
+
+        if (pipVideo.paused || pipVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+            try {
+                await pipVideo.play()
+            } catch (error) {
+                if (!isBenignPlayError(error)) {
+                    console.warn(error)
+                }
+            }
+        }
+
+        return isVideoReadyForPictureInPicture(pipVideo)
+    })()
+
+    try {
+        return await pipWarmupPromise
+    } finally {
+        pipWarmupPromise = null
+    }
+}
+
+const enterPictureInPicture = (video: HTMLVideoElement) => {
+    try {
+        video.disablePictureInPicture = false
+    } catch {
+        // ignore read-only failures
+    }
+
+    if (
+        typeof video.requestPictureInPicture === 'function' &&
+        document.pictureInPictureEnabled
+    ) {
+        return video.requestPictureInPicture()
+    }
+    if (
+        typeof video.webkitSetPresentationMode === 'function' &&
+        (
+            typeof video.webkitSupportsPresentationMode !== 'function' ||
+            video.webkitSupportsPresentationMode('picture-in-picture')
+        )
+    ) {
+        video.webkitSetPresentationMode('picture-in-picture')
+        return Promise.resolve(video)
+    }
+    return Promise.reject(new Error('当前浏览器不支持画中画'))
+}
+
+const exitPictureInPicture = async (video?: HTMLVideoElement | null) => {
+    if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture()
+        return
+    }
+    const candidates = [video, pipVideoRef.value, liveVideoRef.value].filter(
+        (item): item is HTMLVideoElement => !!item
+    )
+    for (const candidate of candidates) {
+        if (
+            typeof candidate.webkitSetPresentationMode === 'function' &&
+            candidate.webkitPresentationMode === 'picture-in-picture'
+        ) {
+            candidate.webkitSetPresentationMode('inline')
+            return
+        }
+    }
+}
+
+const describePipError = (error: any) => {
+    const message = String(error?.message || error || '')
+    if (
+        error?.name === 'NotAllowedError' ||
+        /user activation|not allowed|not permitted/i.test(message)
+    ) {
+        return 'iOS/Safari 要求在点击瞬间直接打开画中画。请等画面出来后再点一次。'
+    }
+    if (/not ready to enter the Picture-in-Picture mode/i.test(message)) {
+        return '画中画视频还没准备好。已优先尝试原生直播画面；请等画面稳定后再点一次。'
+    }
+    return message || '画中画打开失败'
+}
+
+const resolvePipTarget = () => {
+    const liveVideo = liveVideoRef.value
+    const pipVideo = pipVideoRef.value
+    const canvas = pipCanvasRef.value
+    const source = liveVideo
+    const nativeReady = isVideoReadyForPictureInPicture(liveVideo)
+    const zoomedReady = !!(
+        pipVideo &&
+        canvas &&
+        source &&
+        canUseZoomedCanvasPip() &&
+        pipCanvasStream &&
+        pipVideo.srcObject === pipCanvasStream &&
+        isVideoReadyForPictureInPicture(pipVideo)
+    )
+
+    // iOS/Safari often never make canvas.captureStream() PiP-ready, so prefer
+    // the real live WebRTC video there. Desktop can keep zoomed canvas PiP.
+    if (prefersNativePictureInPicture()) {
+        if (nativeReady) {
+            return { video: liveVideo as HTMLVideoElement, mode: 'native' as const }
+        }
+        if (zoomedReady) {
+            return { video: pipVideo as HTMLVideoElement, mode: 'zoomed' as const }
+        }
+        return null
+    }
+
+    if (zoomedReady) {
+        return { video: pipVideo as HTMLVideoElement, mode: 'zoomed' as const }
+    }
+    if (nativeReady) {
+        return { video: liveVideo as HTMLVideoElement, mode: 'native' as const }
+    }
+    return null
+}
+
+const toggleZoomedPictureInPicture = () => {
+    const liveVideo = liveVideoRef.value
+    const pipVideo = pipVideoRef.value
+    if (!canOpenZoomPip.value || !liveVideo) return
+
+    try {
+        if (isPipActiveForVideo(pipVideo) || isPipActiveForVideo(liveVideo)) {
+            void exitPictureInPicture(
+                isPipActiveForVideo(pipVideo) ? pipVideo : liveVideo
+            ).catch((error) => {
+                alert(describePipError(error))
+            })
+            return
+        }
+
+        // Keep the click handler free of awaits so iOS still treats this as user activation.
+        const target = resolvePipTarget()
+        if (!target) {
+            void ensurePipWarmup()
+            throw new Error('画面还没准备好进入画中画，请等直播画面稳定后再试')
+        }
+
+        if (target.mode === 'zoomed') {
+            startPipRenderer()
+        } else {
+            // Keep warming canvas PiP in the background for browsers that can use it later.
+            void ensurePipWarmup()
+        }
+
+        void Promise.resolve(enterPictureInPicture(target.video)).catch((error) => {
+            // If zoomed canvas path failed readiness-style, immediately retry native live video
+            // while we still have a user gesture on some browsers.
+            if (
+                target.mode === 'zoomed' &&
+                isVideoReadyForPictureInPicture(liveVideo)
+            ) {
+                void Promise.resolve(enterPictureInPicture(liveVideo)).catch((nativeError) => {
+                    alert(describePipError(nativeError))
+                    void ensurePipWarmup()
+                })
+                return
+            }
+            alert(describePipError(error))
+            void ensurePipWarmup()
+        })
+    } catch (error: any) {
+        alert(describePipError(error))
+        void ensurePipWarmup()
+    }
+}
+
+const handlePipEnter = () => {
+    pipActive.value = true
+    if (isPipActiveForVideo(pipVideoRef.value)) {
+        startPipRenderer()
+    }
+}
+
 const handlePipLeave = () => {
     pipActive.value = false
-    stopPipCanvasStream()
+    // Keep the canvas stream warm for browsers that can use zoomed PiP.
+    void ensurePipWarmup()
 }
 
 watch(
@@ -821,6 +1067,9 @@ onBeforeUnmount(() => {
               autoplay
               muted
               playsinline
+              webkit-playsinline
+              @enterpictureinpicture="handlePipEnter"
+              @leavepictureinpicture="handlePipLeave"
             />
             <div v-if="!directStreamReady && !directStreamError" class="absolute inset-0 flex items-center justify-center text-slate-100">
               <Loader2 class="h-8 w-8 animate-spin" />
@@ -871,8 +1120,10 @@ onBeforeUnmount(() => {
           <video
             ref="pipVideoRef"
             class="camera-pip-video"
+            autoplay
             muted
             playsinline
+            webkit-playsinline
             @enterpictureinpicture="handlePipEnter"
             @leavepictureinpicture="handlePipLeave"
           />
@@ -1061,12 +1312,13 @@ onBeforeUnmount(() => {
 
 .camera-source-video {
   position: fixed;
-  left: -9999px;
-  top: -9999px;
-  width: 1px;
-  height: 1px;
+  left: 0;
+  top: 0;
+  width: 320px;
+  height: 180px;
   opacity: 0;
   pointer-events: none;
+  z-index: -1;
 }
 
 .camera-live-video {
@@ -1121,12 +1373,13 @@ onBeforeUnmount(() => {
 .camera-pip-video,
 .camera-pip-canvas {
   position: fixed;
-  left: -9999px;
-  top: -9999px;
-  width: 1px;
-  height: 1px;
+  left: 0;
+  top: 0;
+  width: 320px;
+  height: 180px;
   opacity: 0;
   pointer-events: none;
+  z-index: -1;
 }
 
 .camera-live-controls button:disabled {

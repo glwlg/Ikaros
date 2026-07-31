@@ -9,8 +9,15 @@ URL_REGEX = re.compile(
     r"(https?://(?:www\.)?(?:twitter\.com|x\.com)/[^/]+/status/\d+|"
     r"https?://(?:www\.)?instagram\.com/(?:p|reel|reels)/[\w-]+|"
     r"https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[\w-]+|"
-    r"https?://(?:www\.|m\.)?(?:tiktok\.com|douyin\.com)/.+/video/\d+|"
+    r"https?://(?:www\.|m\.)?tiktok\.com/.+/video/\d+|"
     r"https?://vt\.tiktok\.com/[\w\d]+/?|"
+    r"https?://(?:www\.)?douyin\.com/video/\d+|"
+    r"https?://v\.douyin\.com/[\w-]+/?|"
+    r"https?://(?:www\.)?iesdouyin\.com/share/video/\d+/?|"
+    r"https?://(?:www\.)?weibo\.com/\d+/[A-Za-z0-9]+|"
+    r"https?://m\.weibo\.cn/(?:status|detail)/[A-Za-z0-9]+|"
+    r"https?://(?:www\.)?weibo\.com/tv/show/\d+:(?:[\da-fA-F]{32}|\d{16,})|"
+    r"https?://video\.weibo\.com/show/?\?(?:[^\s#]+&)?fid=\d+:(?:[\da-fA-F]{32}|\d{16,})|"
     r"https?://(?:www\.)?bilibili\.com/video/BV[\w]+)"
 )
 

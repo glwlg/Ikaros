@@ -331,7 +331,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="pageRef"
-    class="accounting-page-pad"
+    class="accounting-page-pad accounting-overview-page"
     @touchstart="handleTouchStart"
     @touchmove="handleTouchMove"
     @touchend="handleTouchEnd"
@@ -348,11 +348,11 @@ onBeforeUnmount(() => {
     <PullRefreshIndicator :distance="pullDistance" :hint="pullHint" :refreshing="refreshing" />
 
     <!-- Book Selector -->
-    <div class="px-4 pt-4 pb-2 flex items-center justify-between">
+    <div class="px-4 pt-3 pb-2 flex items-center justify-between">
       <div class="relative">
         <button
           type="button"
-          class="flex items-center gap-1 text-lg font-bold text-theme-primary"
+          class="accounting-ledger-select flex items-center gap-1 text-lg font-bold text-theme-primary"
           @click="showBookDropdown = !showBookDropdown"
         >
           {{ store.books.find(b => b.id === store.currentBookId)?.name || '选择账本' }}
@@ -443,7 +443,7 @@ onBeforeUnmount(() => {
 
     <template v-if="store.currentBookId">
       <!-- Month navigation -->
-      <div class="mx-3 sm:mx-4 mt-1 flex items-center justify-between rounded-2xl bg-theme-elevated border border-theme-secondary px-1 py-1.5 shadow-sm">
+      <div class="accounting-month-switcher mx-3 sm:mx-4 mt-1 flex items-center justify-between rounded-2xl bg-theme-elevated border border-theme-secondary px-1 py-1.5 shadow-sm">
         <button type="button" class="accounting-touch-target inline-flex items-center justify-center p-2 rounded-xl active:bg-theme-secondary" aria-label="上一月" @click="prevMonth">
           <ChevronLeft class="w-5 h-5 text-theme-secondary" />
         </button>
@@ -454,7 +454,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- Monthly Summary Card -->
-      <div class="mx-3 sm:mx-4 mt-3 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary overflow-hidden">
+      <div class="accounting-summary-card mx-3 sm:mx-4 mt-3 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary overflow-hidden">
         <div class="p-3 sm:p-4">
           <RouterLink
             :to="{ name: 'StatsAmountDetail', query: { year: currentYear, month: currentMonth, type: '支出' } }"
@@ -463,25 +463,28 @@ onBeforeUnmount(() => {
             <span class="text-sm text-theme-muted">{{ currentMonth }}月收支</span>
             <ChevronRight class="w-4 h-4 text-accounting-brand" />
           </RouterLink>
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-3 gap-2">
             <div class="min-w-0">
               <p class="text-xs text-theme-muted mb-1">支出</p>
-              <p class="text-xl sm:text-2xl font-bold text-accounting-expense tabular-nums break-all leading-tight">
+              <p class="text-lg sm:text-2xl font-bold text-accounting-expense tabular-nums break-all leading-tight">
                 {{ formatAccountingMoney(summary.expense) }}
               </p>
             </div>
             <div class="min-w-0">
               <p class="text-xs text-theme-muted mb-1">收入</p>
-              <p class="text-xl sm:text-2xl font-bold text-accounting-income tabular-nums break-all leading-tight">
+              <p class="text-lg sm:text-2xl font-bold text-accounting-income tabular-nums break-all leading-tight">
                 {{ formatAccountingMoney(summary.income) }}
               </p>
             </div>
+            <div class="min-w-0">
+              <p class="text-xs text-theme-muted mb-1">结余</p>
+              <p class="text-lg sm:text-2xl font-bold text-theme-primary tabular-nums break-all leading-tight">
+                {{ formatAccountingMoney(summary.balance) }}
+              </p>
+            </div>
           </div>
-          <p class="text-xs text-theme-muted mt-2">
-            结余 {{ formatAccountingMoney(summary.balance) }}
-          </p>
         </div>
-        <div ref="chartRef" class="w-full h-[120px]" />
+        <div ref="chartRef" class="w-full h-[148px]" />
       </div>
 
       <!-- Recent Transactions -->

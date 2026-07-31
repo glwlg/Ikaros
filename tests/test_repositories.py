@@ -138,6 +138,39 @@ class TestWatchlistRepo:
         }
 
 
+    @pytest.mark.asyncio
+    async def test_last_stock_push_message_edit_gate(self, mock_db):
+        from core.state_io import init_db
+        from extension.skills.learned.stock_watch.scripts.store import (
+            clear_last_stock_push_message,
+            get_editable_stock_push_message_id,
+            get_last_stock_push_message,
+            mark_stock_push_chat_activity,
+            save_last_stock_push_message,
+        )
+
+        await init_db()
+        await clear_last_stock_push_message(12345)
+
+        await save_last_stock_push_message(
+            12345,
+            platform="telegram",
+            chat_id="777",
+            message_id="msg-1",
+            text="quotes",
+        )
+        assert await get_editable_stock_push_message_id(
+            12345, platform="telegram", chat_id="777"
+        ) == "msg-1"
+
+        await mark_stock_push_chat_activity("telegram", "777")
+        current = await get_last_stock_push_message(12345)
+        assert current["is_latest"] is False
+        assert await get_editable_stock_push_message_id(
+            12345, platform="telegram", chat_id="777"
+        ) == ""
+
+
 class TestReminderRepo:
     """测试提醒 Repository"""
 

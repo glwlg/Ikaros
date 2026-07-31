@@ -289,6 +289,10 @@ const renderPie = () => {
     }
     if (!pieChart) return false
 
+    const themeStyles = getComputedStyle(document.documentElement)
+    const primaryTextColor = themeStyles.getPropertyValue('--color-text-primary').trim() || '#111827'
+    const secondaryTextColor = themeStyles.getPropertyValue('--color-text-secondary').trim() || '#9ca3af'
+
     const data = categoryData.value.map((item, index) => ({
         name: item.category,
         value: item.amount,
@@ -311,14 +315,14 @@ const renderPie = () => {
             type: 'text',
             left: 'center',
             top: '42%',
-            style: { text: '全部', fill: '#9ca3af', fontSize: 12 },
+            style: { text: '全部', fill: secondaryTextColor, fontSize: 12 },
         }, {
             type: 'text',
             left: 'center',
             top: '52%',
             style: {
                 text: formatAccountingMoney(totalCategory()),
-                fill: '#111827',
+                fill: primaryTextColor,
                 fontSize: 16,
                 fontWeight: 'bold',
             },
@@ -692,7 +696,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     ref="pageRef"
-    class="accounting-page-pad"
+    class="accounting-page-pad accounting-stats-page"
     @touchstart="handleTouchStart"
     @touchmove="handleTouchMove"
     @touchend="handleTouchEnd"

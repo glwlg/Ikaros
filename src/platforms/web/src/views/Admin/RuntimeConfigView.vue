@@ -43,6 +43,16 @@ const adminIdsInput = ref('')
 const soulBrief = ref('')
 const userBrief = ref('')
 
+const featureDescriptions: Record<string, string> = {
+    web_chat_uploads: '允许在 Web 对话中上传文件和图片',
+    web_chat_tts: '允许在 Web 对话中使用文字转语音',
+    admin_console: '启用 Web 管理后台入口',
+    routing_model_enabled: '回复前调用 Routing 模型判断请求类型并筛选 Skill；关闭后由主模型直接处理',
+}
+
+const describeFeature = (name: string) =>
+    featureDescriptions[name] || '控制对应的运行时功能'
+
 const parseErrorMessage = (error: unknown, fallback: string) => {
     if (axios.isAxiosError(error)) {
         const detail = error.response?.data?.detail
@@ -423,7 +433,7 @@ onMounted(load)
         <article class="runtime-card option-card">
           <h2>功能开关</h2>
           <label v-for="name in Object.keys(form.features)" :key="name" class="toggle-row">
-            <span>{{ name }}<small>控制 Web console 与后台功能入口</small></span>
+            <span>{{ name }}<small>{{ describeFeature(name) }}</small></span>
             <input v-model="form.features[name]" type="checkbox">
           </label>
         </article>

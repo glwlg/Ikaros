@@ -134,6 +134,9 @@ def test_stock_rss_schedule_deploy_subcommand_parsers():
         "video",
         "https://example.com",
     )
+    assert download._parse_login_command("/login douyin") == "douyin"
+    assert download._parse_login_command("/login 微博") == "weibo"
+    assert download._parse_login_command("/login unknown") is None
 
 
 def test_skill_command_registration_is_converged():
@@ -192,4 +195,4 @@ def test_skill_command_registration_is_converged():
 
     download_manager = _FakeAdapterManager()
     download.register_handlers(download_manager)
-    assert download_manager.commands == ["download"]
+    assert download_manager.commands == ["download", "login"]

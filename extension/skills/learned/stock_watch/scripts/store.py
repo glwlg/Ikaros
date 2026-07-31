@@ -25,12 +25,33 @@ def _last_push_prices_path(user_id: int | str):
     return user_state_path(user_id, "stock_watch", "last_push_prices.md")
 
 
+def _last_push_message_path(user_id: int | str):
+    return user_state_path(user_id, "stock_watch", "last_push_message.md")
+
+
 def _normalize_delivery_target(raw: dict[str, Any] | None) -> dict[str, str]:
     payload = dict(raw or {})
     return {
         "platform": normalize_platform(payload.get("platform")),
         "chat_id": str(payload.get("chat_id") or "").strip(),
         "updated_at": str(payload.get("updated_at") or now_iso()),
+    }
+
+
+def _normalize_last_push_message(raw: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(raw or {})
+    platform = normalize_platform(payload.get("platform"))
+    chat_id = str(payload.get("chat_id") or "").strip()
+    message_id = str(payload.get("message_id") or "").strip()
+    if not platform or not chat_id or not message_id:
+        return {}
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": str(payload.get("text") or ""),
+        "updated_at": str(payload.get("updated_at") or now_iso()),
+        "is_latest": bool(payload.get("is_latest", True)),
     }
 
 
@@ -103,6 +124,86 @@ async def save_last_stock_push_prices(
             "prices": prices,
         },
     )
+
+
+async def get_last_stock_push_message(user_id: int | str) -> dict[str, Any]:
+    data = await storage_service.read(_last_push_message_path(user_id), {})
+    if not isinstance(data, dict):
+        return {}
+    return _normalize_last_push_message(data)
+
+
+async def save_last_stock_push_message(
+    user_id: int | str,
+    *,
+    platform: str,
+    chat_id: str,
+    message_id: str,
+    text: str = "",
+) -> dict[str, Any]:
+    normalized = _normalize_last_push_message(
+        {
+            "platform": platform,
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "updated_at": now_iso(),
+            "is_latest": True,
+        }
+    )
+    if not normalized:
+        raise ValueError("platform, chat_id and message_id are required")
+    await storage_service.write(_last_push_message_path(user_id), normalized)
+    return normalized
+
+
+async def clear_last_stock_push_message(user_id: int | str) -> None:
+    await storage_service.write(_last_push_message_path(user_id), {})
+
+
+async def mark_stock_push_chat_activity(
+    platform: str,
+    chat_id: str,
+    *,
+    user_id: int | str = "",
+) -> None:
+    """Mark that the delivery chat has newer activity than the last stock push."""
+    target_platform = normalize_platform(platform)
+    target_chat_id = str(chat_id or "").strip()
+    if not target_platform or not target_chat_id:
+        return
+
+    scope = str(user_id or "").strip() or ""
+    current = await get_last_stock_push_message(scope)
+    if not current:
+        return
+    if (
+        str(current.get("platform") or "") != target_platform
+        or str(current.get("chat_id") or "") != target_chat_id
+    ):
+        return
+    if not bool(current.get("is_latest")):
+        return
+
+    current["is_latest"] = False
+    current["updated_at"] = now_iso()
+    await storage_service.write(_last_push_message_path(scope), current)
+
+
+async def get_editable_stock_push_message_id(
+    user_id: int | str,
+    *,
+    platform: str,
+    chat_id: str,
+) -> str:
+    current = await get_last_stock_push_message(user_id)
+    if not current or not bool(current.get("is_latest")):
+        return ""
+    if normalize_platform(platform) != str(current.get("platform") or ""):
+        return ""
+    if str(chat_id or "").strip() != str(current.get("chat_id") or "").strip():
+        return ""
+    return str(current.get("message_id") or "").strip()
 
 
 def _normalize_watchlist_row(raw: dict[str, Any]) -> dict[str, Any]:
@@ -232,11 +333,16 @@ async def get_all_watchlist_users() -> list[tuple[int | str, str]]:
 
 __all__ = [
     "add_watchlist_stock",
+    "clear_last_stock_push_message",
     "get_all_watchlist_users",
+    "get_editable_stock_push_message_id",
+    "get_last_stock_push_message",
     "get_last_stock_push_prices",
     "get_stock_delivery_target",
     "get_user_watchlist",
+    "mark_stock_push_chat_activity",
     "remove_watchlist_stock",
+    "save_last_stock_push_message",
     "save_last_stock_push_prices",
     "set_stock_delivery_target",
 ]

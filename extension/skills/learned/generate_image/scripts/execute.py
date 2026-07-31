@@ -100,6 +100,20 @@ def _should_fallback_to_chat_completions(detail: str) -> bool:
         "404" in lowered
         or "page not found" in lowered
         or "images.generate" in lowered
+        or "401" in lowered
+        or "invalid_api_key" in lowered
+        or "authentication_error" in lowered
+        or "admission credentials" in lowered
+        or "not supported" in lowered
+        or "unknown_error" in lowered
+    )
+
+
+def _should_retry_without_bearer_auth(detail: str) -> bool:
+    lowered = str(detail or "").strip().lower()
+    return (
+        "built-in image generation needs an openai upstream" in lowered
+        and "opencodex" in lowered
     )
 
 
@@ -274,8 +288,48 @@ async def execute(
         }
     except Exception as exc:
         detail = str(exc or "").strip()
-        logger.warning("generate_image images API failed: %s", detail or exc)
-        if _should_fallback_to_chat_completions(detail):
+        retry_without_bearer = _should_retry_without_bearer_auth(detail)
+        if retry_without_bearer:
+            logger.info(
+                "generate_image detected an OpenCodex admission bearer conflict; "
+                "retrying without bearer auth"
+            )
+        else:
+            logger.warning("generate_image images API failed: %s", detail or exc)
+
+        if retry_without_bearer:
+            compat_client = get_client_for_model(
+                model_key,
+                is_async=False,
+                suppress_bearer_auth=True,
+            )
+            try:
+                response = await _generate_via_images_api(
+                    compat_client,
+                    model_key=model_key,
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "generate_image OpenCodex compatibility retry timed out after %s seconds",
+                    IMAGE_GENERATION_TIMEOUT_SECONDS,
+                )
+                return {
+                    "success": False,
+                    "failure_mode": "recoverable",
+                    "text": f"❌ 生图超时（{IMAGE_GENERATION_TIMEOUT_SECONDS} 秒），请稍后重试或简化提示词。",
+                }
+            except Exception as compat_exc:
+                detail = str(compat_exc or "").strip() or detail
+                logger.warning(
+                    "generate_image OpenCodex compatibility retry failed: %s",
+                    detail,
+                )
+            else:
+                detail = ""
+
+        if detail and _should_fallback_to_chat_completions(detail):
             try:
                 response = await _generate_via_chat_completions(
                     client,
@@ -309,7 +363,7 @@ async def execute(
                         " 或 `chat.completions` 图片输出兼容。"
                     ),
                 }
-        else:
+        elif detail:
             logger.error("generate_image failed: %s", detail or exc)
             return {
                 "success": False,

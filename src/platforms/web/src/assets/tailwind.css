@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* The app toggles `dark` on <html>; Tailwind v4 otherwise follows the system. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* ========================================
    Tailwind v4 主题配置
    支持亮/暗色模式

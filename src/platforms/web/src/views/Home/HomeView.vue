@@ -397,7 +397,7 @@ onMounted(loadDashboardStatus)
 .side-panel {
   border: 1px solid var(--panel-border);
   border-radius: 14px;
-  background: #fff;
+  background: var(--color-bg-elevated);
   box-shadow: var(--shadow-card);
 }
 
@@ -438,7 +438,7 @@ onMounted(loadDashboardStatus)
   gap: 10px;
   border: 0;
   border-radius: 10px;
-  background: #f8fafc;
+  background: var(--panel-muted);
   color: var(--text-body);
   padding: 11px 16px;
 }
@@ -574,7 +574,7 @@ onMounted(loadDashboardStatus)
   padding: 24px 22px;
   border: 1px solid var(--panel-border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--color-bg-elevated);
   color: inherit;
   text-decoration: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
@@ -666,8 +666,8 @@ onMounted(loadDashboardStatus)
   width: 36px;
   height: 36px;
   border-radius: 9px;
-  color: #667085;
-  background: #f2f4f7;
+  color: var(--text-muted);
+  background: var(--panel-muted);
 }
 
 .activity-copy h3 {
@@ -692,7 +692,7 @@ onMounted(loadDashboardStatus)
 .empty-note {
   border: 1px dashed var(--panel-border);
   border-radius: 10px;
-  background: #fbfdff;
+  background: var(--panel-soft);
   color: var(--text-muted);
   padding: 18px;
   text-align: center;
@@ -824,6 +824,16 @@ onMounted(loadDashboardStatus)
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+:global(.dark .tone-teal .stat-icon) {
+  background: #132d2a;
+  color: #3dd68c;
+}
+
+:global(.dark .tone-violet .stat-icon) {
+  background: #241741;
+  color: #b9a5ff;
 }
 
 @media (max-width: 1600px) {

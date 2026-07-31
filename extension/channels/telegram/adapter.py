@@ -18,6 +18,17 @@ from core.platform.exceptions import MessageSendError
 from .mapper import map_update_to_message
 from .formatter import markdown_to_telegram_html
 
+
+async def _mark_stock_push_chat_activity(platform: str, chat_id: str) -> None:
+    try:
+        from extension.skills.learned.stock_watch.scripts.store import (
+            mark_stock_push_chat_activity,
+        )
+
+        await mark_stock_push_chat_activity(platform, chat_id)
+    except Exception:
+        logger.debug("Failed to mark stock push chat activity", exc_info=True)
+
 logger = logging.getLogger(__name__)
 
 
@@ -199,7 +210,7 @@ class TelegramAdapter(BotAdapter):
             if not reply_markup and ui:
                 reply_markup = self._render_ui(ui)
 
-            return await self._send_with_retry(
+            result = await self._send_with_retry(
                 lambda: self.bot.send_message(
                     chat_id=chat_id,
                     text=html_text,
@@ -210,6 +221,8 @@ class TelegramAdapter(BotAdapter):
                 ),
                 label="reply_text",
             )
+            await _mark_stock_push_chat_activity("telegram", str(chat_id or ""))
+            return result
         except Exception as e:
             logger.error(f"Telegram reply_text failed: {e}")
             raise MessageSendError(str(e))
@@ -231,7 +244,7 @@ class TelegramAdapter(BotAdapter):
             )
             if not reply_markup and ui:
                 reply_markup = self._render_ui(ui)
-            return await self._send_with_retry(
+            result = await self._send_with_retry(
                 lambda: self.bot.send_message(
                     chat_id=chat_id,
                     text=html_text,
@@ -242,6 +255,8 @@ class TelegramAdapter(BotAdapter):
                 ),
                 label="send_message",
             )
+            await _mark_stock_push_chat_activity("telegram", str(chat_id or ""))
+            return result
         except Exception as e:
             logger.error(f"Telegram send_message failed: {e}")
             raise MessageSendError(str(e))
@@ -669,6 +684,10 @@ class TelegramAdapter(BotAdapter):
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 unified_msg = map_update_to_message(update)
+                await _mark_stock_push_chat_activity(
+                    str(getattr(unified_msg, "platform", "") or "telegram"),
+                    str(getattr(getattr(unified_msg, "chat", None), "id", "") or ""),
+                )
                 unified_ctx = UnifiedContext(
                     message=unified_msg,
                     platform_ctx=context,
@@ -690,6 +709,10 @@ class TelegramAdapter(BotAdapter):
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 unified_msg = map_update_to_message(update)
+                await _mark_stock_push_chat_activity(
+                    str(getattr(unified_msg, "platform", "") or "telegram"),
+                    str(getattr(getattr(unified_msg, "chat", None), "id", "") or ""),
+                )
                 unified_ctx = UnifiedContext(
                     message=unified_msg,
                     platform_ctx=context,
@@ -715,6 +738,10 @@ class TelegramAdapter(BotAdapter):
                 # CallbackQuery updates might need a different mapping or just use the message inside
                 # For now, map_update_to_message handles effective_message
                 unified_msg = map_update_to_message(update)
+                await _mark_stock_push_chat_activity(
+                    str(getattr(unified_msg, "platform", "") or "telegram"),
+                    str(getattr(getattr(unified_msg, "chat", None), "id", "") or ""),
+                )
                 unified_ctx = UnifiedContext(
                     message=unified_msg,
                     platform_ctx=context,
@@ -740,6 +767,10 @@ class TelegramAdapter(BotAdapter):
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 unified_msg = map_update_to_message(update)
+                await _mark_stock_push_chat_activity(
+                    str(getattr(unified_msg, "platform", "") or "telegram"),
+                    str(getattr(getattr(unified_msg, "chat", None), "id", "") or ""),
+                )
                 unified_ctx = UnifiedContext(
                     message=unified_msg,
                     platform_ctx=context,
@@ -763,6 +794,10 @@ class TelegramAdapter(BotAdapter):
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 unified_msg = map_update_to_message(update)
+                await _mark_stock_push_chat_activity(
+                    str(getattr(unified_msg, "platform", "") or "telegram"),
+                    str(getattr(getattr(unified_msg, "chat", None), "id", "") or ""),
+                )
                 unified_ctx = UnifiedContext(
                     message=unified_msg,
                     platform_ctx=context,
@@ -786,6 +821,10 @@ class TelegramAdapter(BotAdapter):
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 unified_msg = map_update_to_message(update)
+                await _mark_stock_push_chat_activity(
+                    str(getattr(unified_msg, "platform", "") or "telegram"),
+                    str(getattr(getattr(unified_msg, "chat", None), "id", "") or ""),
+                )
                 unified_ctx = UnifiedContext(
                     message=unified_msg,
                     platform_ctx=context,

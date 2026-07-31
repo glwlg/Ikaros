@@ -8,6 +8,7 @@ export interface ModelsQuickRoleSnapshot {
     provider_name: string
     base_url: string
     api_key: string
+    headers: Record<string, string>
     api_style: string
     model_id: string
     display_name: string
@@ -46,6 +47,7 @@ export interface ModelsLatencyCheckPayload {
     provider_name: string
     base_url?: string
     api_key?: string
+    headers?: Record<string, string>
     api_style?: string
     model_id: string
 }

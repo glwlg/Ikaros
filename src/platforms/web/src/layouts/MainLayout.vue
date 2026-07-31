@@ -291,7 +291,8 @@ const handleLogout = async () => {
 <style scoped>
 .ethereal-shell {
   display: flex;
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   background: var(--color-bg-primary);
   color: var(--color-text-primary);

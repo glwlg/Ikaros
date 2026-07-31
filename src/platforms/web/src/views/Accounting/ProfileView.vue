@@ -52,16 +52,16 @@ interface SettingsItem {
 const quickImportEnabled = loadExtensionSettings().quick_import_enabled !== false
 
 const managementItems: ManagementItem[] = [
-    { icon: Grid2x2, label: '分类', color: 'bg-accounting-brand', action: 'category' },
-    { icon: ListOrdered, label: '项目', color: 'bg-accounting-brand', action: 'project' },
-    { icon: Store, label: '商家', color: 'bg-accounting-brand', action: 'merchant' },
-    { icon: Tag, label: '标签', color: 'bg-accounting-brand', action: 'tag' },
+    { icon: Grid2x2, label: '分类', color: 'accounting-tool-coral', action: 'category' },
+    { icon: ListOrdered, label: '项目', color: 'accounting-tool-gold', action: 'project' },
+    { icon: Store, label: '商家', color: 'accounting-tool-sage', action: 'merchant' },
+    { icon: Tag, label: '标签', color: 'accounting-tool-teal', action: 'tag' },
     ...(quickImportEnabled
-        ? [{ icon: Download, label: '导入', color: 'bg-accounting-brand', action: 'import' as const }]
+        ? [{ icon: Download, label: '导入', color: 'accounting-tool-coral', action: 'import' as const }]
         : []),
-    { icon: Upload, label: '导出', color: 'bg-accounting-brand', action: 'export' },
-    { icon: Share2, label: '共享', color: 'bg-accounting-brand', action: 'share' },
-    { icon: BookOpen, label: '账本', color: 'bg-accounting-brand', action: 'book' },
+    { icon: Upload, label: '导出', color: 'accounting-tool-sage', action: 'export' },
+    { icon: Share2, label: '共享', color: 'accounting-tool-gold', action: 'share' },
+    { icon: BookOpen, label: '账本', color: 'accounting-tool-teal', action: 'book' },
 ]
 
 const settingsItems: SettingsItem[] = [
@@ -220,9 +220,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="accounting-page-pad">
+  <div class="accounting-page-pad accounting-profile-page">
     <!-- User Card -->
-    <div class="mx-4 mt-4 rounded-2xl bg-accounting-brand p-5 text-white shadow-lg">
+    <div class="accounting-profile-card mx-4 mt-4 rounded-3xl p-5 text-white shadow-lg">
       <div class="flex items-center gap-4 mb-4">
         <div class="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center">
           <User class="w-8 h-8 text-white" />
@@ -254,7 +254,7 @@ onMounted(async () => {
     </div>
 
     <!-- Management Grid -->
-    <div class="mx-4 mt-4 rounded-2xl bg-theme-elevated shadow-sm border border-theme-secondary p-4">
+    <div class="accounting-tool-grid mx-4 mt-4 rounded-3xl bg-theme-elevated shadow-sm border border-theme-secondary p-4">
       <p v-if="actionMessage" class="text-xs text-accounting-brand mb-2 text-center">{{ actionMessage }}</p>
       <div class="grid grid-cols-4 gap-4">
         <button

@@ -26,7 +26,7 @@ class ExtensionRouter:
     """Simple candidate provider - LLM decides which extension to use."""
 
     def route(
-        self, user_text: str, max_candidates: int = 10
+        self, user_text: str, max_candidates: int | None = 10
     ) -> List[ExtensionCandidate]:
         """返回所有可用扩展的候选列表，让 LLM 决策选择"""
         if not user_text:
@@ -63,4 +63,6 @@ class ExtensionRouter:
                 )
             )
 
-        return results[:max_candidates]
+        if max_candidates is None:
+            return results
+        return results[: max(0, max_candidates)]

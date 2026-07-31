@@ -343,7 +343,9 @@ async def _generate_article_json(
         async_client=async_client,
         model=model_to_use,
         contents=structure_prompt,
-        config={"response_mime_type": "application/json"},
+        # Some routed openai-chat models reject response_format / json mime type.
+        # Ask for JSON in the prompt and parse free-form model text instead.
+        config={},
     )
     return normalize_article_data(
         parse_article_json(str(response_text or "")),

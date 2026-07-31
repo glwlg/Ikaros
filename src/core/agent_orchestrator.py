@@ -23,6 +23,7 @@ from core.primitive_runtime import PrimitiveRuntime
 from core.prompt_composer import prompt_composer
 from core.orchestrator_runtime_tools import RuntimeToolAssembler, ToolCallDispatcher
 from core.runtime_callbacks import get_runtime_callback
+from core.runtime_config_store import runtime_config_store
 from core.task_inbox import task_inbox
 from core.task_manager import task_manager
 from core.tool_access_store import tool_access_store
@@ -914,8 +915,13 @@ class AgentOrchestrator:
         platform_name: str,
         explicit_allowed_skill_names: set[str] | None = None,
     ) -> tuple[list[ExtensionCandidate], list[ExtensionCandidate], Any]:
+        routing_model_enabled = runtime_config_store.is_feature_enabled(
+            "routing_model_enabled",
+            default=True,
+        )
         raw_extension_candidates = self.extension_router.route(
-            routing_text, max_candidates=24
+            routing_text,
+            max_candidates=24 if routing_model_enabled else None,
         )
         extension_candidates = self._apply_extension_candidate_policy(
             raw_extension_candidates,
@@ -936,30 +942,54 @@ class AgentOrchestrator:
                 for candidate in extension_candidates
                 if candidate.name in explicit_allowed_skill_names
             ]
+        eligible_candidate_count = len(extension_candidates)
 
         dialog_messages = self._extract_recent_dialog_messages(
             message_history,
             max_messages=10,
         )
         if routing_context:
-            dialog_messages = [{"role": "user", "content": routing_context}] + dialog_messages
-        routing_decision = await intent_router.route(
-            dialog_messages=dialog_messages,
-            candidates=extension_candidates,
-            max_candidates=5,
-        )
-        selected = set(routing_decision.candidate_skills)
-        extension_candidates = [
-            candidate
-            for candidate in extension_candidates
-            if candidate.name in selected
-        ]
+            dialog_messages = [
+                {"role": "user", "content": routing_context}
+            ] + dialog_messages
+        routing_latency_ms = 0.0
+        if routing_model_enabled:
+            routing_started = time.perf_counter()
+            routing_decision = await intent_router.route(
+                dialog_messages=dialog_messages,
+                candidates=extension_candidates,
+                max_candidates=5,
+            )
+            routing_latency_ms = (time.perf_counter() - routing_started) * 1000
+            selected = set(routing_decision.candidate_skills)
+            extension_candidates = [
+                candidate
+                for candidate in extension_candidates
+                if candidate.name in selected
+            ]
+        else:
+            routing_decision = RoutingDecision(
+                request_mode="task" if routing_context else "chat",
+                task_tracking=False,
+                candidate_skills=[candidate.name for candidate in extension_candidates],
+                reason="routing_model_disabled",
+                confidence=1.0,
+            )
         if explicit_allowed_skill_names:
             extension_candidates = [
                 candidate
                 for candidate in extension_candidates
                 if candidate.name in explicit_allowed_skill_names
             ]
+        logger.info(
+            "Routing model experiment: enabled=%s raw_count=%d eligible_count=%d loaded_count=%d routed_count=%d latency_ms=%.1f",
+            routing_model_enabled,
+            len(raw_extension_candidates),
+            eligible_candidate_count,
+            len(extension_candidates),
+            len(routing_decision.candidate_skills),
+            routing_latency_ms,
+        )
         return raw_extension_candidates, extension_candidates, routing_decision
 
     def _runtime_tool_allowed(
