@@ -12,7 +12,7 @@ def test_runtime_v2_reset_backs_up_accounting_inputs_and_reinitializes_runtime(
     data_root = tmp_path / "data"
     backup_root = tmp_path / "backups"
     repo_root.mkdir()
-    (repo_root / ".env").write_text("IKAROS_KERNEL=codex\n", encoding="utf-8")
+    (repo_root / ".env").write_text("IKAROS_RUNTIME_DB_PATH=runtime.db\n", encoding="utf-8")
     data_root.mkdir()
     (data_root / "bot_data.db").write_bytes(b"bot-db")
     accounting_state = data_root / "user" / "accounting" / "state.md"
@@ -28,7 +28,7 @@ def test_runtime_v2_reset_backs_up_accounting_inputs_and_reinitializes_runtime(
     )
 
     backup_dir = Path(result["backup_dir"])
-    assert (backup_dir / ".env").read_text(encoding="utf-8") == "IKAROS_KERNEL=codex\n"
+    assert (backup_dir / ".env").read_text(encoding="utf-8") == "IKAROS_RUNTIME_DB_PATH=runtime.db\n"
     assert (backup_dir / "bot_data.db").read_bytes() == b"bot-db"
     assert (backup_dir / "state.md").read_text(encoding="utf-8") == (
         "active_book: default\n"

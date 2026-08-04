@@ -328,7 +328,6 @@ async def stop_command(ctx: UnifiedContext) -> None:
     from core.task_manager import task_manager
     from core.heartbeat_store import heartbeat_store
     from core.subagent_supervisor import subagent_supervisor
-    from core.codex_kernel import interrupt_codex_kernel_task
 
     active_info = task_manager.get_task_info(user_id)
     todo_path = active_info.get("todo_path") if isinstance(active_info, dict) else None
@@ -354,16 +353,6 @@ async def stop_command(ctx: UnifiedContext) -> None:
         session_snapshot = await session_task_store.get(str(active_task_id))
     if session_snapshot is not None and not active_task_id:
         active_task_id = str(session_snapshot.session_task_id or "")
-
-    codex_interrupted = await interrupt_codex_kernel_task(
-        user_id=str(user_id),
-        task_id=str(active_task_id or ""),
-        task_inbox_id=str(
-            (channel_active or {}).get("task_inbox_id")
-            or (hb_active or {}).get("task_inbox_id")
-            or ""
-        ),
-    )
 
     # 尝试取消任务
     cancelled_desc = await task_manager.cancel_task(user_id)
@@ -401,7 +390,7 @@ async def stop_command(ctx: UnifiedContext) -> None:
             str(user_id), f"user_cancelled:{active_task_id}"
         )
 
-    if cancelled_desc or active_task_id or subagent_cancelled_total > 0 or codex_interrupted:
+    if cancelled_desc or active_task_id or subagent_cancelled_total > 0:
         task_type_text = cancelled_desc or "subagent_background"
         lines = ["🛑 **已中断任务**", ""]
         if session_snapshot is not None:
@@ -422,8 +411,6 @@ async def stop_command(ctx: UnifiedContext) -> None:
                 "🧩 Subagent 任务: "
                 f"已取消 {subagent_cancelled_total} 个后台子任务"
             )
-        if codex_interrupted:
-            lines.append("Codex kernel：已发送 interrupt。")
         if heartbeat_path:
             lines.append(f"💓 心跳文件：`{heartbeat_path}`")
         if todo_path:
@@ -454,7 +441,6 @@ def _set_visible_session(
     scheduler_session: bool,
 ) -> None:
     from core.channel_runtime_store import channel_runtime_store
-    from core.state_paths import SINGLE_USER_SCOPE
     from user_context import SESSION_ID_KEY
 
     safe_session_id = str(session_id or "").strip()
@@ -462,12 +448,9 @@ def _set_visible_session(
     ctx.user_data["runtime_v2_session_id"] = safe_session_id
     ctx.user_data.pop("runtime_v2_turn_id", None)
     ctx.user_data.pop("runtime_v2_task_id", None)
-    if scheduler_session:
-        ctx.user_data["codex_kernel_session_platform"] = "scheduler"
-        ctx.user_data["codex_kernel_session_user_id"] = SINGLE_USER_SCOPE
-    else:
-        ctx.user_data.pop("codex_kernel_session_platform", None)
-        ctx.user_data.pop("codex_kernel_session_user_id", None)
+    ctx.user_data.pop("codex_kernel_session_platform", None)
+    ctx.user_data.pop("codex_kernel_session_user_id", None)
+    if not scheduler_session:
         ctx.user_data.pop("scheduler_instruction", None)
         ctx.user_data.pop("scheduler_rendered_instruction", None)
         ctx.user_data.pop("routing_context", None)
@@ -753,7 +736,6 @@ async def button_callback(ctx: UnifiedContext) -> int:
     try:
         if data in {"task_continue", "task_stop"}:
             from core.channel_runtime_store import channel_runtime_store
-            from core.codex_kernel import codex_kernel_provider, interrupt_codex_kernel_task
             from core.heartbeat_store import heartbeat_store
             from core.task_inbox import task_inbox
             from ikaros.relay.closure_service import ikaros_closure_service
@@ -785,20 +767,6 @@ async def button_callback(ctx: UnifiedContext) -> int:
                 or ""
             ).strip()
             if data == "task_continue":
-                codex_resume = await codex_kernel_provider.resume_waiting_task(
-                    user_id=hb_user_id,
-                    platform=platform,
-                    user_message="",
-                    source="button",
-                )
-                if bool(codex_resume.get("handled")):
-                    await heartbeat_store.append_session_event(
-                        hb_user_id, f"user_confirm_continue:{task_id}"
-                    )
-                    await ctx.reply(
-                        str(codex_resume.get("message") or "✅ 已确认继续执行。")
-                    )
-                    return CONVERSATION_END
                 resume = await ikaros_closure_service.resume_waiting_task(
                     user_id=hb_user_id,
                     user_message="",
@@ -817,11 +785,6 @@ async def button_callback(ctx: UnifiedContext) -> int:
                         )
                     )
             else:
-                await interrupt_codex_kernel_task(
-                    user_id=hb_user_id,
-                    task_id=task_id,
-                    task_inbox_id=task_inbox_id,
-                )
                 channel_runtime_store.update_active_task(
                     platform=platform,
                     platform_user_id=hb_user_id,

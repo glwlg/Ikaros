@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-import json
 import os
 
 import pytest
@@ -8,14 +7,12 @@ os.environ.setdefault("LLM_API_KEY", "test-key")
 
 from core.agent_orchestrator import AgentOrchestrator
 from core.extension_router import ExtensionCandidate
-from services.ai_service import AiService
 from services.intent_router import RoutingDecision
-import services.ai_service as ai_service_module
 
 
 @pytest.fixture(autouse=True)
-def _native_kernel(monkeypatch):
-    monkeypatch.setenv("IKAROS_KERNEL", "native")
+def _agents_sdk_kernel(monkeypatch):
+    monkeypatch.setenv("IKAROS_KERNEL", "agents_sdk")
     monkeypatch.setattr(
         "core.agent_orchestrator.runtime_config_store.is_feature_enabled",
         lambda *_args, **_kwargs: True,
@@ -71,7 +68,7 @@ async def test_orchestrator_ikaros_tool_surface_matches_current_runtime(monkeypa
         )
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(orchestrator, "_runtime_tool_allowed", lambda **_kwargs: True)
     monkeypatch.setattr(
@@ -95,8 +92,9 @@ async def test_orchestrator_ikaros_tool_surface_matches_current_runtime(monkeypa
         "coding_session",
         "git_ops",
         "gh_cli",
-        "repo_workspace",
-        "send_local_file",
+            "repo_workspace",
+            "send_message",
+            "send_local_file",
         "spawn_subagent",
         "task_tracker",
     }
@@ -135,7 +133,7 @@ async def test_orchestrator_intent_router_narrows_prompt_and_load_skill(monkeypa
         return "system"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(orchestrator, "_runtime_tool_allowed", lambda **_kwargs: True)
     monkeypatch.setattr(
@@ -265,7 +263,7 @@ async def test_orchestrator_uses_routing_context_for_scheduler_followup(monkeypa
         ]
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(orchestrator, "_runtime_tool_allowed", lambda **_kwargs: True)
     monkeypatch.setattr(orchestrator.extension_router, "route", fake_extension_route)
@@ -316,7 +314,7 @@ async def test_orchestrator_intent_router_empty_result_removes_load_skill(monkey
         return "system"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(orchestrator, "_runtime_tool_allowed", lambda **_kwargs: True)
     monkeypatch.setattr(
@@ -375,7 +373,7 @@ async def test_orchestrator_chat_mode_skips_task_tracking(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(orchestrator, "_runtime_tool_allowed", lambda **_kwargs: True)
     monkeypatch.setattr(
@@ -433,7 +431,7 @@ async def test_orchestrator_task_mode_without_tracking_skips_task_tracking(monke
         return None
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(orchestrator, "_runtime_tool_allowed", lambda **_kwargs: True)
     monkeypatch.setattr(
@@ -558,7 +556,7 @@ async def test_orchestrator_routes_with_recent_user_context(monkeypatch):
 
     monkeypatch.setattr(orchestrator.extension_router, "route", fake_route)
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         "core.agent_orchestrator.intent_router.route", fake_intent_route
@@ -604,7 +602,7 @@ async def test_orchestrator_rejects_non_injected_tool_call(monkeypatch):
         )
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -619,65 +617,3 @@ async def test_orchestrator_rejects_non_injected_tool_call(monkeypatch):
 
     assert chunks
     assert "Tool not available" in chunks[0]
-
-
-@pytest.mark.asyncio
-async def test_ai_service_returns_visible_failure_on_turn_limit(monkeypatch):
-    service = AiService()
-
-    class FakePart:
-        def __init__(self):
-            self.function_call = SimpleNamespace(name="read", args={"path": "a.txt"})
-
-    class FakeResponse:
-        def __init__(self):
-            part = FakePart()
-            self.choices = [
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content="",
-                        tool_calls=[
-                            SimpleNamespace(
-                                id="call-1",
-                                function=SimpleNamespace(
-                                    name=part.function_call.name,
-                                    arguments=json.dumps(
-                                        part.function_call.args,
-                                        ensure_ascii=False,
-                                    ),
-                                ),
-                            )
-                        ],
-                    )
-                )
-            ]
-
-    class FakeModels:
-        async def create(self, **kwargs):
-            _ = kwargs
-            return FakeResponse()
-
-    class FakeChat:
-        def __init__(self):
-            self.completions = FakeModels()
-
-    class FakeClient:
-        def __init__(self):
-            self.chat = FakeChat()
-
-    monkeypatch.setattr(ai_service_module, "openai_async_client", FakeClient())
-
-    async def fake_tool_executor(_name, _args):
-        return {"ok": True}
-
-    chunks = []
-    async for chunk in service.generate_response_stream(
-        message_history=[{"role": "user", "parts": [{"text": "test"}]}],
-        tools=[{"name": "read", "description": "", "parameters": {"type": "object"}}],
-        tool_executor=fake_tool_executor,
-        system_instruction="test",
-    ):
-        chunks.append(chunk)
-
-    assert chunks
-    assert ("轮次已达上限" in chunks[-1]) or ("重复工具调用" in chunks[-1])

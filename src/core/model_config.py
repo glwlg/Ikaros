@@ -913,7 +913,7 @@ def get_primary_model() -> str:
 
 # 便捷函数 - 兼容现有代码
 def get_current_model() -> str:
-    """获取当前使用的模型（用于AiService）"""
+    """获取当前使用的模型。"""
     _ensure_models_loaded()
     if _model_manager:
         current = _model_manager.peek_next_available_model("text", "primary")

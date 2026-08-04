@@ -74,6 +74,17 @@ class MarkdownMemoryStore:
     """Per-user markdown memory store: MEMORY.md + memory/YYYY-MM-DD.md."""
 
     MIGRATION_MARK = "<!-- migrated-from-memory-json -->"
+    CORE_SECTION = "Core"
+    ARCHIVE_SECTION = "Archive"
+    # Legacy / aliases accepted when parsing.
+    _CORE_ALIASES = {"core", "核心", "核心记忆"}
+    _ARCHIVE_ALIASES = {
+        "archive",
+        "归档",
+        "归档记忆",
+        "用户长期记忆",
+        "长期记忆",
+    }
 
     def __init__(self):
         self.users_root = user_path("private")
@@ -158,53 +169,221 @@ class MarkdownMemoryStore:
     async def initialize(self) -> None:
         self._ensure_ikaros_memory_file()
 
-    def list_user_items_sync(self, user_id: str) -> List[dict[str, Any]]:
+    @classmethod
+    def _normalize_section_name(cls, title: str) -> str:
+        raw = str(title or "").strip().lstrip("#").strip().lower()
+        if raw in cls._CORE_ALIASES:
+            return cls.CORE_SECTION
+        if raw in cls._ARCHIVE_ALIASES:
+            return cls.ARCHIVE_SECTION
+        if not raw:
+            return cls.ARCHIVE_SECTION
+        # Unknown sections collapse into archive for retrieval.
+        return cls.ARCHIVE_SECTION
+
+    def parse_user_sections(self, user_id: str) -> dict[str, List[str]]:
+        """Return {Core: [...], Archive: [...]} bullets from MEMORY.md."""
         self.ensure_migrated(user_id)
-        items: List[dict[str, Any]] = []
-        for line in self._read_text(self.memory_path(user_id)).splitlines():
+        self._ensure_core_archive_layout(user_id)
+        text = self._read_text(self.memory_path(user_id))
+        sections: dict[str, List[str]] = {
+            self.CORE_SECTION: [],
+            self.ARCHIVE_SECTION: [],
+        }
+        current = self.ARCHIVE_SECTION
+        for raw_line in text.splitlines():
+            line = str(raw_line or "").rstrip()
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                current = self._normalize_section_name(stripped[3:])
+                sections.setdefault(current, [])
+                continue
+            if stripped.startswith("# "):
+                continue
+            if stripped.startswith(self.MIGRATION_MARK):
+                continue
+            if not stripped.startswith("- "):
+                continue
+            bullet = stripped[2:].strip()
+            if not bullet or bullet.startswith("migrated_at:"):
+                continue
+            sections.setdefault(current, []).append(bullet)
+        sections[self.CORE_SECTION] = self._dedupe(sections.get(self.CORE_SECTION, []))
+        sections[self.ARCHIVE_SECTION] = self._dedupe(
+            sections.get(self.ARCHIVE_SECTION, [])
+        )
+        return sections
+
+    def _render_user_sections(self, sections: dict[str, List[str]]) -> str:
+        core = self._dedupe(list(sections.get(self.CORE_SECTION) or []), limit=64)
+        archive = self._dedupe(list(sections.get(self.ARCHIVE_SECTION) or []), limit=400)
+        lines = ["# MEMORY", "", f"## {self.CORE_SECTION}", ""]
+        for item in core:
+            lines.append(f"- {item}")
+        if core:
+            lines.append("")
+        lines.extend([f"## {self.ARCHIVE_SECTION}", ""])
+        for item in archive:
+            lines.append(f"- {item}")
+        if archive:
+            lines.append("")
+        return "\n".join(lines)
+
+    def _ensure_core_archive_layout(self, user_id: str) -> None:
+        """Rewrite legacy single-section MEMORY.md into Core/Archive once."""
+        path = self.memory_path(user_id)
+        raw = self._read_text(path)
+        if not raw.strip():
+            self._write_text(
+                path,
+                self._render_user_sections(
+                    {self.CORE_SECTION: [], self.ARCHIVE_SECTION: []}
+                ),
+                actor="system",
+                reason="init_memory_core_archive",
+            )
+            return
+        if re.search(r"^##\s+Core\s*$", raw, flags=re.M) and re.search(
+            r"^##\s+Archive\s*$", raw, flags=re.M
+        ):
+            return
+
+        # Parse legacy free-form bullets into sections.
+        bullets: List[str] = []
+        for line in raw.splitlines():
             stripped = line.strip()
             if not stripped.startswith("- "):
                 continue
             text = stripped[2:].strip()
-            if not text:
+            if not text or text.startswith("migrated_at:"):
                 continue
-            items.append({"text": text, "metadata": {}, "created_at": ""})
+            if stripped.startswith(self.MIGRATION_MARK):
+                continue
+            bullets.append(text)
+        bullets = self._dedupe(bullets)
+        # Prefer keeping a small always-on core; overflow goes to archive.
+        if len(bullets) <= 12:
+            sections = {self.CORE_SECTION: bullets, self.ARCHIVE_SECTION: []}
+        else:
+            sections = {
+                self.CORE_SECTION: bullets[:12],
+                self.ARCHIVE_SECTION: bullets[12:],
+            }
+        self._write_text(
+            path,
+            self._render_user_sections(sections),
+            actor="system",
+            reason="migrate_memory_to_core_archive",
+        )
+
+    def list_user_items_sync(self, user_id: str) -> List[dict[str, Any]]:
+        sections = self.parse_user_sections(user_id)
+        items: List[dict[str, Any]] = []
+        for tier in (self.CORE_SECTION, self.ARCHIVE_SECTION):
+            for text in sections.get(tier) or []:
+                items.append(
+                    {
+                        "text": text,
+                        "metadata": {"tier": tier.lower()},
+                        "created_at": "",
+                    }
+                )
         return items
 
     async def list_user_items(self, user_id: str) -> List[dict[str, Any]]:
         return self.list_user_items_sync(user_id)
 
+    def list_user_items_by_tier_sync(
+        self, user_id: str, *, tier: str
+    ) -> List[dict[str, Any]]:
+        sections = self.parse_user_sections(user_id)
+        key = self.CORE_SECTION if str(tier or "").lower() == "core" else self.ARCHIVE_SECTION
+        return [
+            {"text": text, "metadata": {"tier": key.lower()}, "created_at": ""}
+            for text in sections.get(key) or []
+        ]
+
     async def add_user_items(
         self, user_id: str, items: List[dict[str, Any]]
     ) -> List[dict[str, Any]]:
         self.ensure_migrated(user_id)
-        memory_path = self.memory_path(user_id)
-        current_memory = self._read_text(memory_path)
-        cleaned = [
-            str(item.get("text") or "").strip()
-            for item in items
-            if isinstance(item, dict) and str(item.get("text") or "").strip()
-        ]
-        if not cleaned:
+        self._ensure_core_archive_layout(user_id)
+        sections = self.parse_user_sections(user_id)
+        existing_norms = {
+            _norm_text(text)
+            for text in (sections.get(self.CORE_SECTION) or [])
+            + (sections.get(self.ARCHIVE_SECTION) or [])
+        }
+        added: List[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            key = _norm_text(text)
+            if not key or key in existing_norms:
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            tier_raw = str(metadata.get("tier") or "core").strip().lower()
+            tier = self.CORE_SECTION if tier_raw == "core" else self.ARCHIVE_SECTION
+            sections.setdefault(tier, []).append(text)
+            existing_norms.add(key)
+            added.append(
+                {"text": text, "metadata": {"tier": tier.lower()}, "created_at": ""}
+            )
+        if not added:
             return []
-
-        if not current_memory.strip():
-            current_memory = "# MEMORY\n\n## 用户长期记忆\n\n"
-        elif "## 用户长期记忆" not in current_memory:
-            current_memory = current_memory.rstrip() + "\n\n## 用户长期记忆\n\n"
-        elif not current_memory.endswith("\n"):
-            current_memory += "\n"
-
-        merged = current_memory.rstrip() + "\n"
-        for text in cleaned:
-            merged += f"- {text}\n"
         self._write_text(
-            memory_path,
-            merged,
+            self.memory_path(user_id),
+            self._render_user_sections(sections),
             actor="system",
             reason="provider_add_user_memory",
         )
-        return [{"text": text, "metadata": {}, "created_at": ""} for text in cleaned]
+        return added
+
+    def remove_user_items_matching(
+        self,
+        user_id: str,
+        query: str,
+        *,
+        limit: int = 8,
+    ) -> List[str]:
+        """Remove bullets whose text matches query tokens; returns removed texts."""
+        from core.memory_search import rank_memory_candidates
+
+        sections = self.parse_user_sections(user_id)
+        candidates: List[dict[str, str]] = []
+        for tier in (self.CORE_SECTION, self.ARCHIVE_SECTION):
+            for text in sections.get(tier) or []:
+                candidates.append({"text": text, "source": tier.lower(), "tier": tier.lower()})
+        hits = rank_memory_candidates(
+            candidates,
+            query=query,
+            limit=max(1, int(limit)),
+            min_score=1.0,
+        )
+        if not hits:
+            return []
+        remove_norms = {_norm_text(hit.text) for hit in hits}
+        removed: List[str] = []
+        for tier in (self.CORE_SECTION, self.ARCHIVE_SECTION):
+            kept: List[str] = []
+            for text in sections.get(tier) or []:
+                if _norm_text(text) in remove_norms:
+                    removed.append(text)
+                    continue
+                kept.append(text)
+            sections[tier] = kept
+        if not removed:
+            return []
+        self._write_text(
+            self.memory_path(user_id),
+            self._render_user_sections(sections),
+            actor="user",
+            reason="forget_user_memory",
+        )
+        return removed
 
     def list_ikaros_items_sync(self) -> List[dict[str, Any]]:
         self._ensure_ikaros_memory_file()
@@ -347,7 +526,9 @@ class MarkdownMemoryStore:
             if not current.strip():
                 self._write_text(
                     memory_path,
-                    "# MEMORY\n\n## 用户长期记忆\n\n",
+                    self._render_user_sections(
+                        {self.CORE_SECTION: [], self.ARCHIVE_SECTION: []}
+                    ),
                     actor="system",
                     reason="init_memory_markdown",
                 )
@@ -357,14 +538,15 @@ class MarkdownMemoryStore:
             return
 
         migrated_items = self._parse_legacy_memory_json(legacy_path)
-        lines: List[str] = ["# MEMORY", "", "## 用户长期记忆", ""]
-        if migrated_items:
-            lines.extend([f"- {item}" for item in migrated_items])
-            lines.append("")
-        lines.extend([self.MIGRATION_MARK, f"- migrated_at: {_now_iso()}", ""])
+        sections = {
+            self.CORE_SECTION: list(migrated_items[:12]),
+            self.ARCHIVE_SECTION: list(migrated_items[12:]),
+        }
+        body = self._render_user_sections(sections).rstrip() + "\n\n"
+        body += f"{self.MIGRATION_MARK}\n- migrated_at: {_now_iso()}\n"
         self._write_text(
             memory_path,
-            "\n".join(lines),
+            body,
             actor="system",
             reason="migrate_legacy_memory_json",
         )

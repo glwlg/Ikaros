@@ -68,6 +68,11 @@ async def test_session_compaction_rolls_older_dialog_into_single_summary(
         user_id="u-1",
         session_id=session_id,
         force=False,
+        # Explicit thresholds so the test does not depend on large-context defaults.
+        threshold=100,
+        token_threshold=10_000_000,
+        keep_recent=10,
+        keep_recent_tokens=50_000,
     )
 
     rows = await get_session_entries("u-1", session_id)
@@ -76,6 +81,7 @@ async def test_session_compaction_rolls_older_dialog_into_single_summary(
     assert result["ok"] is True
     assert result["compacted"] is True
     assert result["compressed_count"] == 95
+    assert result.get("archived") is True
     assert len(dialog_rows) == 10
     assert rows[0]["content"].startswith(SESSION_MEMORY_PREFIX)
     assert rows[1]["content"].startswith(SESSION_SUMMARY_PREFIX)

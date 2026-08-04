@@ -16,24 +16,16 @@ from core.platform.models import (
 )
 from core.long_term_memory import long_term_memory
 
-from core.config import get_client_for_model, ikaros_kernel_provider
+from core.config import get_client_for_model
 from core.document_artifacts import (
     build_document_forward_text,
     pop_pending_document_artifacts,
 )
-from core.app_paths import project_root
 from core.channel_runtime_store import channel_runtime_store
-from core.file_artifacts import (
-    extract_file_rows_from_text,
-    extract_markdown_file_link_rows,
-    extract_saved_file_rows,
-    merge_file_rows,
-    normalize_file_rows,
-)
 from core.model_config import select_model_for_role
 from core.platform.exceptions import MediaProcessingError, MessageSendError
 from core.runtime_callbacks import pop_runtime_callback, set_runtime_callback
-from core.runtime_delivery import deliver_result_files, deliver_text_message
+from core.runtime_delivery import deliver_text_message
 from core.runtime_v2 import TERMINAL_STATUSES, runtime_v2
 from core.task_confirmation import (
     clear_expired_waiting_confirmation,
@@ -412,11 +404,6 @@ def _build_ikaros_progress_text(snapshot: dict[str, Any]) -> str:
     final_preview = _compact_text(str(payload.get("final_preview") or ""), limit=220)
     summary = _compact_text(str(payload.get("summary") or ""), limit=220)
 
-    if event in {"codex_agent_message", "codex_activity"}:
-        return final_preview
-    if event.startswith("codex_"):
-        return ""
-
     turn = max(0, int(payload.get("turn") or 0))
     task_id = str(payload.get("task_id") or "").strip()
     recent_steps = [
@@ -758,41 +745,6 @@ def _update_runtime_v2_turn_for_ctx(
         _sync_runtime_task_status()
 
 
-async def _send_result_files(
-    ctx: UnifiedContext,
-    file_rows: list[dict[str, str]],
-) -> list[dict[str, str]]:
-    runtime_session_id, runtime_turn_id = _runtime_v2_session_for_ctx(ctx)
-    result = await deliver_result_files(
-        ctx=ctx,
-        file_rows=file_rows,
-        runtime_session_id=runtime_session_id,
-        runtime_turn_id=runtime_turn_id,
-        runtime_store=runtime_v2,
-    )
-    task_inbox_id = str(
-        (getattr(ctx, "user_data", {}) or {}).get("task_inbox_id") or ""
-    ).strip()
-    if task_inbox_id and (result.delivered_rows or result.failed_rows):
-        with contextlib.suppress(Exception):
-            from core.task_inbox import task_inbox
-
-            await task_inbox.append_event(
-                task_inbox_id,
-                "artifact_delivery",
-                detail=(
-                    f"delivered={len(result.delivered_rows)}; "
-                    f"failed={len(result.failed_rows)}"
-                ),
-                extra={
-                    "delivered": list(result.delivered_rows),
-                    "failed": list(result.failed_rows),
-                    "target": result.target,
-                },
-            )
-    return result.delivered_rows
-
-
 async def _deliver_final_text(
     ctx: UnifiedContext,
     payload: Any,
@@ -977,7 +929,6 @@ async def _try_handle_waiting_confirmation(
         return False
 
     from core.channel_runtime_store import channel_runtime_store
-    from core.codex_kernel import codex_kernel_provider, interrupt_codex_kernel_task
     from core.heartbeat_store import heartbeat_store
     from core.task_inbox import task_inbox
     from ikaros.relay.closure_service import ikaros_closure_service
@@ -1030,11 +981,6 @@ async def _try_handle_waiting_confirmation(
             or active_task.get("session_task_id")
             or ""
         ).strip()
-        await interrupt_codex_kernel_task(
-            user_id=user_id,
-            task_id=task_id,
-            task_inbox_id=task_inbox_id,
-        )
         channel_runtime_store.update_active_task(
             platform=platform,
             platform_user_id=user_id,
@@ -1078,39 +1024,6 @@ async def _try_handle_waiting_confirmation(
     if not control_intent and _looks_like_new_request_while_waiting(user_message):
         return False
 
-    codex_resume = await codex_kernel_provider.resume_waiting_task(
-        user_id=user_id,
-        platform=platform,
-        user_message="" if control_intent == "continue" else user_message,
-        source="text",
-    )
-    if bool(codex_resume.get("handled")):
-        message = str(
-            codex_resume.get("message")
-            or "⚠️ Codex kernel 暂时无法继续，请重新发送请求。"
-        )
-        if "3分钟内有效" in message:
-            await ctx.reply(
-                {
-                    "text": message,
-                    "ui": {
-                        "actions": [
-                            [
-                                {"text": "继续执行", "callback_data": "task_continue"},
-                                {"text": "停止任务", "callback_data": "task_stop"},
-                            ]
-                        ]
-                    },
-                }
-            )
-        else:
-            if message:
-                await ctx.reply(message)
-        resume_files = normalize_file_rows(codex_resume.get("files"))
-        if resume_files:
-            await _send_result_files(ctx, resume_files)
-        return True
-
     resume = await ikaros_closure_service.resume_waiting_task(
         user_id=user_id,
         user_message="" if control_intent == "continue" else user_message,
@@ -1140,12 +1053,17 @@ async def _try_handle_memory_commands(ctx: UnifiedContext, user_message: str) ->
         r"^(?:请记住|记住|记一下)\s*[:：]?\s*(.+)$",
         r"^remember\s+(.*)$",
     )
+    forget_patterns = (
+        r"^(?:请忘记|忘记|别记|忘掉)\s*[:：]?\s*(.+)$",
+        r"^forget\s+(.*)$",
+    )
 
     async def _write_user_memory(content: str) -> tuple[bool, str]:
         return await long_term_memory.remember_user(
             user_id,
             content,
             source="user_explicit",
+            tier="core",
         )
 
     if text.lower() in {"memory list", "memory user", "查看记忆", "我的记忆"}:
@@ -1161,6 +1079,23 @@ async def _try_handle_memory_commands(ctx: UnifiedContext, user_message: str) ->
             await ctx.reply(f"⚠️ 读取记忆失败：{exc}")
         return True
 
+    for pattern in forget_patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        if not private_session:
+            await ctx.reply("⚠️ 仅支持在私聊中删除个人长期记忆。")
+            return True
+        content = str(match.group(1) or "").strip()
+        if not content:
+            break
+        ok, detail = await long_term_memory.forget_user(user_id, content)
+        if ok:
+            await ctx.reply(f"🧹 已删除匹配记忆。\n- {detail}")
+        else:
+            await ctx.reply(f"⚠️ 删除记忆失败：{detail}")
+        return True
+
     for pattern in explicit_patterns:
         match = re.match(pattern, text, flags=re.IGNORECASE)
         if not match:
@@ -1173,7 +1108,7 @@ async def _try_handle_memory_commands(ctx: UnifiedContext, user_message: str) ->
             break
         ok, detail = await _write_user_memory(content)
         if ok:
-            await ctx.reply(f"🧠 已写入长期记忆。\n- 提取到：{detail}")
+            await ctx.reply(f"🧠 已写入核心记忆。\n- 提取到：{detail}")
         else:
             await ctx.reply(f"⚠️ 写入记忆失败：{detail}")
         return True
@@ -1366,7 +1301,6 @@ async def handle_ai_chat(
         "loading_frame_index": 0,
     }
     ikaros_progress_steps: list[dict[str, Any]] = []
-    pending_ikaros_files: list[dict[str, str]] = []
     ikaros_progress_event_names = {
         "tool_call_started",
         "tool_call_finished",
@@ -1375,8 +1309,6 @@ async def handle_ai_chat(
         "max_turn_limit",
         "semantic_loop_guard",
         "tool_budget_guard",
-        "codex_agent_message",
-        "codex_activity",
         "final_response",
     }
     ikaros_progress_thread_id = None
@@ -1392,8 +1324,6 @@ async def handle_ai_chat(
         "AI_MANAGER_PROGRESS_STREAM_ENABLED",
         False,
     )
-    codex_progress_stream_enabled = _env_flag("IKAROS_CODEX_STREAM_ENABLED", True)
-    codex_kernel_ui = ikaros_kernel_provider() == "codex"
     stream_segment_enabled = (
         _env_flag("AI_SEGMENT_STREAM_ENABLED", True)
         and str(platform_name or "").lower() in {"telegram", "discord"}
@@ -1408,39 +1338,11 @@ async def handle_ai_chat(
     stream_last_sent_ts = 0.0
     stream_locked = False
     thinking_deleted = False
-    sent_ikaros_file_paths: set[str] = set()
-
-    def _unsent_file_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-        output: list[dict[str, str]] = []
-        for row in list(rows or []):
-            path_text = str(row.get("path") or "").strip()
-            if not path_text or path_text in sent_ikaros_file_paths:
-                continue
-            output.append(row)
-        return output
-
-    def _mark_file_rows_sent(rows: list[dict[str, str]]) -> None:
-        for row in list(rows or []):
-            path_text = str(row.get("path") or "").strip()
-            if path_text:
-                sent_ikaros_file_paths.add(path_text)
-
-    def _extract_result_file_rows(text: str) -> list[dict[str, str]]:
-        if codex_kernel_ui:
-            base_dir = project_root()
-            return merge_file_rows(
-                extract_file_rows_from_text(text, base_dir=base_dir),
-                extract_markdown_file_link_rows(text, base_dir=base_dir),
-            )
-        return extract_saved_file_rows(text)
-
     async def _ensure_thinking_message(initial_text: str | None = None) -> Any:
         nonlocal thinking_msg
         if thinking_msg is not None:
             return thinking_msg
         if thinking_deleted or state["response_visible"]:
-            return None
-        if codex_kernel_ui and not str(initial_text or "").strip():
             return None
         if time.time() - float(state.get("request_started_at") or 0.0) < 1.0:
             return None
@@ -1536,28 +1438,6 @@ async def handle_ai_chat(
             state["last_update_time"] = time.time()
             return
 
-        if event_name == "codex_result_files":
-            new_files = _unsent_file_rows(
-                merge_file_rows(
-                    normalize_file_rows(payload.get("files")),
-                    normalize_file_rows(
-                        (payload.get("terminal_payload") or {}).get("files")
-                        if isinstance(payload.get("terminal_payload"), dict)
-                        else []
-                    ),
-                )
-            )
-            pending_ikaros_files[:] = merge_file_rows(
-                pending_ikaros_files,
-                new_files,
-            )
-            if new_files:
-                delivered = await _send_result_files(ctx, new_files)
-                if delivered:
-                    _mark_file_rows_sent(delivered)
-                    state["response_visible"] = True
-            return
-
         if event_name == "tool_call_started":
             detail_label, detail_value = _summarize_ikaros_tool_args(
                 str(payload.get("name") or ""),
@@ -1578,15 +1458,12 @@ async def handle_ai_chat(
             tool_ok = bool(payload.get("ok"))
             summary = str(payload.get("summary") or "").strip()
             history_visibility = str(payload.get("history_visibility") or "").strip()
-            terminal_payload = payload.get("terminal_payload")
-            if isinstance(terminal_payload, dict):
-                pending_ikaros_files[:] = merge_file_rows(
-                    pending_ikaros_files,
-                    normalize_file_rows(terminal_payload.get("files")),
-                    _extract_result_file_rows(
-                        str(terminal_payload.get("text") or "").strip()
-                    ),
-                )
+            delivery_data = payload.get("data")
+            if tool_name == "send_message" and isinstance(delivery_data, dict):
+                if delivery_data.get("text_sent") or delivery_data.get(
+                    "delivered_files"
+                ):
+                    state["response_visible"] = True
             updated = False
             for idx in range(len(ikaros_progress_steps) - 1, -1, -1):
                 row = ikaros_progress_steps[idx]
@@ -1618,11 +1495,6 @@ async def handle_ai_chat(
             state["ikaros_progress_final_preview"] = str(
                 payload.get("text_preview") or ""
             )[:180]
-        elif event_name in {"codex_agent_message", "codex_activity"}:
-            preview = str(payload.get("text_preview") or "").strip()
-            if preview:
-                state["ikaros_progress_final_preview"] = preview[-220:]
-
         ikaros_progress_steps[:] = ikaros_progress_steps[-20:]
         progress_snapshot = dict(payload)
         progress_snapshot["recent_steps"] = ikaros_progress_steps[-6:]
@@ -1632,16 +1504,9 @@ async def handle_ai_chat(
         state["ikaros_progress_text"] = _build_ikaros_progress_text(progress_snapshot)
         state["last_update_time"] = time.time()
 
-        is_codex_stream_event = event_name.startswith("codex_")
-        codex_stream_allowed = is_codex_stream_event and codex_progress_stream_enabled
-        if (
-            event_name in ikaros_progress_event_names
-            and (ikaros_progress_stream_enabled or codex_stream_allowed)
-        ):
+        if event_name in ikaros_progress_event_names and ikaros_progress_stream_enabled:
             await _push_ikaros_progress_update(
                 force=True,
-                allow_when_disabled=codex_stream_allowed,
-                use_draft=not is_codex_stream_event,
             )
 
     async def loading_animation() -> None:
@@ -1695,9 +1560,6 @@ async def handle_ai_chat(
                 continue
 
             try:
-                if codex_kernel_ui:
-                    await ctx.send_chat_action(action="typing")
-                    continue
                 await _ensure_thinking_message(default_thinking_text)
                 await ctx.send_chat_action(action="typing")
             except Exception as exc:
@@ -1810,11 +1672,6 @@ async def handle_ai_chat(
 
         if final_text_response:
             ui_payload = _pop_pending_ui_payload(ctx.user_data)
-            pending_result_files = merge_file_rows(
-                pending_ikaros_files,
-                _extract_result_file_rows(final_text_response),
-            )
-            pending_result_files = _unsent_file_rows(pending_result_files)
             streamed_delivery = (
                 stream_segment_enabled
                 and stream_chunks_sent > 0
@@ -1921,11 +1778,6 @@ async def handle_ai_chat(
                     except Exception as del_e:
                         logger.warning(f"Failed to delete thinking_msg: {del_e}")
 
-            if pending_result_files:
-                delivered = await _send_result_files(ctx, pending_result_files)
-                if delivered:
-                    _mark_file_rows_sent(delivered)
-
             await add_message(ctx, user_id, "model", final_text_response)
             await increment_stat(user_id, "ai_chats")
             _update_runtime_v2_turn_for_ctx(
@@ -1937,23 +1789,18 @@ async def handle_ai_chat(
                 },
             )
             runtime_turn_closed = True
-        elif pending_ikaros_files:
-            pending_ikaros_files = _unsent_file_rows(pending_ikaros_files)
-            delivered = await _send_result_files(ctx, pending_ikaros_files)
-            if delivered:
-                _mark_file_rows_sent(delivered)
-                state["response_visible"] = True
-                await add_message(ctx, user_id, "model", "[attachments]")
-                await increment_stat(user_id, "ai_chats")
-                _update_runtime_v2_turn_for_ctx(
-                    ctx,
-                    "succeeded",
-                    metadata={
-                        "handler": "handle_ai_chat",
-                        "delivered_artifacts": len(delivered),
-                    },
-                )
-                runtime_turn_closed = True
+        elif state["response_visible"]:
+            await add_message(ctx, user_id, "model", "[agent message delivered]")
+            await increment_stat(user_id, "ai_chats")
+            _update_runtime_v2_turn_for_ctx(
+                ctx,
+                "succeeded",
+                metadata={
+                    "handler": "handle_ai_chat",
+                    "delivered_by": "agent_tool",
+                },
+            )
+            runtime_turn_closed = True
             if can_update and thinking_msg is not None and not thinking_deleted:
                 try:
                     await thinking_msg.delete()
@@ -2110,7 +1957,6 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
 
         if final_text_response:
             ui_payload = _pop_pending_ui_payload(ctx.user_data)
-            pending_result_files = extract_saved_file_rows(final_text_response)
             rendered_response = await process_and_send_code_files(
                 ctx, final_text_response
             )
@@ -2169,9 +2015,6 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
                     await thinking_msg.delete()
                 except Exception as del_e:
                     logger.warning(f"Failed to delete thinking_msg: {del_e}")
-
-            if pending_result_files:
-                await _send_result_files(ctx, pending_result_files)
 
             await add_message(ctx, user_id, "model", final_text_response)
             await increment_stat(user_id, "photo_analyses")

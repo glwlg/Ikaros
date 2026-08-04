@@ -14,7 +14,6 @@ from core.platform.adapter import BotAdapter
 from core.platform.exceptions import MessageSendError
 from core.platform.models import Chat, MessageType, UnifiedContext, UnifiedMessage, User
 from core.runtime_v2 import runtime_event_bus, runtime_v2
-from core.state_paths import SINGLE_USER_SCOPE
 from services.tts_service import synthesize_speech
 from web_channel.store import (
     ack_inbound_event,
@@ -372,12 +371,6 @@ class WebAdapter(BotAdapter):
             user_data["runtime_v2_turn_id"] = runtime_turn_id
         else:
             user_data.pop("runtime_v2_turn_id", None)
-        if session_id.startswith("scheduler-task-"):
-            user_data["codex_kernel_session_platform"] = "scheduler"
-            user_data["codex_kernel_session_user_id"] = SINGLE_USER_SCOPE
-        else:
-            user_data.pop("codex_kernel_session_platform", None)
-            user_data.pop("codex_kernel_session_user_id", None)
         platform_ctx = SimpleNamespace(user_data=user_data)
         ctx = WebUnifiedContext(
             message=message,

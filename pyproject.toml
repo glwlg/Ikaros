@@ -18,8 +18,8 @@ bot-runtime = [
     { include-group = "shared-runtime" },
     "yt-dlp>=2024.0.0",
     "playwright>=1.61.0",
-    "openai>=2.0.0",
-    "openai-agents>=0.6.3",
+    "openai>=2.45.0",
+    "openai-agents>=0.19.3,<0.20.0",
     "python-dotenv>=1.0.0",
     "feedparser>=6.0.0",
     "pyotp>=2.9.0",
@@ -83,11 +83,11 @@ ikaros = [
     { include-group = "ikaros-runtime" },
 ]
 api = [
-    # API 会直接复用 AiService / core.config 做图片记账等能力，
-    # 需要 bot-runtime 中的 OpenAI 客户端与相关基础依赖。
+    # API 会直接复用 core.config 与 Agents SDK 的 OpenAI 能力，
+    # 需要 bot-runtime 中的相关基础依赖。
     { include-group = "bot-runtime" },
     "fastapi>=0.109.0",
-    "uvicorn[standard]>=0.27.0,<0.31.0",
+    "uvicorn[standard]>=0.31.1,<0.32.0",
     "pydantic-settings>=2.0.0,<3.0.0",
     "fastapi-users[oauth,sqlalchemy]>=15.0.3",
     "passlib[bcrypt]>=1.7.4",

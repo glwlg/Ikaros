@@ -201,6 +201,7 @@ class ToolAccessStore:
             "group:finance": "金融行情类：stock_watch",
             "group:media": "多媒体类：download_video",
             "group:account": "账号凭据类：credential_manager",
+            "group:delivery": "用户交付类：中间消息与文件发送",
             "group:memory": "记忆类：用户长期记忆",
             "group:skill-admin": "技能治理类：skill_manager",
             "group:skills": "扩展技能总开关：ext_*",
@@ -258,8 +259,10 @@ class ToolAccessStore:
         if name in {"read", "write", "edit", "load_skill"}:
             groups.add("group:fs")
             groups.add("group:primitives")
-        if name in {"send_local_file"}:
+        if name == "send_local_file":
             groups.add("group:fs")
+            groups.add("group:delivery")
+        elif name == "send_message":
             groups.add("group:delivery")
         if name in {"coding_backend", "coding-backend"}:
             groups.add("group:coding")

@@ -15,6 +15,9 @@ def test_tool_access_groups_and_defaults(tmp_path):
     assert "group:delivery" in delivery_groups
     assert "group:fs" in delivery_groups
 
+    message_delivery_groups = store.groups_for_tool("send_message", kind="tool")
+    assert "group:delivery" in message_delivery_groups
+
     bash_groups = store.groups_for_tool("bash", kind="tool")
     assert "group:execution" in bash_groups
 

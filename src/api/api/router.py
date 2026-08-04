@@ -7,6 +7,7 @@ from api.api.endpoints import (
     rss,
     scheduler,
     skills,
+    subscriptions,
     watchlist,
     web_chat,
 )
@@ -22,3 +23,8 @@ api_router.include_router(cameras.router, prefix="/cameras", tags=["cameras"])
 api_router.include_router(web_chat.router, prefix="/web-chat", tags=["web-chat"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(skills.router, prefix="/skills", tags=["skills"])
+api_router.include_router(
+    subscriptions.router,
+    prefix="/subscriptions",
+    tags=["subscriptions"],
+)

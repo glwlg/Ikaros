@@ -12,7 +12,7 @@ from handlers.document_handler import handle_document
 from handlers.voice_handler import handle_voice_message
 
 COMMON_CALLBACK_PATTERN = (
-    "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|schm_|depm_|credm_|"
+    "^(?!back_to_main_cancel$|unsub_|stock_|stkm_|rssm_|sch_del_|sch_route_|schm_|depm_|credm_|"
     "dlym_|dlm_|skill_|skills_|home_|helpm_|hbm_|taskm_|accu_|model_|usagem_|"
     "schsess_|"
     "chatlog_|compact_|del_rss_|del_stock_|action_|large_file_).*$"

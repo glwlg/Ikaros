@@ -463,32 +463,18 @@ async def test_button_callback_stop_closes_runtime_v2_waiting_task(
     }
     fake_heartbeat_store = _FakeHeartbeatStore(active_task=active_task)
     fake_channel_store = _FakeChannelRuntimeStore(active_task=active_task)
-    interrupt_calls: list[dict] = []
-
-    async def _fake_interrupt(**kwargs):
-        interrupt_calls.append(dict(kwargs))
-        return None
-
     monkeypatch.setattr(heartbeat_store_module, "heartbeat_store", fake_heartbeat_store)
     monkeypatch.setattr(
         channel_runtime_store_module,
         "channel_runtime_store",
         fake_channel_store,
     )
-    monkeypatch.setattr(
-        "core.codex_kernel.interrupt_codex_kernel_task",
-        _fake_interrupt,
-    )
-
     ctx = _DummyContext("u-callback", text="noop")
     ctx.callback_data = "task_stop"
 
     result = await start_handlers.button_callback(ctx)
 
     assert result == start_handlers.CONVERSATION_END
-    assert interrupt_calls == [
-        {"user_id": "u-callback", "task_id": "mgr-stop", "task_inbox_id": ""}
-    ]
     assert fake_channel_store.updated[-1]["clear_active"] is True
     assert fake_heartbeat_store.updated[-1][1]["clear_active"] is True
     assert runtime_store.get_turn(turn["id"])["status"] == "cancelled"
@@ -526,7 +512,7 @@ def test_set_visible_session_updates_runtime_session_keys(monkeypatch):
     assert ctx.user_data["runtime_v2_session_id"] == "scheduler-task-9"
     assert "runtime_v2_turn_id" not in ctx.user_data
     assert "runtime_v2_task_id" not in ctx.user_data
-    assert ctx.user_data["codex_kernel_session_platform"] == "scheduler"
+    assert "codex_kernel_session_platform" not in ctx.user_data
     assert fake_channel_store.current_session_id == "scheduler-task-9"
 
 
@@ -632,8 +618,8 @@ async def test_scheduler_session_button_enters_and_main_command_exits(monkeypatc
     await start_handlers.handle_scheduler_session_callback(ctx)
 
     assert ctx.user_data["current_session_id"] == "scheduler-task-9"
-    assert ctx.user_data["codex_kernel_session_platform"] == "scheduler"
-    assert ctx.user_data["codex_kernel_session_user_id"] == "user"
+    assert "codex_kernel_session_platform" not in ctx.user_data
+    assert "codex_kernel_session_user_id" not in ctx.user_data
     assert (
         ctx.user_data[start_handlers.SCHEDULER_SESSION_RETURN_KEY]
         == "main-session"

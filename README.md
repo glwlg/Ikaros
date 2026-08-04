@@ -1,6 +1,6 @@
 # Ikaros
 
-Ikaros 是一个面向个人长期使用的多平台 Agent Runtime。它把 Telegram、微信、Web、定时任务、skill、记忆、产物投递和可替换执行内核收束到同一个运行时里，目标是让日常对话、工具执行、后台任务和系统维护都能留下可追踪的闭环。
+Ikaros 是一个面向个人长期使用的多平台 Agent Runtime。它把 Telegram、微信、Web、定时任务、skill、记忆和产物投递收束到 Agents SDK 驱动的统一运行时里，目标是让日常对话、工具执行、后台任务和系统维护都能留下可追踪的闭环。
 
 ![logo](logo.jpg)
 
@@ -9,7 +9,7 @@ Ikaros 是一个面向个人长期使用的多平台 Agent Runtime。它把 Tele
 - **个人主执行者**：用户始终在和 Ikaros 对话；subagent、skill、kernel 都是内部执行机制。
 - **多渠道入口**：Telegram、微信 iLink、Discord、钉钉 Stream 和 Web/API 共用同一套会话与任务模型。
 - **Runtime v2 中心状态**：会话、轮次、事件、任务、产物和投递回执统一写入 `runtime.db`，便于恢复、排障和质量分析。
-- **可替换执行内核**：默认保留 `native` 内核，也支持 `codex` 内核，把实际规划、执行和验证交给 Codex app-server。
+- **Agents SDK 主执行内核**：使用 OpenAI Agents SDK 负责 Agent、工具调用、流式执行和任务收口。
 - **Extension Runtime**：skill、channel、memory、plugin 都通过扩展层注册，避免继续把业务入口写进 core。
 - **统一产物投递**：图片、视频、音频、文档等结果先登记为 artifact，再由平台 adapter 投递并写入 delivery receipt。
 
@@ -24,7 +24,7 @@ Channel Adapter / API Endpoint
         ▼
 Ikaros Core
   ├─ Runtime v2: Session / Turn / Event / Task / Artifact / Delivery
-  ├─ Kernel Provider: native | codex
+  ├─ Agents SDK Runtime
   ├─ Extension Runtime: skills / channels / memories / plugins
   ├─ Scheduler Runtime
   └─ Delivery Helpers
@@ -40,7 +40,7 @@ Core 是唯一的主执行面，负责：
 - 接收平台消息、Web 事件、定时任务触发和控制命令
 - 组装身份、SOUL、用户配置、记忆种子和本轮输入
 - 维护 Runtime v2 的 session、turn、task 和事件流
-- 选择 `native` 或 `codex` kernel 执行本轮工作
+- 通过 Agents SDK 执行本轮工作
 - 调用 extension runtime 暴露的 skill、channel、memory、plugin
 - 将文本和文件产物交给统一 delivery helper 投递
 
@@ -58,52 +58,17 @@ Runtime v2 是当前运行时的中心模型，默认数据库为：
 
 - `Session`：长期会话容器，类型包括 `channel_chat`、`scheduled_task`、`web_workspace`、`system`
 - `Turn`：一次用户输入、系统触发或定时任务触发
-- `Event`：append-only 事件流，记录 kernel 输出、文本增量、等待用户、失败、完成等
+- `Event`：append-only 事件流，记录 Agent/tool 输出、文本增量、等待用户、失败、完成等
 - `Task`：需要状态管理的工作，状态固定为 `queued`、`running`、`waiting_user`、`waiting_external`、`succeeded`、`failed`、`cancelled`、`expired`
 - `Artifact`：图片、视频、音频、文档等文件产物
 - `Delivery`：每个平台的投递回执，用于定位“已生成但没发出去”的问题
-- `KernelSession`：Ikaros session 与外部 kernel thread 的绑定
 - `SchedulerJob`：定时任务与 scheduled task session 的绑定
 
 非法状态跳转会被拒绝，例如 terminal turn 不能重新回到 `running`。
 
-### Kernel Provider
+### Agents SDK Runtime
 
-Ikaros 通过 `src/core/kernel_provider.py` 定义可替换内核接口：
-
-```python
-class KernelProvider:
-    async def ensure_session(session) -> KernelSessionRef: ...
-    async def start_turn(session, turn, input) -> AsyncIterator[dict]: ...
-    async def interrupt(turn_id) -> None: ...
-```
-
-当前 provider：
-
-- `native`：历史 `AgentOrchestrator + AiService` 内核，默认启用
-- `codex`：通过 `codex app-server` 执行任务，复用 Ikaros session 绑定的 Codex thread
-
-Codex kernel 的约束：
-
-- 一个 Ikaros session 尽量绑定一个 Codex thread
-- 新 thread 首轮注入 AGENTS / SOUL / USER / runtime 边界
-- 后续 turn 只发送用户最新输入和附件，不重复塞历史对话
-- Codex 原始事件会转成 Runtime v2 event，channel 消费真实事件，不再使用固定“正在处理/回合”伪进度
-- Ikaros 只暴露少量 Ikaros-specific skill 给 Codex；通用搜索、代码、浏览器、Git、画图等优先使用 Codex 自身能力
-
-相关环境变量见 `.env.example`：
-
-```bash
-IKAROS_KERNEL="native"          # native | codex
-IKAROS_CODEX_COMMAND="codex"
-IKAROS_CODEX_ARGS="app-server --listen stdio://"
-IKAROS_CODEX_MODEL=""
-IKAROS_CODEX_EFFORT=""
-IKAROS_CODEX_SANDBOX="workspace-write"
-IKAROS_CODEX_APPROVAL_POLICY="never"
-IKAROS_CODEX_TIMEOUT_SEC="1800"
-IKAROS_CODEX_REQUEST_TIMEOUT_SEC="300"
-```
+Agents SDK 是 Ikaros 唯一的聊天执行运行时，负责 Agent、工具调用、流式输出和 Runtime v2 事件收口。长任务进度和图片、视频、文件等中间产物由 Agent 通过 `send_message` 主动投递。
 
 ### Extension Runtime
 
@@ -283,7 +248,6 @@ Runtime v2 的回归证据统一记录在 [docs/runtime_v2_test_ledger.md](docs/
 
 ```bash
 uv run python -m pytest tests/core/test_runtime_v2.py
-uv run python -m pytest tests/core/test_codex_kernel.py
 uv run python -m pytest tests/core/test_web_chat_api_runtime_v2.py
 uv run python -m pytest tests/core/test_scheduler_runtime_reload.py
 uv run python -m pytest tests/core/test_admin_diagnostics_runtime_v2.py
@@ -293,7 +257,7 @@ uv run python -m pytest tests/core/test_admin_diagnostics_runtime_v2.py
 
 ```bash
 git diff --check
-python -m py_compile src/core/runtime_v2.py src/core/codex_kernel.py src/core/scheduler.py
+python -m py_compile src/core/runtime_v2.py src/core/agents/assistant.py src/core/scheduler.py
 ```
 
 ## 当前维护原则
@@ -301,8 +265,7 @@ python -m py_compile src/core/runtime_v2.py src/core/codex_kernel.py src/core/sc
 - README 只描述当前实现和近期开启的运行边界，不保留未落地的旧架构叙述。
 - Runtime v2 是新的中心状态层；旧 `task_inbox`、heartbeat active task 等只作为兼容桥存在，不继续扩展为主路径。
 - channel 不解析模型文本来猜附件；文件统一走 artifact + delivery receipt。
-- Codex kernel 是 provider，不是 skill，也不是 coding session。
-- skill catalog 给 Codex 时只开放 Ikaros-specific 能力；通用能力优先交给 Codex 自身。
+- Agents SDK 是唯一聊天运行时；coding backend 仍由 coding session skill 按需选择。
 - scheduler 的配置、运行和会话要收敛，避免 watcher、reload、reconcile 各自维护一套事实。
 - 新增核心运行时能力必须补测试，并更新 `docs/runtime_v2_test_ledger.md`。
 

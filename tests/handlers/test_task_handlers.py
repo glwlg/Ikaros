@@ -373,7 +373,7 @@ async def test_task_command_lists_runtime_v2_tasks_first_and_deduplicates_legacy
         source="user",
         input_text="Runtime v2 任务",
         status="running",
-        kernel_provider="codex",
+        kernel_provider="agents_sdk",
     )
     runtime_task = runtime_v2.create_task(
         session_id=session["id"],
@@ -392,7 +392,7 @@ async def test_task_command_lists_runtime_v2_tasks_first_and_deduplicates_legacy
     reply = ctx.replies[-1]
     assert runtime_task["id"] in reply
     assert legacy_task.task_id not in reply
-    assert "kernel:codex" in reply
+    assert "kernel:agents_sdk" in reply
 
 
 @pytest.mark.asyncio
@@ -607,7 +607,6 @@ async def test_task_diag_shows_runtime_state(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr("handlers.task_handlers.check_permission_unified", _allow)
-    monkeypatch.setattr(task_handlers_module, "ikaros_kernel_provider", lambda: "codex")
     monkeypatch.setattr(
         task_handlers_module,
         "adapter_manager",
@@ -651,7 +650,7 @@ async def test_task_diag_shows_runtime_state(monkeypatch, tmp_path):
             "id": "active-diag",
             "status": "running",
             "goal": "生成图片",
-            "kernel_provider": "codex",
+            "kernel_provider": "agents_sdk",
         },
         platform="telegram",
         platform_user_id="u-task",
@@ -662,14 +661,6 @@ async def test_task_diag_shows_runtime_state(monkeypatch, tmp_path):
         "chat-u-task",
         session_id="sess-diag",
     )
-    task_handlers_module.codex_kernel_sessions.upsert(
-        user_id="u-task",
-        platform="telegram",
-        session_id="sess-diag",
-        codex_thread_id="thread-diag",
-        codex_turn_id="turn-diag",
-    )
-
     ctx = _FakeContext("/task diag", user_id="u-task")
     ctx.user_data["artifact_ledger"] = [
         {"status": "delivered", "filename": "ok.png"},
@@ -679,14 +670,13 @@ async def test_task_diag_shows_runtime_state(monkeypatch, tmp_path):
 
     reply = ctx.replies[-1]
     assert "Ikaros 运行诊断" in reply
-    assert "Kernel：`codex`" in reply
+    assert "Kernel：`agents_sdk`" in reply
     assert "Channels：telegram(edit; photo+video+audio+document)" in reply
     assert "weixin(no-edit; photo+audio+document)" in reply
     assert "channel active：`active-diag`" in reply
     assert "TaskInbox：open=1" in reply
     assert "Artifact ledger：delivered=1; failed=1; pending=0" in reply
     assert "近期质量：failed=0; artifact_failed=0" in reply
-    assert "Codex thread：`thread-diag`" in reply
 
 
 def test_task_command_is_exported_from_handlers_package():

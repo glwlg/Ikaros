@@ -43,7 +43,7 @@ async def test_run_web_accounting_auto_image_task_returns_accounting_draft(
             yield ""
 
     monkeypatch.setattr(
-        web_accounting_module._ai_service,
+        web_accounting_module._assistant_runtime,
         "generate_response_stream",
         fake_stream,
     )

@@ -451,6 +451,7 @@ def test_skill_loader_imports_relative_script_skills_and_registers_jobs():
     stock_module.StockWatchSkillExtension().register(runtime)
 
     assert scheduler.get_job("skill_stock_watch_push") is not None
+    assert scheduler.get_job("skill_stock_watch_holding_advice") is None  # never built-in
 
 
 def test_skill_loader_filters_disabled_skills_from_enabled_views(tmp_path: Path, monkeypatch):

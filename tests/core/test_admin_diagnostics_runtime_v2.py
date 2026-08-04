@@ -18,13 +18,13 @@ def test_admin_diagnostics_exposes_runtime_v2_quality_report(tmp_path, monkeypat
     turn = runtime_store.create_turn(
         session_id=session["id"],
         input_text="失败任务",
-        kernel_provider="codex",
+        kernel_provider="agents_sdk",
     )
     runtime_store.update_turn_status(turn["id"], "running")
     runtime_store.update_turn_status(
         turn["id"],
         "failed",
-        error="codex timeout while generating report",
+        error="Agents SDK timeout while generating report",
     )
     artifact_path = tmp_path / "missing.mp4"
     artifact = runtime_store.record_artifact(
@@ -68,6 +68,7 @@ def test_admin_diagnostics_exposes_runtime_v2_quality_report(tmp_path, monkeypat
 
     assert response.status_code == 200
     quality = response.json()["runtime_v2_quality"]
+    assert quality["window_days"] == 7
     assert quality["status_counts"]["failed"] == 1
     assert quality["artifact_delivery_failed"] == 1
     assert quality["kernel_timeouts"] == 1

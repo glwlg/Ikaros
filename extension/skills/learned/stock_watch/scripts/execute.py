@@ -5,6 +5,7 @@ Stock Watch Skill Script
 import argparse
 import asyncio
 import datetime
+import math
 import os
 import re
 import sys
@@ -24,6 +25,7 @@ from core.channel_access import channel_feature_denied_text, is_channel_feature_
 from extension.skills.learned.stock_watch.scripts.store import (
     add_watchlist_stock,
     clear_last_stock_push_message,
+    clear_watchlist_position,
     get_all_watchlist_users,
     get_editable_stock_push_message_id,
     get_last_stock_push_prices,
@@ -33,6 +35,7 @@ from extension.skills.learned.stock_watch.scripts.store import (
     remove_watchlist_stock,
     save_last_stock_push_message,
     save_last_stock_push_prices,
+    set_watchlist_position,
     set_stock_delivery_target,
 )
 from core.skill_menu import make_callback, parse_callback
@@ -46,7 +49,7 @@ if __package__:
         search_stock_by_name,
     )
 else:
-    from services.stock_service import (
+    from services.stock_service import (  # type: ignore
         fetch_stock_quotes,
         format_stock_message,
         search_stock_by_name,
@@ -133,6 +136,8 @@ def _parse_stock_subcommand(text: str) -> tuple[str, str]:
         return "add", args
     if sub in {"remove", "rm", "del", "delete", "remove_stock"}:
         return "remove", args
+    if sub in {"position", "holding", "cost", "持仓", "成本"}:
+        return "position", args
     if sub in {"refresh", "run", "check"}:
         return "refresh", ""
     if sub in {"help", "h", "?"}:
@@ -147,6 +152,8 @@ def _stock_usage_text() -> str:
         "`/stock list`\n"
         "`/stock add <股票名称或代码>`\n"
         "`/stock remove <股票名称或代码>`\n"
+        "`/stock position <股票名称或代码> <持仓数量> <单位成本>`\n"
+        "`/stock position clear <股票名称或代码>`\n"
         "`/stock refresh`\n"
         "`/stock help`"
     )
@@ -156,15 +163,34 @@ def _stock_home_ui() -> dict:
     return {
         "actions": [
             [
-                {"text": "📋 我的自选股", "callback_data": make_callback(STOCK_MENU_NS, "list")},
-                {"text": "🔄 刷新行情", "callback_data": make_callback(STOCK_MENU_NS, "refresh")},
+                {
+                    "text": "📋 我的自选股",
+                    "callback_data": make_callback(STOCK_MENU_NS, "list"),
+                },
+                {
+                    "text": "🔄 刷新行情",
+                    "callback_data": make_callback(STOCK_MENU_NS, "refresh"),
+                },
             ],
             [
-                {"text": "📍 设为当前渠道", "callback_data": make_callback(STOCK_MENU_NS, "bind")},
-                {"text": "ℹ️ 帮助", "callback_data": make_callback(STOCK_MENU_NS, "help")},
+                {
+                    "text": "📍 设为当前渠道",
+                    "callback_data": make_callback(STOCK_MENU_NS, "bind"),
+                },
+                {
+                    "text": "ℹ️ 帮助",
+                    "callback_data": make_callback(STOCK_MENU_NS, "help"),
+                },
             ],
             [
-                {"text": "➕ 如何添加", "callback_data": make_callback(STOCK_MENU_NS, "addhelp")},
+                {
+                    "text": "➕ 如何添加",
+                    "callback_data": make_callback(STOCK_MENU_NS, "addhelp"),
+                },
+                {
+                    "text": "💼 如何记录持仓",
+                    "callback_data": make_callback(STOCK_MENU_NS, "positionhelp"),
+                },
             ],
         ]
     }
@@ -173,7 +199,17 @@ def _stock_home_ui() -> dict:
 async def show_stock_menu(ctx: UnifiedContext, user_id: int | str) -> dict:
     watchlist = await get_user_watchlist(user_id)
     delivery_target = await get_stock_delivery_target(user_id)
-    names = [str(item.get("stock_name") or "").strip() for item in watchlist[:4] if str(item.get("stock_name") or "").strip()]
+    position_count = sum(
+        1
+        for item in watchlist
+        if float(item.get("position_quantity") or 0) > 0
+        and float(item.get("cost_price") or 0) > 0
+    )
+    names = [
+        str(item.get("stock_name") or "").strip()
+        for item in watchlist[:4]
+        if str(item.get("stock_name") or "").strip()
+    ]
     summary = "、".join(names)
     if len(watchlist) > 4:
         summary += " 等"
@@ -184,9 +220,11 @@ async def show_stock_menu(ctx: UnifiedContext, user_id: int | str) -> dict:
         "text": (
             "📈 **自选股管理**\n\n"
             f"当前数量：{len(watchlist)}\n"
+            f"已记录持仓：{position_count}\n"
             f"当前列表：{summary}\n\n"
             f"推送渠道：`{_format_delivery_target(delivery_target)}`\n\n"
-            "支持直接输入：`/stock add <名称或代码>`、`/stock remove <名称或代码>`。"
+            "支持直接输入：`/stock add <名称或代码>`、"
+            "`/stock position <名称或代码> <数量> <单位成本>`。"
         ),
         "ui": _stock_home_ui(),
     }
@@ -205,12 +243,154 @@ def _stock_add_help_response() -> dict:
         "ui": {
             "actions": [
                 [
-                    {"text": "🏠 返回首页", "callback_data": make_callback(STOCK_MENU_NS, "home")},
-                    {"text": "📋 查看自选股", "callback_data": make_callback(STOCK_MENU_NS, "list")},
+                    {
+                        "text": "🏠 返回首页",
+                        "callback_data": make_callback(STOCK_MENU_NS, "home"),
+                    },
+                    {
+                        "text": "📋 查看自选股",
+                        "callback_data": make_callback(STOCK_MENU_NS, "list"),
+                    },
                 ]
             ]
         },
     }
+
+
+def _stock_position_help_response() -> dict:
+    return {
+        "text": (
+            "💼 **记录持仓**\n\n"
+            "持仓数量和单位成本用于计算今日及持仓盈亏：\n"
+            "• `/stock position sh600519 100 1500`\n"
+            "• `/stock position 贵州茅台 100 1500`\n\n"
+            "清除持仓但保留自选股：\n"
+            "• `/stock position clear sh600519`"
+        ),
+        "ui": {
+            "actions": [
+                [
+                    {
+                        "text": "🏠 返回首页",
+                        "callback_data": make_callback(STOCK_MENU_NS, "home"),
+                    },
+                    {
+                        "text": "📋 查看自选股",
+                        "callback_data": make_callback(STOCK_MENU_NS, "list"),
+                    },
+                ]
+            ]
+        },
+    }
+
+
+def _match_watchlist_entries(
+    watchlist: list[dict],
+    keyword: str,
+) -> list[dict]:
+    normalized = str(keyword or "").strip().lower()
+    if not normalized:
+        return []
+    exact = [
+        item
+        for item in watchlist
+        if normalized
+        in {
+            str(item.get("stock_code") or "").strip().lower(),
+            str(item.get("stock_name") or "").strip().lower(),
+        }
+    ]
+    if exact:
+        return exact
+    return [
+        item
+        for item in watchlist
+        if normalized in str(item.get("stock_name") or "").strip().lower()
+    ]
+
+
+def _parse_position_command(args: str) -> tuple[str, str, float, float]:
+    parts = str(args or "").strip().split()
+    if len(parts) == 2 and parts[0].lower() in {"clear", "remove", "清除", "删除"}:
+        return "clear", parts[1], 0.0, 0.0
+    if len(parts) != 3:
+        raise ValueError(
+            "用法: `/stock position <股票名称或代码> <持仓数量> <单位成本>`"
+        )
+    keyword, raw_quantity, raw_cost = parts
+    try:
+        quantity = float(raw_quantity.replace(",", ""))
+        cost_price = float(raw_cost.replace(",", ""))
+    except ValueError as exc:
+        raise ValueError("持仓数量和单位成本必须是数字") from exc
+    if (
+        not math.isfinite(quantity)
+        or not math.isfinite(cost_price)
+        or quantity <= 0
+        or cost_price <= 0
+    ):
+        raise ValueError("持仓数量和单位成本必须大于 0")
+    return "set", keyword, quantity, cost_price
+
+
+async def _apply_watchlist_position(
+    user_id: int | str,
+    keyword: str,
+    *,
+    action: str,
+    quantity: float = 0.0,
+    cost_price: float = 0.0,
+) -> dict:
+    watchlist = await get_user_watchlist(user_id)
+    matches = _match_watchlist_entries(watchlist, keyword)
+    if not matches:
+        return {"text": f"⚠️ 自选股中未找到「{keyword}」", "ui": {}}
+    if len(matches) > 1:
+        choices = "、".join(
+            f"{item.get('stock_name')}({item.get('stock_code')})" for item in matches
+        )
+        return {"text": f"⚠️ 匹配到多个自选股，请改用代码：{choices}", "ui": {}}
+
+    target = matches[0]
+    stock_code = str(target.get("stock_code") or "").strip()
+    stock_name = str(target.get("stock_name") or stock_code).strip()
+    if action == "clear":
+        await clear_watchlist_position(user_id, stock_code)
+        return {"text": f"✅ 已清除 **{stock_name}** 的持仓记录", "ui": {}}
+
+    if (
+        not math.isfinite(quantity)
+        or not math.isfinite(cost_price)
+        or quantity <= 0
+        or cost_price <= 0
+    ):
+        return {"text": "持仓数量和单位成本必须是大于 0 的数字", "ui": {}}
+    await set_watchlist_position(user_id, stock_code, quantity, cost_price)
+    return {
+        "text": (
+            f"✅ 已记录 **{stock_name}** 的持仓\n\n"
+            f"数量：{quantity:g}\n单位成本：{cost_price:g}\n\n"
+            "后续行情推送会展示今日盈亏和持仓盈亏。"
+        ),
+        "ui": {},
+    }
+
+
+async def update_stock_position_from_command(
+    user_id: int | str,
+    args: str,
+) -> dict:
+    try:
+        action, keyword, quantity, cost_price = _parse_position_command(args)
+    except ValueError as exc:
+        return {"text": str(exc), "ui": {}}
+    return await _apply_watchlist_position(
+        user_id,
+        keyword,
+        action=action,
+        quantity=quantity,
+        cost_price=cost_price,
+    )
 
 
 async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> str:
@@ -238,6 +418,12 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> str:
         "刷新": "refresh",
         "更新": "refresh",
         "refresh": "refresh",
+        "持仓": "set_position",
+        "成本": "set_position",
+        "position": "set_position",
+        "set_position": "set_position",
+        "清除持仓": "clear_position",
+        "clear_position": "clear_position",
     }
     action = ACTION_MAP.get(raw_action, raw_action)
 
@@ -260,6 +446,20 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> str:
 
     if action == "remove_stock":
         return await remove_stock(ctx, user_id, stock_name)
+
+    if action in {"set_position", "clear_position"}:
+        try:
+            quantity = float(params.get("quantity") or 0)
+            cost_price = float(params.get("cost_price") or 0)
+        except (TypeError, ValueError):
+            return {"text": "持仓数量和单位成本必须是数字", "ui": {}}
+        return await _apply_watchlist_position(
+            user_id,
+            stock_name,
+            action="clear" if action == "clear_position" else "set",
+            quantity=quantity,
+            cost_price=cost_price,
+        )
 
     if action == "list" or not stock_name:
         return await show_watchlist(ctx, user_id)
@@ -471,7 +671,11 @@ async def stock_push_job() -> None:
                     continue
 
                 previous_prices = await get_last_stock_push_prices(user_id)
-                message = format_stock_message(quotes, previous_prices)
+                message = format_stock_message(
+                    quotes,
+                    previous_prices,
+                    positions=watchlist,
+                )
                 stock_delivery_target = await get_stock_delivery_target(user_id)
                 target_platform, target_chat_id = await _resolve_proactive_delivery_target(
                     user_id,
@@ -554,7 +758,7 @@ async def trigger_manual_stock_check(user_id: int | str) -> str:
         quotes = await fetch_stock_quotes(stock_codes)
         if not quotes:
             return "❌ 无法获取行情数据，请稍后重试。"
-        return format_stock_message(quotes)
+        return format_stock_message(quotes, positions=watchlist)
     except Exception as exc:
         logger.error("Manual stock check error for %s: %s", user_id, exc)
         return f"❌ 刷新失败: {str(exc)}"
@@ -609,6 +813,9 @@ def register_handlers(adapter_manager):
                 return {"text": "用法: `/stock remove <股票名称或代码>`", "ui": {}}
             return await remove_stock(ctx, user_id, name)
 
+        if sub == "position":
+            return await update_stock_position_from_command(user_id, args)
+
         if sub == "refresh":
             result = await trigger_manual_stock_check(user_id)
             if result:
@@ -653,11 +860,16 @@ async def show_watchlist(
     quotes = await fetch_stock_quotes(stock_codes)
 
     if quotes:
-        message = format_stock_message(quotes)
+        message = format_stock_message(quotes, positions=watchlist)
     else:
         lines = ["📈 **我的自选股**\n"]
         for item in watchlist:
-            lines.append(f"• {item['stock_name']} ({item['stock_code']})")
+            line = f"• {item['stock_name']} ({item['stock_code']})"
+            quantity = float(item.get("position_quantity") or 0)
+            cost_price = float(item.get("cost_price") or 0)
+            if quantity > 0 and cost_price > 0:
+                line += f"｜持仓 {quantity:g} @ {cost_price:g}"
+            lines.append(line)
         message = "\n".join(lines)
 
     actions = []
@@ -679,8 +891,14 @@ async def show_watchlist(
     if include_menu_nav:
         actions.append(
             [
-                {"text": "➕ 如何添加", "callback_data": make_callback(STOCK_MENU_NS, "addhelp")},
-                {"text": "🏠 返回首页", "callback_data": make_callback(STOCK_MENU_NS, "home")},
+                {
+                    "text": "➕ 如何添加",
+                    "callback_data": make_callback(STOCK_MENU_NS, "addhelp"),
+                },
+                {
+                    "text": "🏠 返回首页",
+                    "callback_data": make_callback(STOCK_MENU_NS, "home"),
+                },
             ]
         )
 
@@ -852,14 +1070,22 @@ async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
             }
         elif action == "addhelp":
             payload = _stock_add_help_response()
+        elif action == "positionhelp":
+            payload = _stock_position_help_response()
         elif action == "help":
             payload = {
                 "text": _stock_usage_text(),
                 "ui": {
                     "actions": [
                         [
-                            {"text": "🏠 返回首页", "callback_data": make_callback(STOCK_MENU_NS, "home")},
-                            {"text": "📋 查看自选股", "callback_data": make_callback(STOCK_MENU_NS, "list")},
+                            {
+                                "text": "🏠 返回首页",
+                                "callback_data": make_callback(STOCK_MENU_NS, "home"),
+                            },
+                            {
+                                "text": "📋 查看自选股",
+                                "callback_data": make_callback(STOCK_MENU_NS, "list"),
+                            },
                         ]
                     ]
                 },
@@ -971,6 +1197,20 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     )
     remove_parser.add_argument("keyword")
 
+    position_parser = subparsers.add_parser(
+        "position",
+        help="Record holding quantity and average unit cost for a watchlist stock",
+    )
+    position_parser.add_argument("keyword")
+    position_parser.add_argument("quantity", type=float)
+    position_parser.add_argument("cost_price", type=float)
+
+    clear_position_parser = subparsers.add_parser(
+        "position-clear",
+        help="Clear holding data while keeping the stock in the watchlist",
+    )
+    clear_position_parser.add_argument("keyword")
+
     return parser
 
 
@@ -984,7 +1224,7 @@ async def _cli_print_watchlist(user_id: str, platform: str) -> int:
         [str(item.get("stock_code") or "").strip() for item in watchlist]
     )
     if quotes:
-        print(format_stock_message(quotes))
+        print(format_stock_message(quotes, positions=watchlist))
     else:
         for item in watchlist:
             print(
@@ -993,10 +1233,16 @@ async def _cli_print_watchlist(user_id: str, platform: str) -> int:
     return 0
 
 
-async def _cli_print_quotes(args: argparse.Namespace, user_id: str, platform: str) -> int:
-    symbols = [str(item or "").strip() for item in list(args.symbols or []) if str(item or "").strip()]
+async def _cli_print_quotes(
+    args: argparse.Namespace, user_id: str, platform: str
+) -> int:
+    symbols = [
+        str(item or "").strip()
+        for item in list(args.symbols or [])
+        if str(item or "").strip()
+    ]
+    watchlist = await get_user_watchlist(user_id, platform=platform)
     if not symbols:
-        watchlist = await get_user_watchlist(user_id, platform=platform)
         symbols = [
             str(item.get("stock_code") or "").strip()
             for item in watchlist
@@ -1010,7 +1256,7 @@ async def _cli_print_quotes(args: argparse.Namespace, user_id: str, platform: st
     if not quotes:
         print("no quotes found")
         return 1
-    print(format_stock_message(quotes))
+    print(format_stock_message(quotes, positions=watchlist))
     return 0
 
 
@@ -1122,6 +1368,56 @@ async def _cli_remove(keyword: str, user_id: str, platform: str) -> int:
     return 0
 
 
+async def _cli_position(
+    keyword: str,
+    quantity: float,
+    cost_price: float,
+    user_id: str,
+    platform: str,
+) -> int:
+    if quantity <= 0 or cost_price <= 0:
+        print("quantity and cost_price must be greater than zero", file=sys.stderr)
+        return 1
+    watchlist = await get_user_watchlist(user_id, platform=platform)
+    matches = _match_watchlist_entries(watchlist, keyword)
+    if len(matches) != 1:
+        if not matches:
+            print(f"watchlist stock not found: {keyword}")
+        else:
+            print("multiple watchlist entries matched, please use the stock code")
+        return 1
+    target = matches[0]
+    stock_code = str(target.get("stock_code") or "").strip()
+    stock_name = str(target.get("stock_name") or stock_code).strip()
+    await set_watchlist_position(user_id, stock_code, quantity, cost_price)
+    print(
+        f"position_set\t{stock_name}\t{stock_code}\t"
+        f"quantity={quantity:g}\tcost_price={cost_price:g}"
+    )
+    return 0
+
+
+async def _cli_clear_position(
+    keyword: str,
+    user_id: str,
+    platform: str,
+) -> int:
+    watchlist = await get_user_watchlist(user_id, platform=platform)
+    matches = _match_watchlist_entries(watchlist, keyword)
+    if len(matches) != 1:
+        if not matches:
+            print(f"watchlist stock not found: {keyword}")
+        else:
+            print("multiple watchlist entries matched, please use the stock code")
+        return 1
+    target = matches[0]
+    stock_code = str(target.get("stock_code") or "").strip()
+    stock_name = str(target.get("stock_name") or stock_code).strip()
+    await clear_watchlist_position(user_id, stock_code)
+    print(f"position_cleared\t{stock_name}\t{stock_code}")
+    return 0
+
+
 async def _run_cli() -> int:
     parser = _build_cli_parser()
     args = parser.parse_args()
@@ -1145,6 +1441,20 @@ async def _run_cli() -> int:
         return await _cli_add(str(args.keyword or "").strip(), user_id, platform)
     if command == "remove":
         return await _cli_remove(str(args.keyword or "").strip(), user_id, platform)
+    if command == "position":
+        return await _cli_position(
+            str(args.keyword or "").strip(),
+            float(args.quantity),
+            float(args.cost_price),
+            user_id,
+            platform,
+        )
+    if command == "position-clear":
+        return await _cli_clear_position(
+            str(args.keyword or "").strip(),
+            user_id,
+            platform,
+        )
     print(f"unsupported command: {command}", file=sys.stderr)
     return 1
 

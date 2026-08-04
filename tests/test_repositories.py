@@ -112,6 +112,49 @@ class TestWatchlistRepo:
         assert len(watchlist) == 0
 
     @pytest.mark.asyncio
+    async def test_watchlist_position_roundtrip_and_clear(self, mock_db):
+        """测试持仓数量与单位成本可更新并清除。"""
+        from core.state_io import init_db
+        from extension.skills.learned.stock_watch.scripts.store import (
+            add_watchlist_stock,
+            clear_watchlist_position,
+            get_user_watchlist,
+            set_watchlist_position,
+        )
+
+        await init_db()
+        await add_watchlist_stock(12345, "sh601006", "大秦铁路")
+
+        updated = await set_watchlist_position(12345, "sh601006", 1200, 7.56)
+
+        assert updated is True
+        watchlist = await get_user_watchlist(12345)
+        assert watchlist[0]["position_quantity"] == 1200
+        assert watchlist[0]["cost_price"] == 7.56
+
+        cleared = await clear_watchlist_position(12345, "sh601006")
+
+        assert cleared is True
+        watchlist = await get_user_watchlist(12345)
+        assert watchlist[0]["position_quantity"] == 0
+        assert watchlist[0]["cost_price"] == 0
+
+    @pytest.mark.asyncio
+    async def test_watchlist_position_rejects_invalid_values(self, mock_db):
+        """测试无效持仓不会写入。"""
+        from core.state_io import init_db
+        from extension.skills.learned.stock_watch.scripts.store import (
+            add_watchlist_stock,
+            set_watchlist_position,
+        )
+
+        await init_db()
+        await add_watchlist_stock(12345, "sh601006", "大秦铁路")
+
+        with pytest.raises(ValueError):
+            await set_watchlist_position(12345, "sh601006", 0, 7.56)
+
+    @pytest.mark.asyncio
     async def test_last_stock_push_prices_roundtrip(self, mock_db):
         """测试最近一次自选股推送价格快照"""
         from core.state_io import init_db

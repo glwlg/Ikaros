@@ -505,7 +505,7 @@ async def test_task_tracker_lists_runtime_v2_tasks_and_dedupes_legacy(
         source="user",
         input_text="Runtime v2 task tracker",
         status="running",
-        kernel_provider="codex",
+        kernel_provider="agents_sdk",
     )
     runtime_task = runtime_v2.create_task(
         session_id=session["id"],

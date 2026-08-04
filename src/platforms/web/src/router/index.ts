@@ -63,6 +63,12 @@ const router = createRouter({
             meta: { title: '自选股管理' },
         },
         {
+            path: '/modules/subscriptions',
+            name: 'ModuleSubscriptions',
+            component: () => import('@/views/Modules/SubscriptionView.vue'),
+            meta: { title: '订阅管理' },
+        },
+        {
             path: '/accounting',
             component: () => import('@/layouts/AccountingLayout.vue'),
             meta: { fullscreen: true },

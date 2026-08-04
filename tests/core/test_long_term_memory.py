@@ -80,7 +80,7 @@ async def test_long_term_memory_file_provider_keeps_generic_snapshot(
 
     assert ok is True
     assert "居住地：北京" in detail
-    assert "【长期记忆】" in snapshot
+    assert "【核心记忆】" in snapshot or "【长期记忆】" in snapshot
     assert "MEMORY.md" not in snapshot
     assert "【近期记忆" in snapshot
     assert "居住地：北京" in (
@@ -171,7 +171,7 @@ async def test_long_term_memory_mem0_provider_reads_and_writes_without_file_stor
 
     assert ok is True
     assert "偏好称呼：老王" in detail
-    assert "【长期记忆】" in user_snapshot
+    assert "【核心记忆】" in user_snapshot or "【长期记忆】" in user_snapshot
     assert "偏好称呼：老王" in user_snapshot
     assert added == 1
     assert "- [2026-03-19] 优先验证配置" in ikaros_snapshot

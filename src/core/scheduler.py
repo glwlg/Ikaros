@@ -17,6 +17,11 @@ from core.proactive_delivery import resolve_proactive_target
 from core.runtime_v2 import runtime_event_bus, runtime_v2
 from core.scheduler_display import format_scheduler_report
 from core.state_paths import SINGLE_USER_SCOPE
+from core.trading_calendar import (
+    RUN_CALENDAR_ALWAYS,
+    normalize_run_calendar,
+    should_run_on_calendar,
+)
 from shared.contracts.proactive_delivery_target import normalize_proactive_platform
 
 from extension.skills.learned.reminder.scripts.store import (
@@ -373,6 +378,7 @@ async def run_skill_cron_job(
     chat_id: str = "",
     session_id: str = "",
     scheduled_task_id: int | str = "",
+    run_calendar: str = RUN_CALENDAR_ALWAYS,
 ):
     """
     通用 Skill 定时任务执行器
@@ -388,6 +394,15 @@ async def run_skill_cron_job(
     )
     run_now = datetime.datetime.now().astimezone()
     run_date_iso = run_now.date().isoformat()
+    calendar_mode = normalize_run_calendar(run_calendar)
+    if not should_run_on_calendar(calendar_mode, run_now.date()):
+        logger.info(
+            "[Cron] Skip task %s on %s (run_calendar=%s)",
+            scheduled_task_id_text or instruction[:40],
+            run_date_iso,
+            calendar_mode,
+        )
+        return
     original_instruction = str(instruction or "")
     rendered_instruction = render_scheduler_instruction_template(
         original_instruction,
@@ -417,7 +432,7 @@ async def run_skill_cron_job(
             session_id=run_session_id,
             source="scheduler",
             input_text=rendered_instruction,
-            kernel_provider="codex",
+            kernel_provider="agents_sdk",
             metadata={
                 "scheduled_task_id": scheduled_task_id_text,
                 "original_instruction": original_instruction,
@@ -506,8 +521,6 @@ async def run_skill_cron_job(
         )
         if run_session_id:
             ctx.user_data["current_session_id"] = run_session_id
-            ctx.user_data["codex_kernel_session_platform"] = "scheduler"
-            ctx.user_data["codex_kernel_session_user_id"] = user_id_text
             ctx.user_data["runtime_v2_session_id"] = run_session_id
             if runtime_turn_id:
                 ctx.user_data["runtime_v2_turn_id"] = runtime_turn_id
@@ -710,6 +723,7 @@ async def reload_scheduler_jobs():
         platform = task.get("platform", "telegram")
         chat_id = str(task.get("chat_id") or "").strip()
         need_push = bool(task.get("need_push", True))
+        run_calendar = normalize_run_calendar(task.get("run_calendar"))
         session_id = scheduler_task_session_id(task_id)
         existing_session = runtime_v2.get_session(session_id)
         user_id = (
@@ -733,7 +747,7 @@ async def reload_scheduler_jobs():
             platform=platform,
             chat_id=chat_id,
             enabled=True,
-            metadata={"need_push": need_push},
+            metadata={"need_push": need_push, "run_calendar": run_calendar},
         )
 
         try:
@@ -759,6 +773,7 @@ async def reload_scheduler_jobs():
                         chat_id,
                         session_id,
                         task_id,
+                        run_calendar,
                     ],
                     replace_existing=True,
                 )

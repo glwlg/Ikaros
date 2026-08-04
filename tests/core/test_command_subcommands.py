@@ -88,6 +88,22 @@ def test_stock_rss_schedule_deploy_subcommand_parsers():
 
     assert stock._parse_stock_subcommand("/stock") == ("menu", "")
     assert stock._parse_stock_subcommand("/stock add 茅台") == ("add", "茅台")
+    assert stock._parse_stock_subcommand("/stock position 茅台 100 1500") == (
+        "position",
+        "茅台 100 1500",
+    )
+    assert stock._parse_position_command("茅台 100 1500") == (
+        "set",
+        "茅台",
+        100,
+        1500,
+    )
+    assert stock._parse_position_command("clear sh600519") == (
+        "clear",
+        "sh600519",
+        0,
+        0,
+    )
     assert stock._parse_stock_subcommand("/stock unknown") == ("help", "")
 
     assert rss._parse_rss_subcommand("/rss") == ("menu", "")

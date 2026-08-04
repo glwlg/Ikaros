@@ -5,6 +5,7 @@ import pytest
 from core.scheduler_display import (
     format_scheduler_report,
     summarize_scheduler_instruction,
+    summarize_scheduler_instruction_for_ui,
 )
 from extension.skills.builtin.scheduler_manager.scripts import (
     execute as scheduler_execute,
@@ -40,6 +41,17 @@ def test_scheduler_report_uses_instruction_preview_but_keeps_full_response():
     assert f"({instruction[:30]}...)" in report
     assert response in report
     assert instruction not in report
+
+
+def test_scheduler_ui_preview_is_longer_than_chat_preview():
+    instruction = "用 article_publisher 写一篇" + ("很长的提示词内容" * 20)
+
+    ui_preview = summarize_scheduler_instruction_for_ui(instruction)
+    chat_preview = summarize_scheduler_instruction(instruction)
+
+    assert ui_preview.endswith("...")
+    assert len(ui_preview) > len(chat_preview)
+    assert len(ui_preview) <= 99
 
 
 @pytest.mark.asyncio

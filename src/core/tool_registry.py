@@ -181,6 +181,42 @@ CORE_TOOLS: List[Dict[str, Any]] = [
 
 IKAROS_INTERNAL_TOOLS: List[Dict[str, Any]] = [
     {
+        "name": "send_message",
+        "description": (
+            "Send an intermediate user-visible message immediately during the current agent turn. "
+            "Use text for progress updates and files for attachments; each call is delivered now, "
+            "so send multiple images with separate calls when the user asks for them one by one. "
+            "Tool result files are not delivered automatically; call this explicitly for every "
+            "attachment the user should receive. Do not use this for the final answer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Optional short message to send immediately.",
+                },
+                "files": {
+                    "type": "array",
+                    "description": "Optional attachments to send immediately.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "filename": {"type": "string"},
+                            "kind": {
+                                "type": "string",
+                                "enum": ["auto", "document", "photo", "video", "audio"],
+                            },
+                            "caption": {"type": "string"},
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+        },
+    },
+    {
         "name": "send_local_file",
         "description": (
             "Prepare an existing safe server-side file for user delivery by the final outer handler. "

@@ -2,32 +2,40 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
+    Activity,
+    AlertTriangle,
     ArrowRight,
     CalendarDays,
     CheckCircle2,
-    Globe2,
+    CircleDashed,
+    Clock3,
     HeartPulse,
-    KeyRound,
-    Link2,
     MessageSquareText,
-    Radio,
+    Puzzle,
     RefreshCw,
     Shield,
     TrendingUp,
-    UsersRound,
     WalletCards,
     Zap,
 } from 'lucide-vue-next'
 
 import { getAdminAudit, getDiagnostics } from '@/api/admin'
+import { getSkills } from '@/api/skills'
 import request from '@/api/request'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
-const diagnostics = ref<Record<string, any> | null>(null)
-const auditItems = ref<Array<Record<string, any>>>([])
+const loading = ref(false)
 const healthStatus = ref<'loading' | 'ok' | 'error'>('loading')
 const diagnosticsStatus = ref<'idle' | 'loading' | 'ok' | 'forbidden' | 'error'>('idle')
+const diagnostics = ref<Record<string, any> | null>(null)
+const auditItems = ref<Array<Record<string, any>>>([])
+const schedulerTasks = ref<Array<Record<string, any>>>([])
+const schedulerError = ref('')
+const skills = ref<Array<Record<string, any>>>([])
+const skillsError = ref('')
+const watchlistCount = ref<number | null>(null)
+const watchlistError = ref('')
 const lastUpdatedAt = ref<Date | null>(null)
 
 const roleLabel = computed(() => {
@@ -36,109 +44,85 @@ const roleLabel = computed(() => {
     return '观察者'
 })
 
-const workspaceCards = computed(() => [
-    {
-        title: 'Chat 对话',
-        description: 'AI 对话门户，支持文本与多模态交互。',
-        to: '/chat',
-        icon: MessageSquareText,
-    },
-    {
-        title: 'Bind 绑定',
-        description: '管理外部服务连接与 API Hooks。',
-        to: '/bindings',
-        icon: Link2,
-    },
-    {
-        title: 'Keys 凭据',
-        description: '管理发布凭据与多账户投递目标。',
-        to: '/credentials',
-        icon: KeyRound,
-    },
-    {
-        title: 'RSS 订阅源',
-        description: '自动化新闻抓取与情报订阅。',
-        to: '/modules/rss',
-        icon: Radio,
-    },
-    {
-        title: 'Scheduling 任务调度',
-        description: '临时任务管理与自动化执行。',
-        to: '/modules/scheduler',
-        icon: CalendarDays,
-    },
-    {
-        title: 'Heartbeat 心跳监控',
-        description: '实时监控系统健康与心跳指标。',
-        to: '/modules/monitor',
-        icon: HeartPulse,
-    },
-    {
-        title: 'Stocks 市场追踪',
-        description: '市场分析与金融预测追踪。',
-        to: '/modules/watchlist',
-        icon: TrendingUp,
-    },
-    {
-        title: 'Accounting 智能记账',
-        description: '记录收支、资产账户与预算统计。',
-        to: '/accounting',
-        icon: WalletCards,
-    },
-])
+const greeting = computed(() => {
+    const hour = new Date().getHours()
+    if (hour < 6) return '夜深了'
+    if (hour < 12) return '早上好'
+    if (hour < 18) return '下午好'
+    return '晚上好'
+})
+
+const displayName = computed(
+    () => authStore.user?.username || authStore.user?.email?.split('@')[0] || roleLabel.value,
+)
+
+// /admin/diagnostics puts platforms at the top level (not under runtime_config).
+const platformsMap = computed(() => {
+    const root = diagnostics.value || {}
+    return (root.platforms || root.runtime_config?.platforms || {}) as Record<string, boolean>
+})
 
 const platformEntries = computed(() =>
-    Object.entries(diagnostics.value?.runtime_config?.platforms || {}).map(([name, enabled]) => ({
+    Object.entries(platformsMap.value).map(([name, enabled]) => ({
         name,
         enabled: Boolean(enabled),
         configured: Boolean(diagnostics.value?.platform_env?.[name]?.configured),
-    }))
+    })),
 )
 
-const enabledPlatforms = computed(() =>
-    platformEntries.value.filter(item => item.enabled)
-)
-
+const enabledPlatforms = computed(() => platformEntries.value.filter((item) => item.enabled))
 const configuredPlatforms = computed(() =>
-    platformEntries.value.filter(item => item.configured)
+    platformEntries.value.filter((item) => item.enabled && item.configured),
+)
+const enabledMissingConfig = computed(() =>
+    enabledPlatforms.value.filter((item) => !item.configured),
 )
 
-const statCards = computed(() => [
-    {
-        label: '渠道',
-        alias: 'Channel',
-        value: diagnostics.value ? String(enabledPlatforms.value.length) : '未知',
-        detail: diagnostics.value
-            ? `已启用 ${enabledPlatforms.value.length} / ${platformEntries.value.length} 个渠道，已配置 ${configuredPlatforms.value.length} 个`
-            : '需要诊断权限获取渠道状态',
-        icon: Globe2,
-        tone: 'blue',
-    },
-    {
-        label: '角色',
-        alias: 'Role',
-        value: roleLabel.value,
-        detail: authStore.user?.email || '当前登录用户',
-        icon: UsersRound,
-        tone: 'teal',
-    },
-    {
-        label: '模块数',
-        alias: 'Modules',
-        value: String(workspaceCards.value.length),
-        detail: '当前控制台可见工作空间入口',
-        icon: WalletCards,
-        tone: 'violet',
-    },
-    {
-        label: '安全策略',
-        alias: 'Security',
-        value: 'RBAC',
-        detail: `当前权限：${authStore.user?.role || 'viewer'}`,
-        icon: Shield,
-        tone: 'blue',
-    },
-])
+const quality = computed(() => diagnostics.value?.runtime_v2_quality || null)
+const statusCounts = computed(() => quality.value?.status_counts || {})
+const turnSucceeded = computed(() => Number(statusCounts.value.succeeded || 0))
+const turnFailed = computed(() => Number(statusCounts.value.failed || 0))
+const turnWaiting = computed(() =>
+    Number(statusCounts.value.waiting_external || 0)
+    + Number(statusCounts.value.waiting_user || 0),
+)
+const deliveryFailed = computed(() => Number(quality.value?.artifact_delivery_failed || 0))
+const recentFailures = computed(() => {
+    const turns = Array.isArray(quality.value?.recent_failed_turns)
+        ? quality.value.recent_failed_turns
+        : []
+    const deliveries = Array.isArray(quality.value?.recent_delivery_failures)
+        ? quality.value.recent_delivery_failures
+        : []
+    return { turns: turns.slice(0, 4), deliveries: deliveries.slice(0, 3) }
+})
+
+const activeTasks = computed(() => schedulerTasks.value.filter((task) => task.is_active !== false))
+const pausedTasks = computed(() => schedulerTasks.value.filter((task) => task.is_active === false))
+const tradingDayTasks = computed(
+    () => activeTasks.value.filter((task) => task.run_calendar === 'trading_days').length,
+)
+const enabledSkills = computed(() => skills.value.filter((skill) => skill.enabled !== false).length)
+const disabledSkills = computed(() => skills.value.filter((skill) => skill.enabled === false).length)
+
+const systemStatusText = computed(() => {
+    if (healthStatus.value === 'loading' || loading.value) return '检查中'
+    if (healthStatus.value !== 'ok') return '异常'
+    if (turnFailed.value > 0 || deliveryFailed.value > 0 || enabledMissingConfig.value.length) {
+        return '需关注'
+    }
+    if (diagnosticsStatus.value === 'forbidden') return '基础正常'
+    return '正常'
+})
+
+const lastUpdatedText = computed(() => {
+    if (!lastUpdatedAt.value) return '尚未更新'
+    return lastUpdatedAt.value.toLocaleTimeString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+    })
+})
 
 const formatAuditTime = (value: unknown) => {
     const raw = String(value || '').trim()
@@ -153,746 +137,980 @@ const formatAuditTime = (value: unknown) => {
     })
 }
 
-const recentActivities = computed(() =>
-    auditItems.value.slice(0, 5).map(item => ({
-        title: String(item.action || '审计记录'),
-        detail: String(item.summary || item.target || item.actor || '无摘要'),
-        time: formatAuditTime(item.ts),
-        tone: String(item.status || '').toLowerCase() === 'success' ? 'green' : 'amber',
-        icon: Shield,
-    }))
-)
+const previewText = (value: unknown, limit = 72) => {
+    const text = String(value || '').replace(/\s+/g, ' ').trim()
+    if (text.length <= limit) return text || '—'
+    return `${text.slice(0, limit).trimEnd()}...`
+}
 
-const configFiles = computed(() => diagnostics.value?.config_files || {})
-
-const systemRows = computed(() => [
+const kpiCards = computed(() => [
     {
-        label: 'API 服务',
-        value: healthStatus.value === 'ok' ? '健康检查通过' : healthStatus.value === 'loading' ? '检查中' : '健康检查失败',
-        ok: healthStatus.value === 'ok',
+        key: 'health',
+        label: 'API 健康',
+        value: healthStatus.value === 'ok' ? '正常' : healthStatus.value === 'loading' ? '检查中' : '失败',
+        detail: healthStatus.value === 'ok' ? '/health 通过' : '健康检查未通过',
+        tone: healthStatus.value === 'ok' ? 'good' : healthStatus.value === 'loading' ? 'neutral' : 'bad',
+        to: '/admin/diagnostics',
+        icon: HeartPulse,
     },
     {
-        label: '诊断接口',
-        value: diagnosticsStatus.value === 'ok'
-            ? '已获取诊断数据'
+        key: 'channels',
+        label: '消息渠道',
+        value: diagnostics.value
+            ? `${enabledPlatforms.value.length}/${platformEntries.value.length}`
+            : '—',
+        detail: diagnostics.value
+            ? enabledPlatforms.value.length
+                ? `已启用 ${enabledPlatforms.value.map((p) => p.name).join(' · ')}`
+                    + (enabledMissingConfig.value.length
+                        ? ` · ${enabledMissingConfig.value.length} 个缺凭证`
+                        : ` · 已配置 ${configuredPlatforms.value.length}`)
+                : '暂无启用渠道'
             : diagnosticsStatus.value === 'forbidden'
-                ? '当前账号无诊断权限'
-                : diagnosticsStatus.value === 'loading'
-                    ? '加载中'
-                    : '未获取诊断数据',
-        ok: diagnosticsStatus.value === 'ok',
+                ? '无诊断权限'
+                : '未获取',
+        tone: enabledMissingConfig.value.length ? 'warn' : enabledPlatforms.value.length ? 'good' : 'neutral',
+        to: '/admin/runtime',
+        icon: Zap,
     },
     {
-        label: '配置文件',
-        value: diagnostics.value
-            ? `env ${configFiles.value.env_exists ? '存在' : '缺失'} / memory ${configFiles.value.memory_exists ? '存在' : '缺失'}`
-            : '未知',
-        ok: Boolean(configFiles.value.env_exists && configFiles.value.memory_exists),
+        key: 'scheduler',
+        label: '定时任务',
+        value: schedulerError.value ? '—' : String(activeTasks.value.length),
+        detail: schedulerError.value
+            ? schedulerError.value
+            : `${pausedTasks.value.length} 暂停 · ${tradingDayTasks.value} 仅交易日`,
+        tone: schedulerError.value ? 'warn' : 'neutral',
+        to: '/modules/scheduler',
+        icon: CalendarDays,
     },
     {
-        label: 'Memory',
-        value: diagnostics.value?.memory?.provider || '未知',
-        ok: Boolean(diagnostics.value?.memory?.provider),
+        key: 'skills',
+        label: '技能',
+        value: skillsError.value ? '—' : String(enabledSkills.value),
+        detail: skillsError.value
+            ? skillsError.value
+            : `${disabledSkills.value} 已禁用 / 共 ${skills.value.length}`,
+        tone: 'neutral',
+        to: authStore.isAdmin ? '/admin/skills' : '/chat',
+        icon: Puzzle,
     },
     {
-        label: '平台配置',
-        value: diagnostics.value
-            ? `${configuredPlatforms.value.length} / ${platformEntries.value.length} 已配置`
-            : '未知',
-        ok: diagnostics.value ? configuredPlatforms.value.length >= enabledPlatforms.value.length : false,
+        key: 'watchlist',
+        label: '自选股',
+        value: watchlistCount.value === null ? '—' : String(watchlistCount.value),
+        detail: watchlistError.value || '当前绑定用户的自选列表',
+        tone: watchlistError.value ? 'warn' : 'neutral',
+        to: '/modules/watchlist',
+        icon: TrendingUp,
+    },
+    {
+        key: 'turns',
+        label: '近期运行',
+        value: diagnostics.value ? String(turnSucceeded.value + turnFailed.value) : '—',
+        detail: diagnostics.value
+            ? `成功 ${turnSucceeded.value} · 失败 ${turnFailed.value} · 等待 ${turnWaiting.value}`
+            : '需诊断权限',
+        tone: turnFailed.value > 0 ? 'bad' : 'good',
+        to: '/admin/diagnostics',
+        icon: Activity,
     },
 ])
 
-const systemStatusText = computed(() => {
-    if (healthStatus.value === 'loading' || diagnosticsStatus.value === 'loading') return '检查中'
-    if (healthStatus.value !== 'ok') return '异常'
-    if (diagnosticsStatus.value === 'forbidden') return '基础正常，诊断无权限'
-    if (diagnosticsStatus.value !== 'ok') return '基础正常，诊断未知'
-    const hasBadRows = systemRows.value.some(row => !row.ok)
-    return hasBadRows ? '需检查' : '正常'
+const attentionItems = computed(() => {
+    const items: Array<{
+        id: string
+        title: string
+        detail: string
+        to: string
+        tone: string
+        lines?: string[]
+    }> = []
+    if (healthStatus.value === 'error') {
+        items.push({
+            id: 'health',
+            title: 'API 健康检查失败',
+            detail: '控制台可能无法正常调用后端接口',
+            to: '/admin/diagnostics',
+            tone: 'bad',
+            lines: ['请求 /health 未通过，请检查后端进程与反向代理。'],
+        })
+    }
+    for (const platform of enabledMissingConfig.value) {
+        items.push({
+            id: `platform-${platform.name}`,
+            title: `渠道 ${platform.name} 已启用但未配置`,
+            detail: '请到运行配置补齐 Token / 凭证',
+            to: '/admin/runtime',
+            tone: 'warn',
+            lines: [`平台 ${platform.name} 在 runtime 中为 enabled，但环境变量/密钥未配置。`],
+        })
+    }
+    if (deliveryFailed.value > 0) {
+        const lines = recentFailures.value.deliveries.map((item: any) => {
+            const target = item.target || item.platform || 'unknown'
+            const kind = item.artifact_kind || 'message'
+            const file = item.artifact_filename ? ` · ${item.artifact_filename}` : ''
+            const err = item.error || 'delivery failed'
+            const session = item.session_id ? ` · ${item.session_id}` : ''
+            return `${target} · ${kind}${file} · ${err}${session}`
+        })
+        items.push({
+            id: 'delivery',
+            title: `${deliveryFailed.value} 次投递失败`,
+            detail: lines[0]
+                ? previewText(lines[0], 90)
+                : '近期消息/附件推送未成功，检查 Telegram 等渠道',
+            to: '/admin/diagnostics#delivery-failures',
+            tone: 'bad',
+            lines: lines.length
+                ? lines
+                : ['详见诊断页「运行质量 / 近期失败 → 投递失败」。'],
+        })
+    }
+    for (const [index, turn] of recentFailures.value.turns.entries()) {
+        const session = String(turn.session_id || '')
+        const isScheduler = session.startsWith('scheduler-task-')
+        const taskId = isScheduler ? session.replace('scheduler-task-', '') : ''
+        items.push({
+            id: `turn-${turn.turn_id || index}`,
+            title: isScheduler ? `定时任务 #${taskId || '?'} 执行失败` : '任务执行失败',
+            detail: previewText(turn.error || session, 90),
+            to: '/admin/diagnostics#failed-turns',
+            tone: 'bad',
+            lines: [
+                `错误：${turn.error || 'unknown'}`,
+                `session：${session || '—'}`,
+                `turn：${turn.turn_id || '—'}`,
+                `kernel：${turn.kernel_provider || '—'}`,
+                isScheduler
+                    ? '对应后台「任务调度」中的用户定时任务；可到任务调度页查看/暂停。'
+                    : '可到系统诊断页查看完整失败列表。',
+            ],
+        })
+    }
+    if (schedulerError.value) {
+        items.push({
+            id: 'scheduler-load',
+            title: '无法加载定时任务',
+            detail: schedulerError.value,
+            to: '/bindings',
+            tone: 'warn',
+            lines: [schedulerError.value, '通常需要先完成 Telegram 等平台绑定。'],
+        })
+    }
+    if (watchlistError.value) {
+        items.push({
+            id: 'watchlist-load',
+            title: '无法加载自选股',
+            detail: watchlistError.value,
+            to: '/bindings',
+            tone: 'warn',
+            lines: [watchlistError.value],
+        })
+    }
+    return items.slice(0, 8)
 })
 
-const lastUpdatedText = computed(() => {
-    if (!lastUpdatedAt.value) return '尚未更新'
-    return lastUpdatedAt.value.toLocaleTimeString('zh-CN', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-    })
+const expandedAttention = ref<Set<string>>(new Set())
+const isAttentionOpen = (id: string) => expandedAttention.value.has(id)
+const toggleAttention = (id: string) => {
+    const next = new Set(expandedAttention.value)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    expandedAttention.value = next
+}
+
+const upcomingTasks = computed(() =>
+    activeTasks.value
+        .slice()
+        .sort((a, b) => String(a.crontab || '').localeCompare(String(b.crontab || '')))
+        .slice(0, 5)
+        .map((task) => ({
+            id: task.id,
+            crontab: String(task.crontab || '—'),
+            calendar:
+                task.run_calendar === 'trading_days'
+                    ? '仅交易日'
+                    : task.run_calendar === 'weekdays'
+                        ? '仅工作日'
+                        : '每天',
+            instruction: previewText(task.instruction, 56),
+            channel: task.chat_id
+                ? `${task.platform || 'telegram'}:${task.chat_id}`
+                : '默认推送渠道',
+        })),
+)
+
+const recentActivities = computed(() =>
+    auditItems.value.slice(0, 6).map((item) => ({
+        title: String(item.action || '审计记录'),
+        detail: previewText(item.summary || item.target || item.actor || '无摘要', 64),
+        time: formatAuditTime(item.ts),
+        ok: String(item.status || '').toLowerCase() === 'success',
+    })),
+)
+
+const quickActions = computed(() => {
+    const items = [
+        { title: '开始对话', detail: 'Web Chat', to: '/chat', icon: MessageSquareText },
+        { title: '定时任务', detail: '调度与推送', to: '/modules/scheduler', icon: CalendarDays },
+        { title: '自选股', detail: '行情与持仓', to: '/modules/watchlist', icon: TrendingUp },
+        { title: '智能记账', detail: '收支与资产', to: '/accounting', icon: WalletCards },
+    ]
+    if (authStore.isOperator) {
+        items.push({ title: '系统诊断', detail: '健康与运行质量', to: '/admin/diagnostics', icon: Shield })
+    }
+    if (authStore.isAdmin) {
+        items.push({ title: '运行配置', detail: '渠道与功能开关', to: '/admin/runtime', icon: Zap })
+    }
+    return items
 })
 
 const gitHeadShort = computed(() => {
     const head = String(diagnostics.value?.version?.git_head || '').trim()
-    return head ? head.slice(0, 12) : '未知'
+    return head ? head.slice(0, 10) : '—'
 })
 
-const loadDashboardStatus = async () => {
+const memoryProvider = computed(() => diagnostics.value?.memory?.provider || '—')
+
+const loadDashboard = async () => {
+    loading.value = true
     healthStatus.value = 'loading'
     diagnosticsStatus.value = authStore.isOperator ? 'loading' : 'forbidden'
-    try {
-        await request.get('/health')
-        healthStatus.value = 'ok'
-    } catch {
-        healthStatus.value = 'error'
-    }
+    schedulerError.value = ''
+    skillsError.value = ''
+    watchlistError.value = ''
 
-    if (!authStore.isOperator) {
-        diagnostics.value = null
-        auditItems.value = []
-        lastUpdatedAt.value = new Date()
-        return
-    }
+    const healthPromise = request.get('/health')
+        .then(() => { healthStatus.value = 'ok' })
+        .catch(() => { healthStatus.value = 'error' })
 
-    try {
-        const [diagResponse, auditResponse] = await Promise.all([getDiagnostics(), getAdminAudit()])
-        diagnostics.value = diagResponse.data
-        auditItems.value = auditResponse.data.items || []
-        diagnosticsStatus.value = 'ok'
-    } catch (error: any) {
-        diagnostics.value = null
-        auditItems.value = []
-        diagnosticsStatus.value = error?.response?.status === 403 ? 'forbidden' : 'error'
-    } finally {
-        lastUpdatedAt.value = new Date()
-    }
+    const schedulerPromise = request.get('/scheduler')
+        .then((res) => { schedulerTasks.value = res.data || [] })
+        .catch((error: any) => {
+            schedulerTasks.value = []
+            const detail = error?.response?.data?.detail
+            schedulerError.value = typeof detail === 'string'
+                ? detail
+                : error?.response?.status === 400
+                    ? '需要先绑定平台账号'
+                    : '加载失败'
+        })
+
+    const skillsPromise = getSkills()
+        .then((res) => { skills.value = res.data?.skills || res.data || [] })
+        .catch(() => {
+            skills.value = []
+            skillsError.value = '加载失败'
+        })
+
+    const watchlistPromise = request.get('/watchlist')
+        .then((res) => { watchlistCount.value = Array.isArray(res.data) ? res.data.length : 0 })
+        .catch((error: any) => {
+            watchlistCount.value = null
+            const detail = error?.response?.data?.detail
+            watchlistError.value = typeof detail === 'string'
+                ? detail
+                : error?.response?.status === 400
+                    ? '需要先绑定平台账号'
+                    : '加载失败'
+        })
+
+    const adminPromise = authStore.isOperator
+        ? Promise.all([getDiagnostics(), getAdminAudit()])
+            .then(([diagResponse, auditResponse]) => {
+                diagnostics.value = diagResponse.data
+                auditItems.value = auditResponse.data.items || []
+                diagnosticsStatus.value = 'ok'
+            })
+            .catch((error: any) => {
+                diagnostics.value = null
+                auditItems.value = []
+                diagnosticsStatus.value = error?.response?.status === 403 ? 'forbidden' : 'error'
+            })
+        : Promise.resolve().then(() => {
+            diagnostics.value = null
+            auditItems.value = []
+        })
+
+    await Promise.all([healthPromise, schedulerPromise, skillsPromise, watchlistPromise, adminPromise])
+    lastUpdatedAt.value = new Date()
+    loading.value = false
 }
 
-onMounted(loadDashboardStatus)
+onMounted(loadDashboard)
 </script>
 
 <template>
-  <div class="dashboard-page">
-    <section class="welcome-panel">
-      <div>
-        <h1>欢迎回来，{{ roleLabel }}</h1>
-        <p>IKAROS Ethereal Sentinel 控制台已加载；系统状态来自实时健康检查与诊断接口。</p>
+  <div class="home">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">IKAROS Console</p>
+        <h1>{{ greeting }}，{{ displayName }}</h1>
+        <p class="sub">
+          这里汇总当前运行状态与需要你留意的事项，而不是再抄一遍侧栏菜单。
+        </p>
       </div>
-      <div class="welcome-status">
-        <div class="status-pill" :class="{ warning: systemStatusText !== '正常' }">
-          <span />
+      <div class="hero-aside">
+        <div class="status-chip" :class="{ warn: systemStatusText !== '正常', bad: systemStatusText === '异常' }">
+          <span class="dot" />
           系统状态：{{ systemStatusText }}
         </div>
-        <button type="button" @click="loadDashboardStatus">
-          最后更新：{{ lastUpdatedText }}
-          <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': healthStatus === 'loading' || diagnosticsStatus === 'loading' }" />
+        <button type="button" class="refresh-btn" :disabled="loading" @click="loadDashboard">
+          <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loading }" />
+          刷新 · {{ lastUpdatedText }}
         </button>
       </div>
     </section>
 
-    <section class="stat-grid">
+    <section class="kpi-grid">
       <RouterLink
-        v-for="card in statCards"
-        :key="card.label"
-        to="/admin/diagnostics"
-        class="stat-card"
+        v-for="card in kpiCards"
+        :key="card.key"
+        :to="card.to"
+        class="kpi-card"
         :class="`tone-${card.tone}`"
       >
-        <div class="stat-icon">
-          <component :is="card.icon" class="h-8 w-8" />
+        <div class="kpi-top">
+          <component :is="card.icon" class="h-4 w-4" />
+          <span>{{ card.label }}</span>
         </div>
-        <div class="stat-copy">
-          <div class="stat-label">{{ card.label }} <span>({{ card.alias }})</span></div>
-          <div class="stat-value">{{ card.value }}</div>
-          <p>{{ card.detail }}</p>
-        </div>
-        <ArrowRight class="stat-arrow h-5 w-5" />
+        <div class="kpi-value">{{ card.value }}</div>
+        <p class="kpi-detail">{{ card.detail }}</p>
       </RouterLink>
     </section>
 
-    <section class="dashboard-grid">
-      <div class="workspace-panel">
-        <div class="section-heading">
-          <h2>工作空间 <span>/ Workspace</span></h2>
-        </div>
-        <div class="workspace-grid">
-          <RouterLink
-            v-for="card in workspaceCards"
-            :key="card.to"
-            :to="card.to"
-            class="workspace-card"
-          >
-            <div class="workspace-icon">
-              <component :is="card.icon" class="h-7 w-7" />
-            </div>
+    <section class="main-grid">
+      <div class="col">
+        <section class="panel">
+          <div class="panel-head">
             <div>
-              <h3>{{ card.title }}</h3>
-              <p>{{ card.description }}</p>
+              <h2>需要关注</h2>
+              <p>近 7 天失败任务、投递问题、渠道配置缺口</p>
             </div>
-            <ArrowRight class="workspace-arrow h-5 w-5" />
-          </RouterLink>
-        </div>
+            <RouterLink to="/admin/diagnostics#runtime-failures" class="link">诊断详情</RouterLink>
+          </div>
+
+          <div v-if="attentionItems.length" class="attention-list">
+            <article
+              v-for="item in attentionItems"
+              :key="item.id"
+              class="attention-item"
+              :class="[item.tone, { open: isAttentionOpen(item.id) }]"
+            >
+              <button type="button" class="attention-main" @click="toggleAttention(item.id)">
+                <AlertTriangle class="h-4 w-4 shrink-0" />
+                <div class="min-w-0 text-left">
+                  <h3>{{ item.title }}</h3>
+                  <p>{{ item.detail }}</p>
+                </div>
+                <span class="expand-hint">{{ isAttentionOpen(item.id) ? '收起' : '详情' }}</span>
+              </button>
+              <div v-if="isAttentionOpen(item.id)" class="attention-body">
+                <ul v-if="item.lines?.length">
+                  <li v-for="(line, index) in item.lines" :key="index">{{ line }}</li>
+                </ul>
+                <RouterLink :to="item.to" class="attention-link">
+                  查看完整诊断
+                  <ArrowRight class="h-3.5 w-3.5" />
+                </RouterLink>
+              </div>
+            </article>
+          </div>
+          <div v-else class="empty good">
+            <CheckCircle2 class="h-5 w-5" />
+            <div>
+              <strong>暂无告警</strong>
+              <p>健康检查、渠道配置与近期失败项看起来都正常。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>活跃定时任务</h2>
+              <p>按 cron 排序的当前启用任务</p>
+            </div>
+            <RouterLink to="/modules/scheduler" class="link">管理</RouterLink>
+          </div>
+
+          <div v-if="upcomingTasks.length" class="task-list">
+            <article v-for="task in upcomingTasks" :key="task.id" class="task-row">
+              <div class="task-cron">
+                <Clock3 class="h-3.5 w-3.5" />
+                <code>{{ task.crontab }}</code>
+                <span class="tag">{{ task.calendar }}</span>
+              </div>
+              <p class="task-text">{{ task.instruction }}</p>
+              <p class="task-meta">#{{ task.id }} · {{ task.channel }}</p>
+            </article>
+          </div>
+          <div v-else class="empty">
+            <CircleDashed class="h-5 w-5" />
+            <div>
+              <strong>{{ schedulerError || '暂无启用中的定时任务' }}</strong>
+              <p v-if="schedulerError">绑定 Telegram 等平台账号后即可在此查看。</p>
+              <p v-else>可在任务调度页添加 cron 任务。</p>
+            </div>
+          </div>
+        </section>
       </div>
 
-      <aside class="side-stack">
-        <section class="side-panel activity-panel">
-          <div class="side-heading">
-            <h2>近期活动 <span>/ Recent Activity</span></h2>
-            <a href="#">查看全部</a>
+      <div class="col side">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>快捷入口</h2>
+              <p>高频操作，不重复侧栏</p>
+            </div>
           </div>
-          <div class="activity-list">
-            <article v-for="item in recentActivities" :key="item.title" class="activity-item">
-              <span class="activity-dot" :class="item.tone" />
-              <div class="activity-icon">
-                <component :is="item.icon" class="h-4 w-4" />
+          <div class="quick-grid">
+            <RouterLink
+              v-for="item in quickActions"
+              :key="item.to"
+              :to="item.to"
+              class="quick-card"
+            >
+              <component :is="item.icon" class="h-4 w-4" />
+              <div>
+                <strong>{{ item.title }}</strong>
+                <span>{{ item.detail }}</span>
               </div>
-              <div class="activity-copy">
+            </RouterLink>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>运行摘要</h2>
+              <p>版本与 Memory</p>
+            </div>
+          </div>
+          <div class="meta-grid">
+            <div>
+              <span>角色</span>
+              <strong>{{ roleLabel }}</strong>
+            </div>
+            <div>
+              <span>Memory</span>
+              <strong>{{ memoryProvider }}</strong>
+            </div>
+            <div>
+              <span>Git</span>
+              <strong>{{ gitHeadShort }}</strong>
+            </div>
+            <div>
+              <span>投递失败</span>
+              <strong :class="{ bad: deliveryFailed > 0 }">{{ diagnostics ? deliveryFailed : '—' }}</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel grow">
+          <div class="panel-head">
+            <div>
+              <h2>近期活动</h2>
+              <p>管理员配置变更审计</p>
+            </div>
+            <RouterLink to="/admin/diagnostics" class="link">更多</RouterLink>
+          </div>
+          <div v-if="recentActivities.length" class="activity-list">
+            <article v-for="(item, index) in recentActivities" :key="`${item.title}-${index}`" class="activity-row">
+              <span class="dot" :class="{ ok: item.ok }" />
+              <div class="min-w-0">
                 <h3>{{ item.title }}</h3>
                 <p>{{ item.detail }}</p>
               </div>
               <time>{{ item.time }}</time>
             </article>
-            <div v-if="!recentActivities.length" class="empty-note">
-              {{ authStore.isOperator ? '暂无管理员审计记录。' : '当前账号无权限查看审计记录。' }}
-            </div>
+          </div>
+          <div v-else class="empty compact">
+            {{ authStore.isOperator ? '暂无审计记录。' : '当前账号无权限查看审计记录。' }}
           </div>
         </section>
-
-        <section class="side-panel status-panel">
-          <div class="side-heading">
-            <h2>系统状态 <span>/ System Status</span></h2>
-            <a href="#">查看详情</a>
-          </div>
-          <div class="status-grid">
-            <div class="status-list">
-              <div v-for="row in systemRows" :key="row.label" class="status-row">
-                <span :class="{ warning: !row.ok }">
-                  <CheckCircle2 v-if="row.ok" class="h-3.5 w-3.5" />
-                  <Zap v-else class="h-3.5 w-3.5" />
-                </span>
-                <strong>{{ row.label }}</strong>
-                <em>{{ row.value }}</em>
-              </div>
-            </div>
-            <div class="diagnostic-card">
-              <div class="load-title">诊断摘要</div>
-              <div class="diagnostic-metrics">
-                <div><span>平台</span><strong>{{ diagnostics ? `${enabledPlatforms.length}/${platformEntries.length}` : '未知' }}</strong></div>
-                <div><span>Memory</span><strong>{{ diagnostics?.memory?.provider || '未知' }}</strong></div>
-                <div><span>Git</span><strong>{{ gitHeadShort }}</strong></div>
-              </div>
-              <p>
-                {{ diagnosticsStatus === 'ok'
-                  ? '数据来自 /admin/diagnostics。'
-                  : diagnosticsStatus === 'forbidden'
-                    ? '当前账号没有诊断权限。'
-                    : '暂未获取诊断数据。' }}
-              </p>
-            </div>
-          </div>
-        </section>
-      </aside>
+      </div>
     </section>
   </div>
 </template>
 
 <style scoped>
-.dashboard-page {
+.home {
   display: grid;
-  gap: 24px;
+  gap: 20px;
 }
 
-.welcome-panel,
-.stat-card,
-.workspace-panel,
-.side-panel {
+.hero,
+.panel,
+.kpi-card,
+.quick-card,
+.attention-item,
+.task-row {
   border: 1px solid var(--panel-border);
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--color-bg-elevated);
+}
+
+.hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px 26px;
   box-shadow: var(--shadow-card);
 }
 
-.welcome-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  min-height: 128px;
-  padding: 28px 30px;
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--text-subtle);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
-.welcome-panel h1 {
+.hero h1 {
   margin: 0;
   color: var(--text-strong);
-  font-size: 25px;
+  font-size: 28px;
   font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
-.welcome-panel p {
-  margin: 16px 0 0;
-  color: var(--text-body);
-  font-size: 15px;
-}
-
-.welcome-status {
-  display: grid;
-  justify-items: end;
-  gap: 14px;
+.sub {
+  margin: 10px 0 0;
+  max-width: 48rem;
   color: var(--text-muted);
   font-size: 14px;
+  line-height: 1.6;
 }
 
-.status-pill,
-.welcome-status button {
+.hero-aside {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.status-chip,
+.refresh-btn {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  border: 0;
-  border-radius: 10px;
-  background: var(--panel-muted);
-  color: var(--text-body);
-  padding: 11px 16px;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.status-pill span {
-  width: 9px;
-  height: 9px;
+.status-chip {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--text-strong);
+}
+
+.status-chip.warn {
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+}
+
+.status-chip.bad {
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+}
+
+.status-chip .dot {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--success);
 }
 
-.status-pill.warning span {
+.status-chip.warn .dot {
   background: var(--warning);
 }
 
-.welcome-status button {
-  background: transparent;
-  padding: 0;
-  color: var(--text-muted);
+.status-chip.bad .dot {
+  background: #ef4444;
 }
 
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 22px;
+.refresh-btn {
+  border: 1px solid var(--panel-border);
+  background: var(--panel-muted);
+  color: var(--text-body);
+  cursor: pointer;
 }
 
-.stat-card {
+.refresh-btn:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.kpi-grid {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr) 20px;
-  align-items: center;
-  gap: 18px;
-  min-height: 132px;
-  padding: 22px 24px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.kpi-card {
+  display: grid;
+  gap: 10px;
+  min-height: 124px;
+  padding: 16px;
   color: inherit;
   text-decoration: none;
+  box-shadow: var(--shadow-card);
+  transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
-.stat-icon,
-.workspace-icon,
-.activity-icon {
-  display: grid;
-  place-items: center;
-  border-radius: 18px;
-  background: var(--brand-blue-soft);
-  color: var(--brand-blue);
+.kpi-card:hover {
+  border-color: color-mix(in srgb, var(--brand-blue) 45%, var(--panel-border));
+  transform: translateY(-1px);
 }
 
-.stat-icon {
-  width: 76px;
-  height: 76px;
-  border-radius: 50%;
+.kpi-top {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
-.tone-teal .stat-icon {
-  background: #e7f8f5;
-  color: #0f9f8f;
-}
-
-.tone-violet .stat-icon {
-  background: #f1e8ff;
-  color: #7c3aed;
-}
-
-.stat-label {
-  color: var(--text-body);
-  font-size: 15px;
-  font-weight: 800;
-}
-
-.stat-label span {
-  color: var(--text-subtle);
-  font-weight: 600;
-}
-
-.stat-value {
-  margin-top: 6px;
+.kpi-value {
   color: var(--text-strong);
   font-size: 28px;
   font-weight: 800;
   line-height: 1;
 }
 
-.stat-copy p {
-  margin: 8px 0 0;
-  color: var(--text-muted);
-  font-size: 14px;
-}
-
-.stat-arrow,
-.workspace-arrow {
-  justify-self: end;
-  color: var(--text-subtle);
-}
-
-.dashboard-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 590px;
-  gap: 22px;
-}
-
-.workspace-panel {
-  padding: 22px 24px;
-}
-
-.section-heading h2,
-.side-heading h2 {
+.kpi-detail {
   margin: 0;
-  color: var(--text-strong);
-  font-size: 20px;
-  font-weight: 800;
-}
-
-.section-heading span,
-.side-heading span {
   color: var(--text-muted);
-  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
-.workspace-grid {
+.tone-good .kpi-value { color: var(--success); }
+.tone-warn .kpi-value { color: var(--warning); }
+.tone-bad .kpi-value { color: #ef4444; }
+
+.main-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 18px;
-  margin-top: 18px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.9fr);
+  gap: 16px;
+  align-items: start;
 }
 
-.workspace-card {
-  position: relative;
-  display: grid;
-  align-content: start;
-  gap: 22px;
-  min-height: 244px;
-  padding: 24px 22px;
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  background: var(--color-bg-elevated);
-  color: inherit;
-  text-decoration: none;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.workspace-card:hover {
-  border-color: #9ec5ff;
-  box-shadow: 0 18px 38px rgba(47, 124, 246, 0.08);
-}
-
-.workspace-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: 14px;
-}
-
-.workspace-card h3 {
-  margin: 0;
-  color: var(--text-strong);
-  font-size: 18px;
-  font-weight: 800;
-}
-
-.workspace-card p {
-  margin: 12px 0 0;
-  color: var(--text-muted);
-  font-size: 15px;
-  line-height: 1.65;
-}
-
-.workspace-arrow {
-  position: absolute;
-  right: 22px;
-  bottom: 22px;
-}
-
-.side-stack {
-  display: grid;
-  gap: 18px;
-}
-
-.side-panel {
-  padding: 20px 24px;
-}
-
-.side-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.side-heading a {
-  color: var(--brand-blue);
-  font-size: 14px;
-  font-weight: 700;
-  text-decoration: none;
-}
-
-.activity-list {
-  display: grid;
-  gap: 14px;
-  margin-top: 16px;
-}
-
-.activity-item {
-  display: grid;
-  grid-template-columns: 9px 36px minmax(0, 1fr) 70px;
-  align-items: center;
-  gap: 14px;
-}
-
-.activity-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--brand-blue);
-}
-
-.activity-dot.green {
-  background: var(--success);
-}
-
-.activity-dot.amber {
-  background: var(--warning);
-}
-
-.activity-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
-  color: var(--text-muted);
-  background: var(--panel-muted);
-}
-
-.activity-copy h3 {
-  margin: 0;
-  color: var(--text-strong);
-  font-size: 15px;
-  font-weight: 800;
-}
-
-.activity-copy p,
-.activity-item time {
-  margin: 4px 0 0;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.activity-item time {
-  margin: 0;
-  text-align: right;
-}
-
-.empty-note {
-  border: 1px dashed var(--panel-border);
-  border-radius: 10px;
-  background: var(--panel-soft);
-  color: var(--text-muted);
-  padding: 18px;
-  text-align: center;
-}
-
-.status-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 252px;
-  gap: 22px;
-  margin-top: 18px;
-}
-
-.status-list {
+.col {
   display: grid;
   gap: 16px;
 }
 
-.status-row {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) minmax(120px, auto);
-  align-items: center;
-  gap: 10px;
-  font-size: 14px;
+.side {
+  min-width: 0;
 }
 
-.status-row span {
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--success);
-  color: #fff;
+.panel {
+  padding: 18px 18px 16px;
+  box-shadow: var(--shadow-card);
 }
 
-.status-row span.warning {
-  background: var(--warning);
+.panel.grow {
+  min-height: 280px;
 }
 
-.status-row strong {
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.panel-head h2 {
+  margin: 0;
   color: var(--text-strong);
-}
-
-.status-row em {
-  color: var(--text-muted);
-  font-style: normal;
-  text-align: right;
-}
-
-.load-card,
-.diagnostic-card {
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  padding: 14px 16px;
-}
-
-.load-title {
-  color: var(--text-strong);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 800;
 }
 
-.load-card svg {
-  width: 100%;
-  height: 82px;
-  margin-top: 8px;
-}
-
-.load-card path:first-child {
-  fill: none;
-  stroke: var(--brand-blue);
-  stroke-width: 3;
-}
-
-.load-card path:last-child {
-  fill: rgba(47, 124, 246, 0.10);
-  stroke: none;
-}
-
-.load-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 6px;
-}
-
-.load-metrics div {
-  display: grid;
-  gap: 3px;
-}
-
-.load-metrics span {
+.panel-head p {
+  margin: 4px 0 0;
   color: var(--text-muted);
   font-size: 12px;
 }
 
-.load-metrics strong {
+.link {
   color: var(--brand-blue);
-  font-size: 24px;
-  line-height: 1;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
-.diagnostic-metrics {
+.attention-list,
+.task-list,
+.activity-list {
   display: grid;
-  gap: 12px;
-  margin-top: 14px;
+  gap: 10px;
 }
 
-.diagnostic-metrics div {
+.attention-item {
+  overflow: hidden;
+  color: inherit;
+}
+
+.attention-item.bad {
+  border-color: color-mix(in srgb, #ef4444 28%, var(--panel-border));
+  background: color-mix(in srgb, #ef4444 6%, var(--color-bg-elevated));
+}
+
+.attention-item.warn {
+  border-color: color-mix(in srgb, var(--warning) 28%, var(--panel-border));
+  background: color-mix(in srgb, var(--warning) 8%, var(--color-bg-elevated));
+}
+
+.attention-main {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 12px 14px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.expand-hint {
+  color: var(--text-subtle);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.attention-body {
+  border-top: 1px solid color-mix(in srgb, var(--panel-border) 80%, transparent);
+  padding: 0 14px 12px;
+}
+
+.attention-body ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: var(--text-body);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.attention-body li {
+  margin-top: 4px;
+  word-break: break-word;
+}
+
+.attention-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--brand-blue);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.attention-item h3,
+.task-text,
+.activity-row h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.attention-item p,
+.task-meta,
+.activity-row p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.task-row {
+  padding: 12px 14px;
+}
+
+.task-cron {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.task-cron code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-strong);
+}
+
+.tag {
+  border-radius: 999px;
+  background: var(--panel-muted);
+  padding: 2px 8px;
+  color: var(--text-body);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quick-card {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s ease;
+}
+
+.quick-card:hover {
+  border-color: color-mix(in srgb, var(--brand-blue) 45%, var(--panel-border));
+}
+
+.quick-card strong {
+  display: block;
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.quick-card span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.meta-grid div {
   display: grid;
   gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--panel-muted);
 }
 
-.diagnostic-metrics span {
+.meta-grid span {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-.diagnostic-metrics strong {
+.meta-grid strong {
+  color: var(--text-strong);
+  font-size: 14px;
   overflow: hidden;
-  color: var(--brand-blue);
-  font-size: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.diagnostic-card p {
-  margin: 14px 0 0;
+.meta-grid strong.bad {
+  color: #ef4444;
+}
+
+.activity-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.activity-row .dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.activity-row .dot.ok {
+  background: var(--success);
+}
+
+.activity-row time {
+  color: var(--text-subtle);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.empty {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 16px;
+  border: 1px dashed var(--panel-border);
+  border-radius: 14px;
+  color: var(--text-muted);
+}
+
+.empty.good {
+  border-style: solid;
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  color: var(--text-strong);
+}
+
+.empty.compact {
+  justify-content: center;
+  text-align: center;
+}
+
+.empty strong {
+  display: block;
+  font-size: 14px;
+}
+
+.empty p {
+  margin: 4px 0 0;
   color: var(--text-muted);
   font-size: 12px;
-  line-height: 1.5;
 }
 
-:global(.dark .tone-teal .stat-icon) {
-  background: #132d2a;
-  color: #3dd68c;
-}
-
-:global(.dark .tone-violet .stat-icon) {
-  background: #241741;
-  color: #b9a5ff;
-}
-
-@media (max-width: 1600px) {
-  .dashboard-grid {
-    grid-template-columns: minmax(0, 1fr) 470px;
-  }
-
-  .workspace-grid {
+@media (max-width: 1400px) {
+  .kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-
-  .status-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
-@media (max-width: 1180px) {
-  .stat-grid,
-  .dashboard-grid {
+@media (max-width: 1100px) {
+  .main-grid {
     grid-template-columns: 1fr;
-  }
-
-  .workspace-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 720px) {
-  .welcome-panel,
-  .stat-card {
-    grid-template-columns: 1fr;
-  }
-
-  .welcome-panel {
-    align-items: flex-start;
+  .hero {
     flex-direction: column;
-    padding: 22px;
   }
 
-  .welcome-status {
+  .hero-aside {
     justify-items: start;
   }
 
-  .stat-grid,
-  .workspace-grid {
+  .kpi-grid,
+  .quick-grid,
+  .meta-grid {
     grid-template-columns: 1fr;
-  }
-
-  .workspace-card {
-    min-height: 190px;
-  }
-
-  .activity-item {
-    grid-template-columns: 9px 36px minmax(0, 1fr);
-  }
-
-  .activity-item time {
-    grid-column: 3;
-    text-align: left;
   }
 }
 </style>

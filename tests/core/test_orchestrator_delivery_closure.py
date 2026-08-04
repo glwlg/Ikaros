@@ -109,7 +109,7 @@ def _build_event_handler(task_goal: str):
 
 @pytest.fixture(autouse=True)
 def _stub_intent_router(monkeypatch):
-    monkeypatch.setenv("IKAROS_KERNEL", "native")
+    monkeypatch.setenv("IKAROS_KERNEL", "agents_sdk")
 
     async def fake_route(**_kwargs):
         return RoutingDecision(
@@ -173,7 +173,7 @@ async def test_terminal_extension_short_circuit_marks_done(monkeypatch, tmp_path
         yield "should-not-be-returned"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -235,7 +235,7 @@ async def test_terminal_partial_sets_waiting_user(monkeypatch, tmp_path):
         yield "should-not-be-returned"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -300,7 +300,7 @@ async def test_terminal_extension_failure_short_circuits_without_loop(
         yield "should-not-be-returned"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -361,7 +361,7 @@ async def test_recoverable_terminal_failure_allows_auto_recovery(monkeypatch, tm
         yield "已自动修复并完成部署"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -438,7 +438,7 @@ async def test_recoverable_terminal_failure_fails_after_recovery_budget(
         yield "should-not-be-returned"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -485,7 +485,7 @@ async def test_immediate_session_does_not_write_task_entries_to_heartbeat_md(
         yield "处理完成"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -555,7 +555,7 @@ async def test_ikaros_progress_callback_receives_tool_events(monkeypatch, tmp_pa
         yield "已停止 uptime-kuma。"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -595,7 +595,7 @@ async def test_ikaros_progress_callback_receives_tool_events(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_records_native_kernel_events_in_runtime_v2(
+async def test_orchestrator_records_agents_sdk_kernel_events_in_runtime_v2(
     monkeypatch, tmp_path
 ):
     orchestrator = AgentOrchestrator()
@@ -644,7 +644,7 @@ async def test_orchestrator_records_native_kernel_events_in_runtime_v2(
         yield "完成。"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -770,7 +770,7 @@ async def test_subagent_progress_callback_receives_terminal_payload(
         yield "✅ 图片已生成。\n📏 比例: 1:1"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -844,7 +844,7 @@ async def test_final_response_keeps_waiting_external_task_open(monkeypatch, tmp_
         yield "PR 已创建，后续会继续跟进直到合并。"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -905,7 +905,7 @@ async def test_final_response_auto_keeps_pr_creation_task_open(monkeypatch, tmp_
         yield "PR 已创建： https://github.com/Scenx/fuck-skill/pull/22 ，后续继续跟进。"
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []
@@ -1038,7 +1038,7 @@ async def test_orchestrator_fails_when_loop_ends_without_completion_signal(
             yield ""
 
     monkeypatch.setattr(
-        orchestrator.ai_service, "generate_response_stream", fake_stream
+        orchestrator.assistant_runtime, "generate_response_stream", fake_stream
     )
     monkeypatch.setattr(
         orchestrator.extension_router, "route", lambda *_args, **_kwargs: []

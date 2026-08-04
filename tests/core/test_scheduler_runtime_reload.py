@@ -121,10 +121,12 @@ async def test_reload_scheduler_jobs_mirrors_runtime_v2_jobs(monkeypatch, tmp_pa
     assert runtime_store.get_scheduler_job("stale")["enabled"] == 0
     assert fake_scheduler.added[0]["id"] == "cron_db_job-42"
     assert fake_scheduler.added[0]["args"][1] == "owner-42"
-    assert fake_scheduler.added[0]["args"][-2:] == [
+    assert fake_scheduler.added[0]["args"][-3:] == [
         "scheduler-task-job-42",
         "job-42",
+        "always",
     ]
+    assert job["metadata"]["run_calendar"] == "always"
 
 
 def test_start_dynamic_skill_scheduler_registers_idempotent_jobs(monkeypatch):

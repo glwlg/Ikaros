@@ -41,7 +41,7 @@ def test_runtime_v2_records_session_turn_event_artifact_and_delivery(tmp_path):
         session_id=session["id"],
         source="user",
         input_text="画一张图",
-        kernel_provider="codex",
+        kernel_provider="agents_sdk",
     )
     running = store.update_turn_status(turn["id"], "running", external_turn_id="t-cx")
     event = store.append_event(
@@ -57,7 +57,7 @@ def test_runtime_v2_records_session_turn_event_artifact_and_delivery(tmp_path):
         turn_id=turn["id"],
         kind="photo",
         path=str(image),
-        source="codex_kernel",
+        source="agents_sdk",
     )
     delivery = store.record_delivery(
         artifact_id=artifact["id"],
@@ -164,18 +164,18 @@ def test_runtime_v2_tracks_kernel_thread_per_session(tmp_path):
 
     store.upsert_kernel_session(
         session_id="scheduler-task-9",
-        provider="codex",
+        provider="agents_sdk",
         external_thread_id="thread-1",
         external_turn_id="turn-1",
     )
     store.upsert_kernel_session(
         session_id="scheduler-task-9",
-        provider="codex",
+        provider="agents_sdk",
         external_thread_id="thread-1",
         external_turn_id="turn-2",
     )
 
-    row = store.get_kernel_session(session_id="scheduler-task-9", provider="codex")
+    row = store.get_kernel_session(session_id="scheduler-task-9", provider="agents_sdk")
     assert row["external_thread_id"] == "thread-1"
     assert row["external_turn_id"] == "turn-2"
 
@@ -260,7 +260,7 @@ def test_runtime_v2_session_trace_collects_runtime_objects(tmp_path):
     turn = store.create_turn(session_id=session["id"], input_text="trace me")
     store.upsert_kernel_session(
         session_id=session["id"],
-        provider="codex",
+        provider="agents_sdk",
         external_thread_id="thread-trace",
     )
     store.append_event(
@@ -321,7 +321,7 @@ def test_runtime_v2_lists_user_tasks_and_marks_deleted(tmp_path):
         session_id=session["id"],
         source="user",
         input_text="继续处理",
-        kernel_provider="codex",
+        kernel_provider="agents_sdk",
     )
     task = store.create_task(
         session_id=session["id"],
@@ -339,7 +339,7 @@ def test_runtime_v2_lists_user_tasks_and_marks_deleted(tmp_path):
     rows = store.list_tasks_for_user(platform_user_id="u-task")
 
     assert [row["id"] for row in rows] == [task["id"]]
-    assert rows[0]["kernel_provider"] == "codex"
+    assert rows[0]["kernel_provider"] == "agents_sdk"
     assert rows[0]["turn_source"] == "user"
 
     deleted = store.mark_task_deleted(task["id"], reason="menu cleanup")

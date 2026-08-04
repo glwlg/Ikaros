@@ -6,6 +6,8 @@ triggers:
 - stock
 - 股票
 - 自选股
+- 持仓
+- 股票成本
 - add_stock
 - remove_stock
 policy_groups:
@@ -14,7 +16,19 @@ platform_handlers: true
 scheduled_jobs: true
 input_schema:
   type: object
-  properties: {}
+  properties:
+    action:
+      type: string
+      description: 操作类型，如 list、add_stock、remove_stock、refresh、set_position、clear_position
+    stock_name:
+      type: string
+      description: 股票名称或代码
+    quantity:
+      type: number
+      description: 持仓数量，记录持仓时必须大于 0
+    cost_price:
+      type: number
+      description: 单位成本，记录持仓时必须大于 0
 permissions:
   filesystem: workspace
   shell: true
@@ -32,6 +46,7 @@ entrypoint: scripts/execute.py
 - **禁止** 自行创建 `~/.ikaros/stocks.json`、临时 SQLite、Markdown 或其他自定义持久化文件。
 - 当前用户默认从运行时注入的 `X_BOT_RUNTIME_USER_ID` 读取；只有注入缺失时才手工传 `--user-id`。
 - 当前平台默认从 `X_BOT_RUNTIME_PLATFORM` 读取；为空或为 `subagent_kernel` 时自动回落到 `telegram`。
+- **本 skill 只负责自选股管理、持仓记录与行情展示，不提供交易建议。** 深度分析请用 `a-stock-data`，并通过「定时任务」调度。
 
 ## 使用方式
 
@@ -63,6 +78,10 @@ python scripts/execute.py --user-id 123456 add NVDA
   搜索并加入自选股；如果匹配到多个候选，会返回候选列表，之后应让用户明确选择。
 - `remove <keyword>`
   按代码、精确名称或模糊名称删除当前用户自选股。
+- `position <keyword> <quantity> <cost_price>`
+  记录自选股的持仓数量和单位成本，后续行情会计算今日盈亏及持仓盈亏。
+- `position-clear <keyword>`
+  清除持仓数据但保留自选股。
 
 ## 公共参数
 
@@ -76,7 +95,9 @@ python scripts/execute.py --user-id 123456 add NVDA
 1. 查看/刷新自选股：直接执行 `python scripts/execute.py list`。
 2. 添加股票前，如果名称可能有歧义，先执行 `search`；确认后再执行 `add`。
 3. 删除股票时优先传股票代码；只有用户只给了自然语言名称时才用模糊删除。
-4. 脚本已经封装了行情查询与存储，不要绕过它自行请求股票 API。
+4. 记录持仓时，`quantity` 是持仓股数/份额，`cost_price` 是单位成本，不是总成本。
+5. 脚本已经封装了行情查询与存储，不要绕过它自行请求股票 API。行情主源为新浪，失败/缺失时自动回落腾讯。
+6. 需要交易建议时：用后台「定时任务」加载 `a-stock-data`，持仓清单可先从 stock_watch 读取；不要在本 skill 内做建议逻辑。
 
 ## 示例
 
@@ -85,6 +106,8 @@ cd skills/builtin/stock_watch
 python scripts/execute.py list
 python scripts/execute.py search 宁德时代
 python scripts/execute.py add NVDA
+python scripts/execute.py position sh600519 100 1500
+python scripts/execute.py position-clear sh600519
 python scripts/execute.py remove TSLA
 python scripts/execute.py quotes sh600519 sz000001
 ```

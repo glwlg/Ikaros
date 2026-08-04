@@ -1,4 +1,5 @@
 import importlib
+import json
 import logging
 import re
 import uuid
@@ -22,9 +23,10 @@ SINGLE_USER_SCOPE = _state_paths.SINGLE_USER_SCOPE
 
 logger = logging.getLogger(__name__)
 
-_ENTRY_RE = re.compile(r"^###\s+(system|user|model)\s*\n```text\n(.*?)\n```", re.M | re.S)
 _VISIBLE_CHAT_ROLES = {"user", "model"}
 _SUPPORTED_CHAT_ROLES = _VISIBLE_CHAT_ROLES | {"system"}
+_SESSION_GLOB = "*/*.jsonl"
+_SESSION_SUFFIX = ".jsonl"
 
 
 def _safe_session_id(value: str) -> str:
@@ -64,24 +66,9 @@ def _chat_root(user_id: int | str) -> Path:
 
 
 def _session_path(user_id: int | str, day: str, session_id: str) -> Path:
-    return (_chat_root(user_id) / day / f"{_safe_session_id(session_id)}.md").resolve()
-
-
-def _entry_block(role: str, content: str) -> str:
-    text = str(content or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
-    return f"### {role}\n```text\n{text}\n```\n\n"
-
-
-def _parse_entries(content: str) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    raw = str(content or "")
-    for match in _ENTRY_RE.finditer(raw):
-        role = str(match.group(1) or "user").strip().lower()
-        body = str(match.group(2) or "").strip()
-        if not body:
-            continue
-        rows.append({"role": role, "content": body})
-    return rows
+    return (
+        _chat_root(user_id) / day / f"{_safe_session_id(session_id)}{_SESSION_SUFFIX}"
+    ).resolve()
 
 
 def _normalize_chat_role(role: str) -> str:
@@ -91,21 +78,102 @@ def _normalize_chat_role(role: str) -> str:
     return "user"
 
 
-def _render_session(day: str, session_id: str, rows: list[dict[str, str]]) -> str:
-    lines = [
-        "# Chat Session",
-        "",
-        f"- date: {day}",
-        f"- session: {session_id}",
-        "",
-        "## Dialogue",
-        "",
-    ]
-    body = "".join(
-        _entry_block(str(item.get("role") or "user"), str(item.get("content") or ""))
-        for item in rows
-    )
-    return "\n".join(lines) + body
+def _ts() -> str:
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def _json_line(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def _session_meta_record(*, session_id: str, day: str) -> dict[str, Any]:
+    return {
+        "type": "session_meta",
+        "ts": _ts(),
+        "session_id": str(session_id or "").strip(),
+        "day": str(day or "").strip() or date.today().isoformat(),
+    }
+
+
+def _message_record(*, role: str, content: str) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "ts": _ts(),
+        "role": _normalize_chat_role(role),
+        "content": str(content or "").strip(),
+    }
+
+
+def _parse_jsonl_records(raw: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in str(raw or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
+
+
+def _records_to_entries(records: list[dict[str, Any]]) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for item in records:
+        item_type = str(item.get("type") or "").strip().lower()
+        # Accept bare message objects without type for simplicity/tests.
+        if item_type and item_type not in {"message", "msg"}:
+            continue
+        role = _normalize_chat_role(str(item.get("role") or "user"))
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        entries.append({"role": role, "content": content})
+    return entries
+
+
+def _read_session_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        return _parse_jsonl_records(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _write_session_records(
+    path: Path,
+    *,
+    session_id: str,
+    day: str,
+    entries: list[dict[str, str]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [_json_line(_session_meta_record(session_id=session_id, day=day))]
+    for item in entries:
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        lines.append(
+            _json_line(
+                _message_record(
+                    role=str(item.get("role") or "user"),
+                    content=content,
+                )
+            )
+        )
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("".join(lines), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _append_session_record(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(_json_line(record))
+        handle.flush()
 
 
 def _extract_day_from_path(path: Path) -> str:
@@ -116,14 +184,18 @@ def _extract_day_from_path(path: Path) -> str:
 
 
 def _extract_session_from_path(path: Path) -> str:
-    return str(path.stem or "").strip() or str(uuid.uuid4())
+    stem = str(path.stem or "").strip()
+    if stem.endswith(".jsonl"):
+        # defensive if suffix was double-encoded somehow
+        stem = stem[: -len(".jsonl")]
+    return stem or str(uuid.uuid4())
 
 
 async def _list_session_files(user_id: int | str) -> list[Path]:
     root = _chat_root(user_id)
     if not root.exists():
         return []
-    files = [p for p in root.glob("*/*.md") if p.is_file()]
+    files = [p for p in root.glob(_SESSION_GLOB) if p.is_file()]
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return files
 
@@ -136,9 +208,9 @@ async def _resolve_session_file(user_id: int | str, session_id: str) -> Path | N
     today_path = _session_path(user_id, date.today().isoformat(), sid)
     if today_path.exists():
         return today_path
-    for p in root.glob(f"*/{sid}.md"):
-        if p.is_file():
-            return p
+    for path in root.glob(f"*/{sid}{_SESSION_SUFFIX}"):
+        if path.is_file():
+            return path
     return None
 
 
@@ -148,23 +220,22 @@ async def save_message(
     try:
         uid = str(user_id)
         sid = _safe_session_id(session_id)
+        text = str(content or "").strip()
+        if not text:
+            return True
+
         session_file = await _resolve_session_file(uid, sid)
         if session_file is None:
-            session_file = _session_path(uid, date.today().isoformat(), sid)
-
-        session_file.parent.mkdir(parents=True, exist_ok=True)
-        existing = (
-            session_file.read_text(encoding="utf-8") if session_file.exists() else ""
+            day = date.today().isoformat()
+            session_file = _session_path(uid, day, sid)
+            _append_session_record(
+                session_file,
+                _session_meta_record(session_id=sid, day=day),
+            )
+        _append_session_record(
+            session_file,
+            _message_record(role=role, content=text),
         )
-        day = _extract_day_from_path(session_file)
-        rows = _parse_entries(existing)
-        rows.append(
-            {
-                "role": _normalize_chat_role(role),
-                "content": str(content or "").strip(),
-            }
-        )
-        session_file.write_text(_render_session(day, sid, rows), encoding="utf-8")
         return True
     except Exception as e:
         logger.error(f"Error saving message: {e}")
@@ -185,7 +256,7 @@ async def get_session_messages(
         path = await _resolve_session_file(uid, session_id)
         if not path or not path.exists():
             return []
-        rows = _parse_entries(path.read_text(encoding="utf-8"))
+        rows = _records_to_entries(_read_session_records(path))
         visible_rows = [
             item
             for item in rows
@@ -228,15 +299,7 @@ async def get_session_entries(
         path = await _resolve_session_file(uid, session_id)
         if not path or not path.exists():
             return []
-        rows = _parse_entries(path.read_text(encoding="utf-8"))
-        return [
-            {
-                "role": _normalize_chat_role(str(item.get("role") or "user")),
-                "content": str(item.get("content") or "").strip(),
-            }
-            for item in rows
-            if str(item.get("content") or "").strip()
-        ]
+        return _records_to_entries(_read_session_records(path))
     except Exception as e:
         logger.error(f"Error reading session entries: {e}")
         return []
@@ -253,7 +316,6 @@ async def replace_session_entries(
         session_file = await _resolve_session_file(uid, sid)
         if session_file is None:
             session_file = _session_path(uid, date.today().isoformat(), sid)
-        session_file.parent.mkdir(parents=True, exist_ok=True)
         day = _extract_day_from_path(session_file)
         normalized_rows = [
             {
@@ -263,9 +325,11 @@ async def replace_session_entries(
             for item in list(rows or [])
             if str(item.get("content") or "").strip()
         ]
-        session_file.write_text(
-            _render_session(day, sid, normalized_rows),
-            encoding="utf-8",
+        _write_session_records(
+            session_file,
+            session_id=sid,
+            day=day,
+            entries=normalized_rows,
         )
         return True
     except Exception as e:
@@ -293,13 +357,14 @@ async def create_chat_session(
     sid = _safe_session_id(session_id)
     session_file = await _resolve_session_file(uid, sid)
     if session_file is None:
-        session_file = _session_path(uid, date.today().isoformat(), sid)
-    session_file.parent.mkdir(parents=True, exist_ok=True)
-    if not session_file.exists():
-        session_file.write_text(
-            _render_session(_extract_day_from_path(session_file), sid, []),
-            encoding="utf-8",
-        )
+        day = date.today().isoformat()
+        session_file = _session_path(uid, day, sid)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        if not session_file.exists():
+            _append_session_record(
+                session_file,
+                _session_meta_record(session_id=sid, day=day),
+            )
     stat = session_file.stat()
     return {
         "session_id": sid,
@@ -319,13 +384,15 @@ async def list_chat_sessions(
         files = await _list_session_files(uid)
         sessions: list[dict[str, Any]] = []
         for path in files[: max(1, int(limit))]:
-            rows = _parse_entries(path.read_text(encoding="utf-8"))
+            rows = _records_to_entries(_read_session_records(path))
             visible_rows = [
                 row
                 for row in rows
                 if str(row.get("role") or "").strip().lower() in _VISIBLE_CHAT_ROLES
             ]
-            preview = str((visible_rows[-1] if visible_rows else {}).get("content") or "").strip()
+            preview = str(
+                (visible_rows[-1] if visible_rows else {}).get("content") or ""
+            ).strip()
             title = ""
             for item in visible_rows:
                 if str(item.get("role") or "").strip().lower() == "user":
@@ -371,7 +438,7 @@ async def search_messages(
         for path in files:
             day = _extract_day_from_path(path)
             sid = _extract_session_from_path(path)
-            rows = _parse_entries(path.read_text(encoding="utf-8"))
+            rows = _records_to_entries(_read_session_records(path))
             for row in reversed(rows):
                 if str(row.get("role") or "").strip().lower() == "system":
                     continue
@@ -406,7 +473,7 @@ async def get_recent_messages_for_user(
         for path in files:
             day = _extract_day_from_path(path)
             sid = _extract_session_from_path(path)
-            rows = _parse_entries(path.read_text(encoding="utf-8"))
+            rows = _records_to_entries(_read_session_records(path))
             for row in reversed(rows):
                 if str(row.get("role") or "").strip().lower() == "system":
                     continue
@@ -440,14 +507,13 @@ async def get_day_session_transcripts(
         if not day_dir.exists():
             return []
 
-        files = [p for p in day_dir.glob("*.md") if p.is_file()]
+        files = [p for p in day_dir.glob(f"*{_SESSION_SUFFIX}") if p.is_file()]
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
         bundles: list[dict[str, Any]] = []
         for path in files[: max(1, int(max_sessions))]:
             sid = _extract_session_from_path(path)
-            text = path.read_text(encoding="utf-8")
-            rows = _parse_entries(text)
+            rows = _records_to_entries(_read_session_records(path))
             if not rows:
                 continue
             rendered_lines: list[str] = []

@@ -1,11 +1,9 @@
 import pytest
-
-from core.state_paths import SINGLE_USER_SCOPE
 from extension.channels.web.adapter import WebAdapter
 
 
 @pytest.mark.asyncio
-async def test_web_scheduler_session_reuses_scheduler_codex_key():
+async def test_web_scheduler_session_does_not_create_removed_codex_key():
     adapter = WebAdapter()
 
     ctx = await adapter._build_context(
@@ -23,8 +21,8 @@ async def test_web_scheduler_session_reuses_scheduler_codex_key():
     )
 
     assert ctx.user_data["current_session_id"] == "scheduler-task-7"
-    assert ctx.user_data["codex_kernel_session_platform"] == "scheduler"
-    assert ctx.user_data["codex_kernel_session_user_id"] == SINGLE_USER_SCOPE
+    assert "codex_kernel_session_platform" not in ctx.user_data
+    assert "codex_kernel_session_user_id" not in ctx.user_data
 
     ctx = await adapter._build_context(
         {

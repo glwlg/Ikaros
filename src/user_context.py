@@ -15,13 +15,17 @@ from core.state_store import (
     get_latest_session_id,
     replace_session_entries,
 )
+from core.context_assembler import (
+    SESSION_MEMORY_PREFIX,
+    SESSION_RETRIEVED_PREFIX,
+    SESSION_SUMMARY_PREFIX,
+    SESSION_WORKING_PREFIX,
+    context_assembler,
+)
+from core.context_budget import default_assemble_recent_token_budget
 from core.long_term_memory import long_term_memory
 from core.llm_usage_store import set_current_llm_usage_session_id
-from services.session_compaction_service import (
-    SESSION_MEMORY_PREFIX,
-    SESSION_SUMMARY_PREFIX,
-    session_compaction_service,
-)
+from services.session_compaction_service import session_compaction_service
 
 logger = logging.getLogger(__name__)
 
@@ -135,31 +139,102 @@ async def get_user_context(
     limit: int = 100,
     include_hidden_system: bool = True,
     auto_compact: bool = True,
+    query_text: str = "",
 ) -> list[dict]:
     """
     获取用户的对话上下文 (Async)
 
     Returns:
-        对话历史列表，格式符合当前对话模型输入要求
+        对话历史列表，格式符合当前对话模型输入要求。
+        组装顺序：核心记忆 → 工作状态 → 压缩摘要 → 相关记忆 → 最近对话。
     """
     session_id = await get_or_create_session_id(context, user_id)
-    if include_hidden_system:
-        await _ensure_session_memory_seed(context, user_id, session_id)
     await _reconcile_sparse_session_history(str(user_id), session_id)
+    compact_triggered = False
     if auto_compact:
-        await session_compaction_service.compact_session(
+        compact_result = await session_compaction_service.compact_session(
             user_id=str(user_id),
             session_id=session_id,
             force=False,
         )
-    return await get_session_messages(
-        user_id,
-        session_id,
-        limit=limit,
-        include_system=include_hidden_system,
-        preserve_system_prefixes=(SESSION_MEMORY_PREFIX, SESSION_SUMMARY_PREFIX),
-        preserve_system_limit=2,
+        compact_triggered = bool(
+            isinstance(compact_result, dict) and compact_result.get("compacted")
+        )
+
+    core_memory_text = ""
+    retrieved_memory_text = ""
+    retrieval_query = str(query_text or "").strip()
+    if include_hidden_system and _is_private_session_context(context):
+        try:
+            core_memory_text = await long_term_memory.load_core_snapshot(
+                str(user_id),
+                max_chars=1200,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to load core memory snapshot user=%s",
+                user_id,
+                exc_info=True,
+            )
+            core_memory_text = ""
+        if not retrieval_query:
+            retrieval_query = await _latest_user_text(str(user_id), session_id)
+        if retrieval_query:
+            try:
+                hits = await long_term_memory.search_user_memory(
+                    str(user_id),
+                    retrieval_query,
+                    limit=5,
+                    include_daily=True,
+                )
+                # Avoid repeating facts already present in the core layer.
+                core_blob = str(core_memory_text or "")
+                filtered = [
+                    hit
+                    for hit in hits
+                    if str(hit.get("text") or "").strip()
+                    and str(hit.get("text") or "").strip() not in core_blob
+                ]
+                retrieved_memory_text = long_term_memory.render_retrieved_memory(
+                    filtered,
+                    max_chars=900,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to search user memory user=%s",
+                    user_id,
+                    exc_info=True,
+                )
+                retrieved_memory_text = ""
+
+    packet = await context_assembler.assemble(
+        user_id=str(user_id),
+        session_id=session_id,
+        platform=_context_platform(context),
+        include_hidden_system=include_hidden_system,
+        dialog_limit=limit,
+        recent_token_budget=default_assemble_recent_token_budget(),
+        compact_triggered=compact_triggered,
+        core_memory_text=core_memory_text,
+        retrieved_memory_text=retrieved_memory_text,
+        query_text=retrieval_query,
     )
+    # Stash budget for diagnostics / handlers without changing return type.
+    store = getattr(context, "user_data", None)
+    if isinstance(store, dict):
+        store["last_context_budget"] = packet.budget.as_dict()
+    return packet.messages
+
+
+async def _latest_user_text(user_id: str, session_id: str) -> str:
+    rows = await get_session_entries(str(user_id), str(session_id))
+    for row in reversed(rows):
+        if str(row.get("role") or "").strip().lower() != "user":
+            continue
+        text = str(row.get("content") or "").strip()
+        if text:
+            return text
+    return ""
 
 
 async def add_message(
@@ -374,34 +449,4 @@ def _is_private_session_context(context: TelegramContext | UnifiedContext) -> bo
     return True
 
 
-async def _ensure_session_memory_seed(
-    context: TelegramContext | UnifiedContext,
-    user_id: int | str,
-    session_id: str,
-) -> None:
-    if not _is_private_session_context(context):
-        return
-    existing_rows = await get_session_entries(user_id, session_id)
-    if any(
-        str(item.get("role") or "").strip().lower() == "system"
-        and str(item.get("content") or "").startswith(SESSION_MEMORY_PREFIX)
-        for item in existing_rows
-    ):
-        return
-    try:
-        memory_snapshot = await long_term_memory.load_user_snapshot(
-            str(user_id),
-            include_daily=True,
-            max_chars=2400,
-        )
-    except Exception:
-        memory_snapshot = ""
-    if not str(memory_snapshot or "").strip():
-        return
-    memory_seed = (
-        f"{SESSION_MEMORY_PREFIX}\n"
-        "以下内容仅在本会话开始时加载一次。"
-        "回答用户本人相关问题时优先参考这些事实；如果其中没有答案，请明确说明未知。\n\n"
-        f"{str(memory_snapshot).strip()}"
-    )
-    await save_message(user_id, "system", memory_seed, session_id)
+

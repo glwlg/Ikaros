@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def test_env_example_documents_codex_kernel_settings():
+def test_env_example_does_not_expose_removed_codex_kernel_settings():
     root = Path(__file__).resolve().parents[2]
     text = (root / ".env.example").read_text(encoding="utf-8")
 
@@ -19,4 +19,4 @@ def test_env_example_documents_codex_kernel_settings():
         "IKAROS_CODEX_TIMEOUT_SEC",
         "IKAROS_CODEX_REQUEST_TIMEOUT_SEC",
     ):
-        assert f"{name}=" in text
+        assert f"{name}=" not in text

@@ -23,6 +23,11 @@ class _FakeDeliveryCtx:
         self.photos: list[dict[str, object]] = []
         self.videos: list[dict[str, object]] = []
         self.audios: list[dict[str, object]] = []
+        self.texts: list[object] = []
+
+    async def reply(self, text, **kwargs):
+        self.texts.append((text, dict(kwargs)))
+        return SimpleNamespace(id="text")
 
     async def reply_document(self, document, filename=None, caption=None, **kwargs):
         self.documents.append(
@@ -170,6 +175,49 @@ async def test_ikaros_can_send_local_file_via_dispatcher(tmp_path, monkeypatch):
     assert result["files"][0]["path"] == str(target)
     assert result["files"][0]["filename"] == "README.md"
     assert result["files"][0]["caption"] == "请查收"
+
+
+@pytest.mark.asyncio
+async def test_ikaros_can_send_intermediate_message_and_file_immediately(tmp_path):
+    target = (tmp_path / "image.jpg").resolve()
+    target.write_bytes(b"fake-image")
+
+    async def append_event(_event: str):
+        return None
+
+    ctx = _FakeDeliveryCtx(platform="weixin")
+    dispatcher = ToolCallDispatcher(
+        runtime_user_id="u-send-now-1",
+        platform_name="weixin",
+        task_id="task-send-now-1",
+        task_inbox_id="",
+        task_workspace_root=str(tmp_path),
+        ctx=ctx,
+        runtime=object(),
+        tool_broker=object(),
+        runtime_tool_allowed=lambda **_kwargs: True,
+        todo_mark_step=lambda *_args, **_kwargs: None,
+        append_session_event=append_event,
+    )
+    dispatcher.set_available_tool_names({"send_message"})
+
+    result = await dispatcher.execute(
+        name="send_message",
+        args={
+            "text": "先发第一张。",
+            "files": [{"path": "image.jpg", "kind": "photo"}],
+        },
+        execution_policy=None,
+        started=time.perf_counter(),
+    )
+
+    assert result["ok"] is True
+    assert result["terminal"] is False
+    assert ctx.texts[0][0] == "先发第一张。"
+    assert len(ctx.photos) == 1
+    assert ctx.photos[0]["photo"] == str(target)
+    assert result.get("files") is None
+    assert result["data"]["delivered_files"][0]["path"] == str(target)
 
 
 @pytest.mark.asyncio

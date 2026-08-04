@@ -183,6 +183,12 @@ async def _emit_tool_finished(
             "terminal_text_preview": terminal_text[:200],
             "terminal_ui": terminal_ui,
             "terminal_payload": terminal_payload,
+            "data": (
+                dict(tool_result.get("data"))
+                if isinstance(tool_result, dict)
+                and isinstance(tool_result.get("data"), dict)
+                else {}
+            ),
             "failure_mode": (
                 str(tool_result.get("failure_mode") or "").strip().lower()
                 if isinstance(tool_result, dict)

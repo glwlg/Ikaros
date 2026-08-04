@@ -8,7 +8,6 @@ from uuid import uuid4
 from core.channel_runtime_store import channel_runtime_store
 from core.artifact_ledger import get_artifact_ledger
 from core.config import ikaros_kernel_provider
-from core.codex_kernel_sessions import codex_kernel_sessions
 from core.heartbeat_store import heartbeat_store
 from core.platform.models import UnifiedContext
 from core.platform.registry import adapter_manager
@@ -395,14 +394,6 @@ async def _build_task_diag_payload(ctx: UnifiedContext) -> str:
     )
     quality = build_task_quality_report(recent_rows)
 
-    codex_row: dict[str, Any] = {}
-    if session_id:
-        codex_row = codex_kernel_sessions.get(
-            user_id=user_id,
-            platform=platform,
-            session_id=session_id,
-        )
-
     def _active_line(name: str, task: dict[str, Any] | None) -> str:
         if not isinstance(task, dict) or not str(task.get("id") or "").strip():
             return f"- {name} active：none"
@@ -431,10 +422,6 @@ async def _build_task_diag_payload(ctx: UnifiedContext) -> str:
         f"- Delivery target：{str(delivery.get('last_platform') or '-')}"
         f":{str(delivery.get('last_chat_id') or '-')}",
     ]
-    if codex_row.get("codex_thread_id"):
-        lines.append(f"- Codex thread：`{_compact(codex_row.get('codex_thread_id'), 64)}`")
-    if codex_row.get("codex_turn_id"):
-        lines.append(f"- Codex turn：`{_compact(codex_row.get('codex_turn_id'), 64)}`")
     if last_error:
         lines.append(f"- Last error：{_compact(last_error, 120)}")
     recommendations = list(quality.get("recommendations") or [])
@@ -475,9 +462,6 @@ async def _build_task_detail_payload(
     kernel_status = str(metadata.get("kernel_status") or "").strip()
     if kernel_status:
         lines.append(f"- Kernel 状态：`{kernel_status}`")
-    codex_thread_id = str(metadata.get("codex_thread_id") or "").strip()
-    if codex_thread_id:
-        lines.append(f"- Codex Thread：`{_compact(codex_thread_id, 64)}`")
     if followup_obj:
         lines.append(f"- Follow-up：{str(followup_obj.get('done_when') or '').strip()}")
     if refs.get("pr_url"):

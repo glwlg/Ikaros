@@ -29,7 +29,7 @@ class EventLoopFlags:
 
 
 class OrchestratorEventHandler:
-    """Handle ai_service event callbacks for one orchestrator loop."""
+    """Handle assistant runtime event callbacks for one orchestrator loop."""
 
     def __init__(
         self,

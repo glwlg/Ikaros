@@ -15,6 +15,11 @@ if str(SRC_ROOT) not in sys.path:
 from core.channel_access import channel_feature_denied_text, is_channel_feature_enabled
 from core.platform.models import UnifiedContext
 from core.scheduler_display import summarize_scheduler_instruction
+from core.trading_calendar import (
+    RUN_CALENDAR_ALWAYS,
+    normalize_run_calendar,
+    run_calendar_label,
+)
 from core.skill_menu import make_callback, parse_callback
 from core.skill_cli import (
     add_common_arguments,
@@ -52,19 +57,29 @@ def _scheduler_enabled(ctx: UnifiedContext) -> bool:
 def _format_delivery_target(task: dict) -> str:
     platform = str(task.get("platform") or "").strip()
     chat_id = str(task.get("chat_id") or "").strip()
-    if not platform or not chat_id:
-        return "未设置"
-    return f"{platform}:{chat_id}"
+    if platform and chat_id:
+        return f"{platform}:{chat_id}"
+    # Empty chat_id still delivers via proactive default target at runtime.
+    if platform:
+        return f"{platform}:默认推送渠道"
+    return "默认推送渠道（未绑定专用聊天）"
 
 
 def _current_delivery_target(ctx: UnifiedContext) -> tuple[str, str]:
-    platform = (
-        str(getattr(getattr(ctx, "message", None), "platform", "") or "").strip()
-        or "telegram"
-    )
+    message = getattr(ctx, "message", None)
+    platform = str(getattr(message, "platform", "") or "").strip() or "telegram"
     chat_id = str(
-        getattr(getattr(getattr(ctx, "message", None), "chat", None), "id", "") or ""
+        getattr(getattr(message, "chat", None), "id", "") or ""
     ).strip()
+    # Callback updates: prefer effective chat on the callback message.
+    if not chat_id and getattr(ctx, "platform_event", None) is not None:
+        event = ctx.platform_event
+        callback = getattr(event, "callback_query", None)
+        if callback is not None:
+            cb_msg = getattr(callback, "message", None)
+            chat_id = str(getattr(getattr(cb_msg, "chat", None), "id", "") or "").strip()
+            if not platform or platform == "telegram":
+                platform = "telegram"
     return platform, chat_id
 
 
@@ -184,6 +199,9 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
         # Default True if not specified as 'false' string
         push_param = str(params.get("push", "true")).lower()
         need_push = push_param == "true" or push_param == "1"
+        run_calendar = normalize_run_calendar(
+            params.get("run_calendar") or RUN_CALENDAR_ALWAYS
+        )
 
         if not instruction:
             return {"text": "❌ 请提供 `instruction`"}
@@ -197,6 +215,7 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
                 chat_id=str(getattr(ctx.message.chat, "id", "") or "").strip(),
                 session_id=_current_session_id(ctx),
                 need_push=need_push,
+                run_calendar=run_calendar,
             )
 
             # 立即触发 Scheduler 重载
@@ -204,11 +223,13 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> dict:
 
             await reload_scheduler_jobs()
 
+            instruction_preview = summarize_scheduler_instruction(instruction)
             return {
                 "text": (
                     f"✅ 定时任务已添加 (ID: {task_id})\n"
                     f"Cron: `{crontab}`\n"
-                    f"Instruction: `{instruction}`\n"
+                    f"Instruction: `{instruction_preview}`\n"
+                    f"Calendar: `{run_calendar_label(run_calendar)}`\n"
                     f"Push: `{'Yes' if need_push else 'No'}`\n"
                     f"状态: 已立即生效"
                 )
@@ -309,6 +330,7 @@ async def list_tasks_command(
         msg += f"   Cron: `{t['crontab']}`\n"
         instruction_preview = summarize_scheduler_instruction(t["instruction"])
         msg += f"   Desc: `{instruction_preview}`\n"
+        msg += f"   Calendar: `{run_calendar_label(t.get('run_calendar'))}`\n"
         msg += f"   Push: {t.get('need_push', True)}\n\n"
         msg += f"   Channel: `{_format_delivery_target(t)}`\n\n"
 
@@ -424,19 +446,31 @@ async def handle_task_delete_callback(ctx: UnifiedContext):
         try:
             task_id = int(data.replace("sch_route_", ""))
         except ValueError:
-            return "❌ 无效的操作。"
+            await ctx.reply("❌ 无效的操作。")
+            return None
 
         from core.scheduler import reload_scheduler_jobs
 
         current_platform, current_chat_id = _current_delivery_target(ctx)
+        if not current_chat_id:
+            await ctx.reply("❌ 无法识别当前聊天，请在目标聊天里重新打开任务列表后再点「当前聊天」。")
+            return None
+
+        acting_user = str(
+            getattr(ctx, "callback_user_id", None)
+            or getattr(getattr(getattr(ctx, "message", None), "user", None), "id", "")
+            or ""
+        ).strip()
         changed = await update_task_delivery_target(
             task_id,
+            acting_user or None,
             platform=current_platform,
             chat_id=current_chat_id,
             session_id=_current_session_id(ctx),
         )
         if not changed:
-            return "❌ 任务不存在。"
+            await ctx.reply(f"❌ 任务 {task_id} 不存在或无法更新推送渠道。")
+            return None
         await reload_scheduler_jobs()
 
         payload = await list_tasks_command(ctx, include_menu_nav=True)
@@ -444,13 +478,17 @@ async def handle_task_delete_callback(ctx: UnifiedContext):
             f"✅ 已把任务 {task_id} 的推送渠道改为当前聊天 "
             f"`{current_platform}:{current_chat_id}`。\n\n{payload['text']}"
         )
-        await ctx.edit_message(ctx.message.id, text, ui=payload.get("ui"))
+        try:
+            await ctx.edit_message(ctx.message.id, text, ui=payload.get("ui"))
+        except Exception:
+            await ctx.reply(text, ui=payload.get("ui"))
         return None
 
     try:
         task_id = int(data.replace("sch_del_", ""))
     except ValueError:
-        return "❌ 无效的操作。"
+        await ctx.reply("❌ 无效的操作。")
+        return None
 
     try:
         await delete_task(task_id)
@@ -460,10 +498,14 @@ async def handle_task_delete_callback(ctx: UnifiedContext):
 
         payload = await list_tasks_command(ctx, include_menu_nav=True)
         text = f"✅ 任务 {task_id} 已删除。\n\n{payload['text']}"
-        await ctx.edit_message(ctx.message.id, text, ui=payload.get("ui"))
+        try:
+            await ctx.edit_message(ctx.message.id, text, ui=payload.get("ui"))
+        except Exception:
+            await ctx.reply(text, ui=payload.get("ui"))
         return None
     except Exception as e:
-        return f"❌ 删除失败: {e}"
+        await ctx.reply(f"❌ 删除失败: {e}")
+        return None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -486,6 +528,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="true",
         help="Whether to push task results",
     )
+    add_parser.add_argument(
+        "--run-calendar",
+        choices=("always", "weekdays", "trading_days"),
+        default="always",
+        help="always | weekdays | trading_days",
+    )
 
     subparsers.add_parser("list", help="List active tasks")
 
@@ -504,6 +552,7 @@ def _params_from_args(args: argparse.Namespace) -> dict:
                 "crontab": str(args.crontab or "").strip(),
                 "instruction": str(args.instruction or "").strip(),
                 "push": str(args.push or "true").strip().lower(),
+                "run_calendar": str(getattr(args, "run_calendar", "always") or "always"),
             },
         )
     if command == "list":

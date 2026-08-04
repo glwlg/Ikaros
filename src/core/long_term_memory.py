@@ -125,11 +125,16 @@ class LongTermMemoryService:
         return rows
 
     @staticmethod
-    def _truncate(text: str, *, max_chars: int) -> str:
+    def _truncate(text: str, *, max_chars: int, keep: str = "head") -> str:
+        """Truncate text; keep='head' for durable lists, keep='tail' for append-only logs."""
         content = str(text or "").strip()
         if len(content) <= max_chars:
             return content
-        return content[-max_chars:]
+        if max_chars <= 0:
+            return ""
+        if str(keep or "head").strip().lower() == "tail":
+            return content[-max_chars:]
+        return content[:max_chars].rstrip()
 
     def _render_ikaros_snapshot(self, items: list[MemoryItem], *, max_chars: int) -> str:
         lines: list[str] = []
@@ -145,7 +150,12 @@ class LongTermMemoryService:
                 lines.append(f"- [{day}] {text}")
             else:
                 lines.append(f"- {text}")
-        return self._truncate("\n".join(lines).strip(), max_chars=max_chars)
+        # Experiences are append-only; prefer the most recent tail.
+        return self._truncate(
+            "\n".join(lines).strip(),
+            max_chars=max_chars,
+            keep="tail",
+        )
 
     async def _refresh_ikaros_snapshot_cache(self) -> None:
         provider = await self._get_provider()
@@ -155,6 +165,36 @@ class LongTermMemoryService:
             max_chars=100000,
         )
 
+    async def load_core_snapshot(
+        self,
+        user_id: str,
+        *,
+        max_chars: int = 1200,
+        max_items: int = 16,
+    ) -> str:
+        """Always-on core facts for L1 context injection."""
+        items = await self._list_user_items_for_tier(str(user_id), tier="core")
+        if not items:
+            # Legacy/empty-core fallback: take a small head of all durable facts.
+            all_items = self._dedupe_items(
+                await (await self._get_provider()).list_user_items(str(user_id))
+            )
+            items = all_items[: max(1, int(max_items))]
+        else:
+            items = items[: max(1, int(max_items))]
+        lines = [
+            f"- {str(item.get('text') or '').strip()}"
+            for item in items
+            if str(item.get("text") or "").strip()
+        ]
+        if not lines:
+            return ""
+        return self._truncate(
+            "【核心记忆】\n" + "\n".join(lines),
+            max_chars=max(0, int(max_chars)),
+            keep="head",
+        )
+
     async def load_user_snapshot(
         self,
         user_id: str,
@@ -162,16 +202,36 @@ class LongTermMemoryService:
         include_daily: bool = True,
         max_chars: int = 2400,
     ) -> str:
+        from core.context_budget import join_budgeted_blocks
+
         provider = await self._get_provider()
         items = self._dedupe_items(await provider.list_user_items(str(user_id)))
+        core_items: list[MemoryItem] = []
+        archive_items: list[MemoryItem] = []
+        for item in items:
+            tier = str((item.get("metadata") or {}).get("tier") or "").strip().lower()
+            if tier == "archive":
+                archive_items.append(item)
+            else:
+                # Missing tier (e.g. mem0) counts as core-facing durable fact.
+                core_items.append(item)
 
         blocks: list[str] = []
-        if items:
+        if core_items:
             blocks.append(
-                "【长期记忆】\n"
+                "【核心记忆】\n"
                 + "\n".join(
                     f"- {str(item.get('text') or '').strip()}"
-                    for item in items
+                    for item in core_items
+                    if str(item.get("text") or "").strip()
+                )
+            )
+        if archive_items:
+            blocks.append(
+                "【归档记忆】\n"
+                + "\n".join(
+                    f"- {str(item.get('text') or '').strip()}"
+                    for item in archive_items
                     if str(item.get("text") or "").strip()
                 )
             )
@@ -191,10 +251,125 @@ class LongTermMemoryService:
 
         if not blocks:
             return ""
-        return self._truncate("\n\n".join(blocks).strip(), max_chars=max_chars)
+        return join_budgeted_blocks(
+            blocks,
+            max_chars=max(0, int(max_chars)),
+            priority_first=True,
+        )
+
+    async def _list_user_items_for_tier(
+        self, user_id: str, *, tier: str
+    ) -> list[MemoryItem]:
+        safe_tier = str(tier or "core").strip().lower() or "core"
+        if self.get_provider_name() == "file":
+            return self._dedupe_items(
+                markdown_memory_store.list_user_items_by_tier_sync(
+                    str(user_id),
+                    tier=safe_tier,
+                )
+            )
+        provider = await self._get_provider()
+        items = self._dedupe_items(await provider.list_user_items(str(user_id)))
+        filtered = [
+            item
+            for item in items
+            if str((item.get("metadata") or {}).get("tier") or "core").lower()
+            == safe_tier
+        ]
+        # Non-file providers often lack tier metadata; treat all as core.
+        return filtered or (items if safe_tier == "core" else [])
+
+    async def search_user_memory(
+        self,
+        user_id: str,
+        query: str,
+        *,
+        limit: int = 5,
+        include_daily: bool = True,
+    ) -> list[dict[str, Any]]:
+        from core.memory_search import rank_memory_candidates
+
+        q = str(query or "").strip()
+        if not q:
+            return []
+        candidates: list[dict[str, str]] = []
+        provider = await self._get_provider()
+        for item in self._dedupe_items(await provider.list_user_items(str(user_id))):
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            tier = str((item.get("metadata") or {}).get("tier") or "core").strip().lower()
+            candidates.append(
+                {
+                    "text": text,
+                    "source": "core" if tier == "core" else "archive",
+                    "tier": tier or "core",
+                }
+            )
+        if include_daily:
+            today = date.today()
+            for day in (today, today - timedelta(days=1)):
+                daily_text = markdown_memory_store._read_text(
+                    markdown_memory_store.daily_path(str(user_id), day)
+                ).strip()
+                if not daily_text:
+                    continue
+                for line in daily_text.splitlines()[-40:]:
+                    stripped = line.strip()
+                    if not stripped.startswith("- "):
+                        continue
+                    text = stripped[2:].strip()
+                    if text:
+                        candidates.append(
+                            {
+                                "text": text,
+                                "source": f"daily:{day.isoformat()}",
+                                "tier": "daily",
+                            }
+                        )
+        hits = rank_memory_candidates(
+            candidates,
+            query=q,
+            limit=max(1, int(limit)),
+            min_score=1.0,
+        )
+        return [
+            {
+                "text": hit.text,
+                "source": hit.source,
+                "score": hit.score,
+                "tier": hit.tier,
+            }
+            for hit in hits
+        ]
+
+    def render_retrieved_memory(
+        self,
+        hits: list[dict[str, Any]],
+        *,
+        max_chars: int = 900,
+    ) -> str:
+        if not hits:
+            return ""
+        lines = ["【相关记忆】", "与本轮问题可能相关的已存事实（仅供参考）："]
+        for hit in hits:
+            text = str(hit.get("text") or "").strip()
+            if not text:
+                continue
+            source = str(hit.get("source") or "").strip()
+            if source:
+                lines.append(f"- ({source}) {text}")
+            else:
+                lines.append(f"- {text}")
+        return self._truncate("\n".join(lines), max_chars=max(0, int(max_chars)), keep="head")
 
     async def remember_user(
-        self, user_id: str, content: str, *, source: str = "chat"
+        self,
+        user_id: str,
+        content: str,
+        *,
+        source: str = "chat",
+        tier: str = "core",
     ) -> tuple[bool, str]:
         text = str(content or "").strip()
         if not text:
@@ -210,11 +385,19 @@ class LongTermMemoryService:
         if not facts:
             facts = [text]
         new_facts = [item for item in facts if _norm_text(item) not in existing_norms]
+        safe_tier = "core" if str(tier or "core").strip().lower() == "core" else "archive"
 
         if new_facts:
             await provider.add_user_items(
                 str(user_id),
-                [{"text": item, "metadata": {}, "created_at": ""} for item in new_facts],
+                [
+                    {
+                        "text": item,
+                        "metadata": {"tier": safe_tier},
+                        "created_at": "",
+                    }
+                    for item in new_facts
+                ],
             )
 
         daily_path = markdown_memory_store.daily_path(str(user_id))
@@ -237,12 +420,42 @@ class LongTermMemoryService:
         detail = "；".join((new_facts or facts)[:4])
         return True, detail
 
+    async def forget_user(
+        self,
+        user_id: str,
+        query: str,
+        *,
+        limit: int = 8,
+    ) -> tuple[bool, str]:
+        text = str(query or "").strip()
+        if not text:
+            return False, "内容为空"
+        if self.get_provider_name() != "file":
+            # Best-effort for non-file: search then no-op write path is unsupported.
+            hits = await self.search_user_memory(str(user_id), text, limit=limit)
+            if not hits:
+                return False, "未找到匹配记忆"
+            return (
+                False,
+                "当前记忆后端不支持删除；匹配到："
+                + "；".join(str(item.get("text") or "") for item in hits[:4]),
+            )
+        removed = markdown_memory_store.remove_user_items_matching(
+            str(user_id),
+            text,
+            limit=max(1, int(limit)),
+        )
+        if not removed:
+            return False, "未找到匹配记忆"
+        return True, "；".join(removed[:4])
+
     async def remember_user_facts(
         self,
         user_id: str,
         facts: list[str],
         *,
         source: str = "daily_rollup",
+        tier: str = "archive",
     ) -> int:
         cleaned = markdown_memory_store._dedupe(
             [str(item or "").strip() for item in facts],
@@ -260,9 +473,13 @@ class LongTermMemoryService:
         if not added:
             return 0
 
+        safe_tier = "core" if str(tier or "archive").strip().lower() == "core" else "archive"
         await provider.add_user_items(
             str(user_id),
-            [{"text": fact, "metadata": {}, "created_at": ""} for fact in added],
+            [
+                {"text": fact, "metadata": {"tier": safe_tier}, "created_at": ""}
+                for fact in added
+            ],
         )
 
         day_path = markdown_memory_store.daily_path(str(user_id))

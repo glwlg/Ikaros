@@ -17,7 +17,7 @@ def test_artifact_ledger_updates_existing_receipt_by_file_key(tmp_path):
             }
         ],
         status="pending",
-        source="codex_result_files",
+        source="agent_tool",
     )
     second = record_artifact_receipts(
         user_data,

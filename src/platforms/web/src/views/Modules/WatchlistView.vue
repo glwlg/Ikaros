@@ -14,14 +14,31 @@ interface Stock {
     low: number
     open: number
     yesterday_close: number
+    position_quantity: number
+    cost_price: number
 }
+
+interface StockForm {
+    stock_code: string
+    stock_name: string
+    // number inputs may bind as string | number at runtime
+    position_quantity: string | number
+    cost_price: string | number
+}
+
+const emptyForm = (): StockForm => ({
+    stock_code: '',
+    stock_name: '',
+    position_quantity: '',
+    cost_price: '',
+})
 
 const stocks = ref<Stock[]>([])
 const loading = ref(false)
 const refreshing = ref(false)
 const showDialog = ref(false)
 const editingCode = ref<string | null>(null)
-const formData = ref({ stock_code: '', stock_name: '' })
+const formData = ref<StockForm>(emptyForm())
 
 const loadData = async (isRefresh = false) => {
     if (isRefresh) {
@@ -42,34 +59,67 @@ const loadData = async (isRefresh = false) => {
 
 const openCreate = () => {
     editingCode.value = null
-    formData.value = { stock_code: '', stock_name: '' }
+    formData.value = emptyForm()
     showDialog.value = true
 }
 
 const closeDialog = () => {
     showDialog.value = false
     editingCode.value = null
-    formData.value = { stock_code: '', stock_name: '' }
+    formData.value = emptyForm()
 }
 
 const openEdit = (stock: Stock) => {
     editingCode.value = stock.stock_code
-    formData.value = { stock_code: stock.stock_code, stock_name: stock.stock_name }
+    formData.value = {
+        stock_code: stock.stock_code,
+        stock_name: stock.stock_name,
+        position_quantity: stock.position_quantity > 0 ? String(stock.position_quantity) : '',
+        cost_price: stock.cost_price > 0 ? String(stock.cost_price) : '',
+    }
     showDialog.value = true
 }
 
+const fieldText = (value: string | number | null | undefined) =>
+    String(value ?? '').trim()
+
 const handleSave = async () => {
     if (!formData.value.stock_code.trim() || !formData.value.stock_name.trim()) return
+    // type="number" v-model can yield number after user edit; never call .trim() directly
+    const quantityText = fieldText(formData.value.position_quantity)
+    const costText = fieldText(formData.value.cost_price)
+    if (Boolean(quantityText) !== Boolean(costText)) {
+        alert('持仓数量和单位成本需要同时填写；两项都留空可清除持仓。')
+        return
+    }
+    const quantity = quantityText ? Number(quantityText) : 0
+    const costPrice = costText ? Number(costText) : 0
+    if (
+        !Number.isFinite(quantity)
+        || !Number.isFinite(costPrice)
+        || (Boolean(quantityText) && (quantity <= 0 || costPrice <= 0))
+        || (quantity === 0) !== (costPrice === 0)
+    ) {
+        alert('持仓数量和单位成本必须同时为大于 0 的数字。')
+        return
+    }
+    const payload = {
+        stock_code: formData.value.stock_code.trim(),
+        stock_name: formData.value.stock_name.trim(),
+        position_quantity: quantity,
+        // cost_price is average unit cost (单价), not total cost
+        cost_price: costPrice,
+    }
     try {
         if (editingCode.value) {
             await request(`/watchlist/${encodeURIComponent(editingCode.value)}`, {
                 method: 'PUT',
-                data: formData.value,
+                data: payload,
             })
         } else {
             await request('/watchlist', {
                 method: 'POST',
-                data: formData.value,
+                data: payload,
             })
         }
         closeDialog()
@@ -105,12 +155,33 @@ const formatChange = (change: number) => {
     return `${sign}${change.toFixed(2)}`
 }
 
+const hasPosition = (stock: Stock) => stock.position_quantity > 0 && stock.cost_price > 0
+const dailyProfit = (stock: Stock) => stock.change * stock.position_quantity
+const holdingProfit = (stock: Stock) => (stock.price - stock.cost_price) * stock.position_quantity
+const holdingPercent = (stock: Stock) => stock.cost_price > 0
+    ? (stock.price / stock.cost_price - 1) * 100
+    : 0
+const formatMoney = (value: number) => {
+    const sign = value > 0 ? '+' : value < 0 ? '-' : ''
+    return `${sign}¥${Math.abs(value).toFixed(2)}`
+}
+const formatCost = (value: number) => value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
+const profitColor = (value: number) => {
+    if (value > 0) return 'text-red-500'
+    if (value < 0) return 'text-emerald-600'
+    return 'text-slate-500'
+}
+
 onMounted(() => {
     loadData()
 })
 
 const gainersCount = computed(() => stocks.value.filter((stock) => stock.change > 0).length)
 const losersCount = computed(() => stocks.value.filter((stock) => stock.change < 0).length)
+const positionedStocks = computed(() => stocks.value.filter(hasPosition))
+const valuedPositions = computed(() => positionedStocks.value.filter((stock) => stock.price > 0))
+const dailyProfitTotal = computed(() => valuedPositions.value.reduce((sum, stock) => sum + dailyProfit(stock), 0))
+const holdingProfitTotal = computed(() => valuedPositions.value.reduce((sum, stock) => sum + holdingProfit(stock), 0))
 </script>
 
 <template>
@@ -133,7 +204,7 @@ const losersCount = computed(() => stocks.value.filter((stock) => stock.change <
         </div>
       </div>
 
-      <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <div class="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
           <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Watchlist</div>
           <div class="mt-3 text-3xl font-semibold text-slate-950">{{ stocks.length }}</div>
@@ -145,6 +216,18 @@ const losersCount = computed(() => stocks.value.filter((stock) => stock.change <
         <div class="rounded-[24px] border border-slate-200 bg-slate-950 p-4 text-slate-100">
           <div class="text-xs uppercase tracking-[0.24em] text-slate-500">Down</div>
           <div class="mt-3 text-2xl font-semibold text-emerald-400">{{ losersCount }}</div>
+        </div>
+        <div class="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Today P&amp;L</div>
+          <div class="mt-3 text-2xl font-semibold" :class="profitColor(dailyProfitTotal)">
+            {{ valuedPositions.length ? formatMoney(dailyProfitTotal) : '--' }}
+          </div>
+        </div>
+        <div class="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Holding P&amp;L</div>
+          <div class="mt-3 text-2xl font-semibold" :class="profitColor(holdingProfitTotal)">
+            {{ valuedPositions.length ? formatMoney(holdingProfitTotal) : '--' }}
+          </div>
         </div>
       </div>
     </section>
@@ -185,6 +268,16 @@ const losersCount = computed(() => stocks.value.filter((stock) => stock.change <
                   </span>
                 </div>
                 <p class="mt-2 font-mono text-sm text-slate-400">{{ stock.stock_code }}</p>
+                <div v-if="hasPosition(stock)" class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
+                  <span>持仓 {{ stock.position_quantity }} 股</span>
+                  <span>单位成本 ¥{{ formatCost(stock.cost_price) }}</span>
+                  <template v-if="stock.price > 0">
+                    <span :class="profitColor(dailyProfit(stock))">今日 {{ formatMoney(dailyProfit(stock)) }}</span>
+                    <span :class="profitColor(holdingProfit(stock))">
+                      持仓 {{ formatMoney(holdingProfit(stock)) }}（{{ holdingPercent(stock).toFixed(2) }}%）
+                    </span>
+                  </template>
+                </div>
               </div>
 
               <div class="text-right">
@@ -237,6 +330,33 @@ const losersCount = computed(() => stocks.value.filter((stock) => stock.change <
               placeholder="例如: 贵州茅台"
             >
           </div>
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label class="mb-1 block text-sm text-slate-500">持仓数量</label>
+              <input
+                v-model="formData.position_quantity"
+                type="number"
+                min="0"
+                step="any"
+                inputmode="decimal"
+                class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                placeholder="例如: 100"
+              >
+            </div>
+            <div>
+              <label class="mb-1 block text-sm text-slate-500">单位成本（单价）</label>
+              <input
+                v-model="formData.cost_price"
+                type="number"
+                min="0"
+                step="any"
+                inputmode="decimal"
+                class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                placeholder="例如: 7.025"
+              >
+            </div>
+          </div>
+          <p class="text-xs leading-5 text-slate-400">单位成本为每股/每份均价，不是总成本。两项同时留空可清除持仓；盈亏按当前行情实时计算。</p>
         </div>
         <div class="flex gap-3 border-t border-slate-200 p-6">
           <button @click="closeDialog" class="flex-1 rounded-2xl border border-slate-200 bg-white py-3 font-medium text-slate-600">取消</button>

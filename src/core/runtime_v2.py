@@ -8,7 +8,7 @@ import threading
 import uuid
 import zlib
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -338,7 +338,17 @@ class RuntimeV2Store:
                     current.update(dict(metadata))
                 existing_owner = _safe_text(row["platform_user_id"], 160)
                 requested_owner = _safe_text(platform_user_id, 160)
-                next_owner = existing_owner or requested_owner
+                # Prefer an explicit owner. Also upgrade legacy single-user scope
+                # ("user") when a real platform user id is provided (e.g. binding
+                # a scheduled task to the current Telegram chat).
+                if requested_owner and (
+                    not existing_owner
+                    or existing_owner == "user"
+                    or existing_owner == requested_owner
+                ):
+                    next_owner = requested_owner
+                else:
+                    next_owner = existing_owner or requested_owner
                 conn.execute(
                     """
                     UPDATE sessions
@@ -1617,22 +1627,40 @@ class RuntimeV2Store:
             conn.commit()
             return int(result.rowcount or 0)
 
-    def build_quality_report(self, *, limit: int = 100) -> dict[str, Any]:
+    def build_quality_report(
+        self,
+        *,
+        limit: int = 100,
+        window_days: int = 7,
+    ) -> dict[str, Any]:
+        """Summarize Runtime v2 health for diagnostics / dashboard attention.
+
+        Only samples rows updated within *window_days* so old failures do not
+        stick on the home dashboard forever.
+        """
+        days = max(1, int(window_days or 7))
+        sample_limit = max(1, int(limit or 1))
+        since = (
+            datetime.now().astimezone() - timedelta(days=days)
+        ).isoformat(timespec="microseconds")
         with self._lock, self._connection() as conn:
             turns = conn.execute(
                 """
-                SELECT id, session_id, status, error, kernel_provider
+                SELECT id, session_id, status, error, kernel_provider, updated_at
                 FROM turns
+                WHERE updated_at >= ?
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit or 1)),),
+                (since, sample_limit),
             ).fetchall()
             failed_deliveries = conn.execute(
                 """
                 SELECT COUNT(*) AS count FROM deliveries
                 WHERE status NOT IN ('delivered', 'succeeded', 'ok')
-                """
+                  AND updated_at >= ?
+                """,
+                (since,),
             ).fetchone()["count"]
             failed_delivery_rows = conn.execute(
                 """
@@ -1640,6 +1668,7 @@ class RuntimeV2Store:
                     d.platform,
                     d.target,
                     d.error,
+                    d.updated_at AS updated_at,
                     a.session_id AS session_id,
                     a.turn_id AS turn_id,
                     a.kind AS artifact_kind,
@@ -1647,16 +1676,20 @@ class RuntimeV2Store:
                 FROM deliveries d
                 LEFT JOIN artifacts a ON a.id = d.artifact_id
                 WHERE d.status NOT IN ('delivered', 'succeeded', 'ok')
+                  AND d.updated_at >= ?
                 ORDER BY d.updated_at DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit or 1)),),
+                (since, sample_limit),
             ).fetchall()
             kernel_timeouts = conn.execute(
                 """
                 SELECT COUNT(*) AS count FROM events
-                WHERE type LIKE 'kernel.%' AND payload_json LIKE '%timeout%'
-                """
+                WHERE type LIKE 'kernel.%'
+                  AND payload_json LIKE '%timeout%'
+                  AND created_at >= ?
+                """,
+                (since,),
             ).fetchone()["count"]
         status_counts: dict[str, int] = {}
         recent_failures: list[str] = []
@@ -1677,6 +1710,7 @@ class RuntimeV2Store:
                         ),
                         "kernel_provider": _safe_text(row["kernel_provider"], 60),
                         "error": error,
+                        "updated_at": _safe_text(row["updated_at"], 64),
                     }
                 )
         delivery_failure_counts: dict[str, int] = {}
@@ -1699,6 +1733,7 @@ class RuntimeV2Store:
                     "artifact_kind": kind,
                     "artifact_filename": _safe_text(row["artifact_filename"], 240),
                     "error": _safe_text(row["error"], 200),
+                    "updated_at": _safe_text(row["updated_at"], 64),
                 }
             )
         recommendations: list[str] = []
@@ -1720,10 +1755,12 @@ class RuntimeV2Store:
                 )
         if kernel_timeouts:
             recommendations.append("检查 kernel timeout 和 thread resume 耗时。")
-            suggested_tests.append("为 Codex resume/timeout 添加长会话回归测试。")
+            suggested_tests.append("为 Agents SDK timeout 添加长会话回归测试。")
         if not recommendations:
-            recommendations.append("Runtime v2 暂未发现明显异常。")
+            recommendations.append(f"近 {days} 天 Runtime v2 暂未发现明显异常。")
         return {
+            "window_days": days,
+            "since": since,
             "status_counts": status_counts,
             "recent_failures": recent_failures,
             "recent_failed_turns": recent_failed_turns,

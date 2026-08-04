@@ -8,12 +8,7 @@ from typing import Any, Dict, List, cast
 
 from core.channel_runtime_store import channel_runtime_store
 from core.agents import AgentsSdkAssistantRuntime
-from core.config import (
-    X_DEPLOYMENT_STAGING_PATH,
-    AUTO_RECOVERY_MAX_ATTEMPTS,
-    ikaros_kernel_provider,
-)
-from core.codex_kernel import codex_kernel_provider
+from core.config import X_DEPLOYMENT_STAGING_PATH, AUTO_RECOVERY_MAX_ATTEMPTS
 from core.extension_router import ExtensionCandidate, ExtensionRouter
 from core.heartbeat_store import heartbeat_store
 from core.orchestrator_context import OrchestratorRuntimeContext
@@ -28,7 +23,6 @@ from core.task_inbox import task_inbox
 from core.task_manager import task_manager
 from core.tool_access_store import tool_access_store
 from core.tool_broker import ToolBroker
-from services.ai_service import AiService
 from services.intent_router import RoutingDecision, intent_router
 
 logger = logging.getLogger(__name__)
@@ -100,7 +94,7 @@ class AgentOrchestrator:
     """Single-loop orchestrator aligned with primitive-first execution."""
 
     def __init__(self):
-        self.ai_service = AiService()
+        self.assistant_runtime = AgentsSdkAssistantRuntime()
         self.runtime = PrimitiveRuntime()
         self.tool_broker = ToolBroker(self.runtime)
         self.extension_router = ExtensionRouter()
@@ -113,9 +107,7 @@ class AgentOrchestrator:
         )
 
     def _select_assistant_runtime(self) -> Any:
-        if ikaros_kernel_provider() == "agents_sdk":
-            return AgentsSdkAssistantRuntime()
-        return self.ai_service
+        return self.assistant_runtime
 
     async def handle_message(self, ctx: UnifiedContext, message_history: list):
         runtime_ctx = OrchestratorRuntimeContext.from_message(ctx)
@@ -510,33 +502,6 @@ class AgentOrchestrator:
             await emit_subagent_progress(event, payload)
             return directive
 
-        if ikaros_kernel_provider() == "codex" and codex_kernel_provider.should_handle(
-            runtime_ctx
-        ):
-            logger.info("Using Codex kernel provider for task_id=%s", task_id)
-            await on_agent_event(
-                "turn_start",
-                {
-                    "turn": 1,
-                    "kernel_provider": "codex",
-                    "task_id": str(task_id),
-                },
-            )
-            final_text = await codex_kernel_provider.run_for_orchestrator(
-                ctx=ctx,
-                runtime_ctx=runtime_ctx,
-                message_history=message_history,
-                task_goal=task_goal,
-                request_mode=request_mode,
-                event_callback=on_agent_event,
-                candidate_skill_names=[
-                    candidate.name for candidate in extension_candidates
-                ],
-            )
-            if final_text:
-                yield final_text
-            return
-
         logger.info("final tools: %s", tools)
         assistant_runtime = self._select_assistant_runtime()
         async for chunk in assistant_runtime.generate_response_stream(
@@ -843,6 +808,17 @@ class AgentOrchestrator:
             mode=mode,
             allowed_skill_names=allowed_skill_names,
         )
+        if tools:
+            instruction += (
+                "\n\n【工具执行约束】\n"
+                "- 用户要求下载、发送、获取、查询、分析、执行或其他可由当前工具完成的动作时，"
+                "必须先调用匹配工具，再根据工具结果回复。\n"
+                "- 如果需要在长任务中同步进度或逐个交付文件，调用 `send_message`；"
+                "它会立即发送，多个图片应分多次调用，不要把已发送的文件再放进最终答复。\n"
+                "- 工具结果中的 `files` 只表示已生成的产物；需要用户收到时，必须显式调用 `send_message(files=...)`。\n"
+                "- 不要只回复‘我先看看/正在处理/稍后发给你’来代替工具调用；没有实际调用就不能声称已经开始或即将完成。\n"
+                "- 如果当前工具确实无法完成请求，要明确说明缺少能力或信息。"
+            )
         if str(request_mode or "").strip().lower() == "task":
             instruction += (
                 "\n\nTask Closure Protocol:\n"

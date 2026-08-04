@@ -4,11 +4,10 @@
 
 import json
 import os
-import shlex
 
 from dotenv import load_dotenv
 
-from core.app_paths import data_dir, env_path, models_config_path, project_root
+from core.app_paths import data_dir, env_path, models_config_path
 
 try:
     from openai import AsyncOpenAI, OpenAI  # type: ignore[reportMissingImports]
@@ -257,57 +256,11 @@ CORE_CHAT_EXECUTION_MODE = (
     or "ikaros_with_subagents"
 )
 
-# Replaceable Ikaros execution kernel. `native` keeps the historical
-# AgentOrchestrator + AiService loop; `agents_sdk` uses OpenAI Agents SDK
-# with Ikaros tools; `codex` delegates task execution to `codex app-server`
-# from the Ikaros repo root.
-IKAROS_KERNEL = os.getenv("IKAROS_KERNEL", "native").strip().lower() or "native"
-IKAROS_CODEX_COMMAND = os.getenv("IKAROS_CODEX_COMMAND", "codex").strip() or "codex"
-IKAROS_CODEX_ARGS = (
-    os.getenv("IKAROS_CODEX_ARGS", "app-server --listen stdio://").strip()
-    or "app-server --listen stdio://"
-)
-IKAROS_CODEX_MODEL = os.getenv("IKAROS_CODEX_MODEL", "").strip()
-IKAROS_CODEX_EFFORT = os.getenv("IKAROS_CODEX_EFFORT", "").strip()
-IKAROS_CODEX_SANDBOX = (
-    os.getenv("IKAROS_CODEX_SANDBOX", "workspace-write").strip() or "workspace-write"
-)
-IKAROS_CODEX_APPROVAL_POLICY = (
-    os.getenv("IKAROS_CODEX_APPROVAL_POLICY", "never").strip() or "never"
-)
-IKAROS_CODEX_WRITABLE_ROOTS = os.getenv("IKAROS_CODEX_WRITABLE_ROOTS", "").strip()
-IKAROS_CODEX_SKILL_ALLOWLIST = os.getenv("IKAROS_CODEX_SKILL_ALLOWLIST", "").strip()
-IKAROS_CODEX_SKILL_DENYLIST = os.getenv("IKAROS_CODEX_SKILL_DENYLIST", "").strip()
-IKAROS_CODEX_TIMEOUT_SEC = _env_int("IKAROS_CODEX_TIMEOUT_SEC", 1800)
-IKAROS_CODEX_REQUEST_TIMEOUT_SEC = _env_int("IKAROS_CODEX_REQUEST_TIMEOUT_SEC", 300)
-
 
 def ikaros_kernel_provider() -> str:
-    provider = (
-        str(os.getenv("IKAROS_KERNEL", IKAROS_KERNEL) or "native").strip().lower()
-    )
-    return provider if provider in {"native", "agents_sdk", "codex"} else "native"
+    """Return the single supported chat runtime."""
+    return "agents_sdk"
 
-
-def ikaros_codex_command() -> list[str]:
-    command = str(
-        os.getenv("IKAROS_CODEX_COMMAND", IKAROS_CODEX_COMMAND) or "codex"
-    ).strip()
-    args = str(
-        os.getenv("IKAROS_CODEX_ARGS", IKAROS_CODEX_ARGS)
-        or "app-server --listen stdio://"
-    ).strip()
-    return [command, *shlex.split(args)] if command else shlex.split(args)
-
-
-def ikaros_codex_writable_roots() -> list[str]:
-    roots = [str(project_root().resolve())]
-    raw = str(os.getenv("IKAROS_CODEX_WRITABLE_ROOTS", IKAROS_CODEX_WRITABLE_ROOTS) or "")
-    for item in raw.split(os.pathsep):
-        candidate = item.strip()
-        if candidate:
-            roots.append(candidate)
-    return list(dict.fromkeys(roots))
 
 # Kernel-protected source roots (comma-separated absolute/relative paths)
 KERNEL_PROTECTED_PATHS = os.getenv("KERNEL_PROTECTED_PATHS", "")

@@ -386,45 +386,118 @@ onMounted(load)
           <div class="card-icon amber">
             <RadioTower class="h-5 w-5" />
           </div>
-          <h2>渠道与运行项</h2>
+          <div>
+            <h2>渠道与运行项</h2>
+            <p class="card-subtitle">开关控制是否启用；凭证/连接参数决定能否真正连通。</p>
+          </div>
         </div>
 
         <div class="channel-grid">
-          <article class="channel-item">
+          <article class="channel-item" :class="{ enabled: form.channels.telegram.enabled, ready: form.channels.telegram.configured }">
             <header>
-              <div><strong>Telegram</strong><span>{{ form.channels.telegram.configured ? '凭证已配置' : '缺少凭证' }}</span></div>
-              <input v-model="form.channels.telegram.enabled" type="checkbox">
+              <div class="channel-identity">
+                <strong>Telegram</strong>
+                <span class="status-pill" :class="form.channels.telegram.configured ? 'ok' : 'warn'">
+                  {{ form.channels.telegram.configured ? '凭证已配置' : '缺少凭证' }}
+                </span>
+              </div>
+              <label class="switch">
+                <input v-model="form.channels.telegram.enabled" type="checkbox">
+                <span class="slider" />
+                <em>{{ form.channels.telegram.enabled ? '启用' : '关闭' }}</em>
+              </label>
             </header>
-            <label><span>Bot Token</span><input v-model="form.channels.telegram.bot_token" type="text"></label>
+            <label class="field">
+              <span>Bot Token</span>
+              <input v-model="form.channels.telegram.bot_token" type="password" autocomplete="off" placeholder="123456:AA...">
+            </label>
           </article>
-          <article class="channel-item">
+
+          <article class="channel-item" :class="{ enabled: form.channels.discord.enabled, ready: form.channels.discord.configured }">
             <header>
-              <div><strong>Discord</strong><span>{{ form.channels.discord.configured ? '凭证已配置' : '缺少凭证' }}</span></div>
-              <input v-model="form.channels.discord.enabled" type="checkbox">
+              <div class="channel-identity">
+                <strong>Discord</strong>
+                <span class="status-pill" :class="form.channels.discord.configured ? 'ok' : 'warn'">
+                  {{ form.channels.discord.configured ? '凭证已配置' : '缺少凭证' }}
+                </span>
+              </div>
+              <label class="switch">
+                <input v-model="form.channels.discord.enabled" type="checkbox">
+                <span class="slider" />
+                <em>{{ form.channels.discord.enabled ? '启用' : '关闭' }}</em>
+              </label>
             </header>
-            <label><span>Bot Token</span><input v-model="form.channels.discord.bot_token" type="text"></label>
+            <label class="field">
+              <span>Bot Token</span>
+              <input v-model="form.channels.discord.bot_token" type="password" autocomplete="off" placeholder="Bot token">
+            </label>
           </article>
-          <article class="channel-item">
+
+          <article class="channel-item" :class="{ enabled: form.channels.dingtalk.enabled, ready: form.channels.dingtalk.configured }">
             <header>
-              <div><strong>DingTalk</strong><span>{{ form.channels.dingtalk.configured ? '凭证已配置' : '缺少凭证' }}</span></div>
-              <input v-model="form.channels.dingtalk.enabled" type="checkbox">
+              <div class="channel-identity">
+                <strong>DingTalk</strong>
+                <span class="status-pill" :class="form.channels.dingtalk.configured ? 'ok' : 'warn'">
+                  {{ form.channels.dingtalk.configured ? '凭证已配置' : '缺少凭证' }}
+                </span>
+              </div>
+              <label class="switch">
+                <input v-model="form.channels.dingtalk.enabled" type="checkbox">
+                <span class="slider" />
+                <em>{{ form.channels.dingtalk.enabled ? '启用' : '关闭' }}</em>
+              </label>
             </header>
-            <label><span>Client ID</span><input v-model="form.channels.dingtalk.client_id" type="text"></label>
-            <label><span>Client Secret</span><input v-model="form.channels.dingtalk.client_secret" type="text"></label>
+            <div class="field-grid">
+              <label class="field">
+                <span>Client ID</span>
+                <input v-model="form.channels.dingtalk.client_id" type="text" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Client Secret</span>
+                <input v-model="form.channels.dingtalk.client_secret" type="password" autocomplete="off">
+              </label>
+            </div>
           </article>
-          <article class="channel-item">
+
+          <article class="channel-item" :class="{ enabled: form.channels.weixin.enabled, ready: form.channels.weixin.configured }">
             <header>
-              <div><strong>Weixin</strong><span>{{ form.channels.weixin.configured ? '连接参数已就绪' : '缺少连接参数' }}</span></div>
-              <input v-model="form.channels.weixin.enabled" type="checkbox">
+              <div class="channel-identity">
+                <strong>Weixin</strong>
+                <span class="status-pill" :class="form.channels.weixin.configured ? 'ok' : 'warn'">
+                  {{ form.channels.weixin.configured ? '连接参数就绪' : '缺少连接参数' }}
+                </span>
+              </div>
+              <label class="switch">
+                <input v-model="form.channels.weixin.enabled" type="checkbox">
+                <span class="slider" />
+                <em>{{ form.channels.weixin.enabled ? '启用' : '关闭' }}</em>
+              </label>
             </header>
-            <label><span>Base URL</span><input v-model="form.channels.weixin.base_url" type="text"></label>
-            <label><span>CDN Base URL</span><input v-model="form.channels.weixin.cdn_base_url" type="text"></label>
+            <div class="field-grid">
+              <label class="field">
+                <span>Base URL</span>
+                <input v-model="form.channels.weixin.base_url" type="text" autocomplete="off" placeholder="https://...">
+              </label>
+              <label class="field">
+                <span>CDN Base URL</span>
+                <input v-model="form.channels.weixin.cdn_base_url" type="text" autocomplete="off" placeholder="https://...">
+              </label>
+            </div>
           </article>
-          <article class="channel-item web-channel">
+
+          <article class="channel-item web-channel" :class="{ enabled: form.channels.web.enabled, ready: true }">
             <header>
-              <div><strong>Web</strong><span>无需额外凭证</span></div>
-              <input v-model="form.channels.web.enabled" type="checkbox">
+              <div class="channel-identity">
+                <strong>Web</strong>
+                <span class="status-pill ok">内置渠道 · 无需额外凭证</span>
+              </div>
+              <label class="switch">
+                <input v-model="form.channels.web.enabled" type="checkbox">
+                <span class="slider" />
+                <em>{{ form.channels.web.enabled ? '启用' : '关闭' }}</em>
+              </label>
             </header>
+            <p class="channel-note">Web 控制台对话与后台共用，开启后用户可在「聊天对话」使用 AI。</p>
           </article>
         </div>
       </section>
@@ -850,42 +923,177 @@ onMounted(load)
 
 .channels-card {
   display: grid;
-  gap: 20px;
+  gap: 18px;
+}
+
+.card-subtitle {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .channel-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .channel-item {
   display: grid;
   gap: 14px;
   border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  background: #fbfdff;
-  padding: 16px;
+  border-radius: 16px;
+  background: var(--color-bg-elevated);
+  padding: 16px 16px 18px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.channel-item header,
+.channel-item.enabled {
+  border-color: color-mix(in srgb, var(--brand-blue) 28%, var(--panel-border));
+  box-shadow: 0 10px 28px rgba(47, 124, 246, 0.06);
+}
+
+.channel-item:not(.enabled) {
+  opacity: 0.78;
+}
+
+.channel-item header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.channel-identity {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.channel-item strong {
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.status-pill {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.status-pill.ok {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: #0f766e;
+}
+
+.status-pill.warn {
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: #b45309;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch .slider {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 0.15s ease;
+}
+
+.switch .slider::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  transition: transform 0.15s ease;
+}
+
+.switch input:checked + .slider {
+  background: var(--brand-blue);
+}
+
+.switch input:checked + .slider::after {
+  transform: translateX(18px);
+}
+
+.switch em {
+  min-width: 2em;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.field input {
+  width: 100%;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: var(--panel-muted);
+  color: var(--text-strong);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.field input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--brand-blue) 55%, var(--panel-border));
+  box-shadow: 0 0 0 3px rgba(47, 124, 246, 0.12);
+}
+
+.channel-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .toggle-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-}
-
-.channel-item strong {
-  display: block;
-  color: var(--text-strong);
-}
-
-.channel-item header span {
-  display: block;
-  margin-top: 4px;
-  color: var(--text-muted);
-  font-size: 12px;
 }
 
 .runtime-options-grid {

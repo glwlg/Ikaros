@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from core.state_paths import SINGLE_USER_SCOPE
@@ -207,11 +208,27 @@ async def get_editable_stock_push_message_id(
 
 
 def _normalize_watchlist_row(raw: dict[str, Any]) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "stock_code": str(raw.get("stock_code") or "").strip(),
         "stock_name": str(raw.get("stock_name") or "").strip(),
         "platform": str(raw.get("platform") or "telegram").strip() or "telegram",
     }
+    position_quantity = _positive_float(raw.get("position_quantity"))
+    cost_price = _positive_float(raw.get("cost_price"))
+    if position_quantity and cost_price:
+        row["position_quantity"] = position_quantity
+        row["cost_price"] = cost_price
+    return row
+
+
+def _positive_float(value: Any) -> float:
+    try:
+        normalized = float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(normalized) or normalized <= 0:
+        return 0.0
+    return normalized
 
 
 def _to_watchlist_runtime_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -226,13 +243,17 @@ def _to_watchlist_runtime_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
                 "stock_code": code,
                 "stock_name": str(item.get("stock_name") or code),
                 "platform": str(item.get("platform") or "telegram"),
+                "position_quantity": _positive_float(item.get("position_quantity")),
+                "cost_price": _positive_float(item.get("cost_price")),
             }
         )
     return runtime
 
 
 async def _read_watchlist(user_id: int | str) -> list[dict[str, Any]]:
-    current_rows = read_row_list(await storage_service.read(_watchlist_path(user_id), []))
+    current_rows = read_row_list(
+        await storage_service.read(_watchlist_path(user_id), [])
+    )
     normalized_current: list[dict[str, Any]] = []
     for raw in current_rows:
         normalized = _normalize_watchlist_row(raw)
@@ -259,13 +280,17 @@ async def _write_watchlist(user_id: int | str, rows: list[dict[str, Any]]) -> No
         code = str(row.get("stock_code") or "").strip()
         if not code:
             continue
-        payload.append(
-            {
-                "stock_code": code,
-                "stock_name": str(row.get("stock_name") or code).strip(),
-                "platform": str(row.get("platform") or "telegram").strip() or "telegram",
-            }
-        )
+        normalized: dict[str, Any] = {
+            "stock_code": code,
+            "stock_name": str(row.get("stock_name") or code).strip(),
+            "platform": str(row.get("platform") or "telegram").strip() or "telegram",
+        }
+        position_quantity = _positive_float(row.get("position_quantity"))
+        cost_price = _positive_float(row.get("cost_price"))
+        if position_quantity and cost_price:
+            normalized["position_quantity"] = position_quantity
+            normalized["cost_price"] = cost_price
+        payload.append(normalized)
     await storage_service.write(_watchlist_path(user_id), payload)
 
 
@@ -302,6 +327,49 @@ async def remove_watchlist_stock(user_id: int | str, stock_code: str) -> bool:
     return changed
 
 
+async def set_watchlist_position(
+    user_id: int | str,
+    stock_code: str,
+    quantity: float,
+    cost_price: float,
+) -> bool:
+    normalized_quantity = _positive_float(quantity)
+    normalized_cost = _positive_float(cost_price)
+    if not normalized_quantity or not normalized_cost:
+        raise ValueError("quantity and cost_price must be positive numbers")
+
+    rows = await _read_watchlist(user_id)
+    code = str(stock_code or "").strip().lower()
+    found = False
+    for row in rows:
+        if str(row.get("stock_code") or "").strip().lower() != code:
+            continue
+        row["position_quantity"] = normalized_quantity
+        row["cost_price"] = normalized_cost
+        found = True
+    if found:
+        await _write_watchlist(user_id, rows)
+    return found
+
+
+async def clear_watchlist_position(
+    user_id: int | str,
+    stock_code: str,
+) -> bool:
+    rows = await _read_watchlist(user_id)
+    code = str(stock_code or "").strip().lower()
+    found = False
+    for row in rows:
+        if str(row.get("stock_code") or "").strip().lower() != code:
+            continue
+        row.pop("position_quantity", None)
+        row.pop("cost_price", None)
+        found = True
+    if found:
+        await _write_watchlist(user_id, rows)
+    return found
+
+
 async def get_user_watchlist(
     user_id: int | str,
     platform: str | None = None,
@@ -333,6 +401,7 @@ async def get_all_watchlist_users() -> list[tuple[int | str, str]]:
 
 __all__ = [
     "add_watchlist_stock",
+    "clear_watchlist_position",
     "clear_last_stock_push_message",
     "get_all_watchlist_users",
     "get_editable_stock_push_message_id",
@@ -344,5 +413,6 @@ __all__ = [
     "remove_watchlist_stock",
     "save_last_stock_push_message",
     "save_last_stock_push_prices",
+    "set_watchlist_position",
     "set_stock_delivery_target",
 ]

@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Set
 
 from core.file_artifacts import normalize_file_rows
-from core.local_file_delivery import send_local_file
+from core.local_file_delivery import send_local_file, validate_local_delivery_target
+from core.runtime_delivery import deliver_agent_message
 from core.tool_registry import tool_registry
 
 from extension.skills.registry import skill_registry as skill_loader
@@ -237,6 +238,31 @@ class ToolCallDispatcher:
                 if candidate:
                     return candidate
         return runtime_user
+
+    def _normalize_immediate_file_rows(
+        self, raw_files: Any
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        rows: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for item in list(raw_files or []):
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            path_text = str(row.get("path") or "").strip()
+            if path_text and not Path(path_text).expanduser().is_absolute():
+                base = Path(self.task_workspace_root or REPO_ROOT).expanduser()
+                path_text = str((base / path_text).resolve(strict=False))
+                row["path"] = path_text
+            path_obj, validation_error = validate_local_delivery_target(
+                path_text,
+                task_workspace_root=self.task_workspace_root,
+            )
+            if path_obj is None:
+                errors.append(validation_error or f"invalid file path: {path_text}")
+                continue
+            row["path"] = str(path_obj)
+            rows.append(row)
+        return normalize_file_rows(rows), errors
 
     def _is_ikaros_runtime(self) -> bool:
         uid = str(self.runtime_user_id or "").strip().lower()
@@ -702,6 +728,80 @@ class ToolCallDispatcher:
                 f"Tool `complete_task` declared `{status}`.",
             )
             return result
+
+        if tool_name == "send_message":
+            if self._runtime_role() != "ikaros":
+                return {
+                    "ok": False,
+                    "error_code": "policy_blocked",
+                    "message": "Tool policy blocked: send_message",
+                    "failure_mode": "fatal",
+                    "terminal": True,
+                    "text": "❌ 当前执行上下文不允许直接向用户发送中间消息。",
+                }
+            if not self._policy_allows(tool_name, kind="tool"):
+                return {
+                    "ok": False,
+                    "error_code": "policy_blocked",
+                    "message": f"Tool policy blocked: {tool_name}",
+                    "failure_mode": "fatal",
+                    "terminal": True,
+                    "text": "❌ 当前策略不允许直接向用户发送中间消息。",
+                }
+
+            text = str(tool_args.get("text") or "").strip()
+            files, file_errors = self._normalize_immediate_file_rows(
+                tool_args.get("files")
+            )
+            if file_errors:
+                return {
+                    "ok": False,
+                    "error_code": "invalid_delivery_target",
+                    "message": "; ".join(file_errors[:3]),
+                    "failure_mode": "recoverable",
+                }
+            if not text and not files:
+                return {
+                    "ok": False,
+                    "error_code": "invalid_args",
+                    "message": "send_message requires text or files",
+                    "failure_mode": "recoverable",
+                }
+
+            user_data = getattr(self.ctx, "user_data", None)
+            user_data = user_data if isinstance(user_data, dict) else {}
+            delivery = await deliver_agent_message(
+                ctx=self.ctx,
+                text=text,
+                file_rows=files,
+                runtime_session_id=str(user_data.get("runtime_v2_session_id") or ""),
+                runtime_turn_id=str(user_data.get("runtime_v2_turn_id") or ""),
+            )
+            delivered_files = list(delivery.get("delivered_files") or [])
+            failed_files = list(delivery.get("failed_files") or [])
+            ok = not failed_files
+            self.todo_mark_step(
+                "deliver",
+                "in_progress",
+                "Tool `send_message` delivered intermediate output.",
+            )
+            return {
+                "ok": ok,
+                "terminal": False,
+                "summary": (
+                    f"Sent intermediate message: text={bool(text)}, "
+                    f"files={len(delivered_files)}, failed={len(failed_files)}"
+                ),
+                "text": "✅ 中间消息已发送。" if ok else "⚠️ 中间消息已部分发送。",
+                "data": {
+                    "text_sent": bool(delivery.get("delivered_text")),
+                    "delivered_files": delivered_files,
+                    "failed_files": failed_files,
+                    "target": str(delivery.get("target") or ""),
+                },
+                "history_visibility": "suppress_success" if ok else "",
+                "failure_mode": "recoverable" if not ok else "",
+            }
 
         if tool_name == "send_local_file":
             if self._runtime_role() != "ikaros":

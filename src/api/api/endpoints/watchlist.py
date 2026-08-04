@@ -1,4 +1,5 @@
 import logging
+import math
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -20,11 +21,39 @@ logger = logging.getLogger(__name__)
 class StockAdd(BaseModel):
     stock_code: str
     stock_name: str
+    position_quantity: float | None = None
+    cost_price: float | None = None
 
 
 class StockUpdate(BaseModel):
     stock_code: str
     stock_name: str
+    position_quantity: float | None = None
+    cost_price: float | None = None
+
+
+def _resolve_position_values(
+    quantity: float | None,
+    cost_price: float | None,
+    *,
+    fallback_quantity: float = 0,
+    fallback_cost_price: float = 0,
+) -> tuple[float, float]:
+    normalized_quantity = fallback_quantity if quantity is None else float(quantity)
+    normalized_cost = fallback_cost_price if cost_price is None else float(cost_price)
+    if normalized_quantity == 0 and normalized_cost == 0:
+        return 0.0, 0.0
+    if (
+        not math.isfinite(normalized_quantity)
+        or not math.isfinite(normalized_cost)
+        or normalized_quantity <= 0
+        or normalized_cost <= 0
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="position_quantity and cost_price must both be positive numbers",
+        )
+    return normalized_quantity, normalized_cost
 
 
 async def _resolve_platform_uid(user: User, session: AsyncSession) -> str:
@@ -88,9 +117,20 @@ async def add_stock(
     name = stock.stock_name.strip()
     if not code:
         raise HTTPException(status_code=400, detail="stock_code is required")
+    quantity, cost_price = _resolve_position_values(
+        stock.position_quantity,
+        stock.cost_price,
+    )
     ok = await stock_watch_store.add_watchlist_stock(platform_uid, code, name)
     if not ok:
         raise HTTPException(status_code=409, detail="Stock already in watchlist")
+    if quantity and cost_price:
+        await stock_watch_store.set_watchlist_position(
+            platform_uid,
+            code,
+            quantity,
+            cost_price,
+        )
     return {"success": True}
 
 
@@ -102,11 +142,56 @@ async def update_stock(
     session: AsyncSession = Depends(get_async_session),
 ):
     platform_uid = await _resolve_platform_uid(current_user, session)
-    # Remove old, add new
+    watchlist = await stock_watch_store.get_user_watchlist(platform_uid)
+    current = next(
+        (
+            item
+            for item in watchlist
+            if str(item.get("stock_code") or "").strip().lower()
+            == str(stock_code or "").strip().lower()
+        ),
+        None,
+    )
+    if not current:
+        raise HTTPException(status_code=404, detail="Stock not found in watchlist")
+
+    code = stock.stock_code.strip()
+    name = stock.stock_name.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="stock_code is required")
+    quantity, cost_price = _resolve_position_values(
+        stock.position_quantity,
+        stock.cost_price,
+        fallback_quantity=float(current.get("position_quantity") or 0),
+        fallback_cost_price=float(current.get("cost_price") or 0),
+    )
+
+    if code.lower() != str(stock_code or "").strip().lower():
+        duplicate = next(
+            (
+                item
+                for item in watchlist
+                if str(item.get("stock_code") or "").strip().lower() == code.lower()
+            ),
+            None,
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="Stock already in watchlist")
+
     await stock_watch_store.remove_watchlist_stock(platform_uid, stock_code)
     await stock_watch_store.add_watchlist_stock(
-        platform_uid, stock.stock_code.strip(), stock.stock_name.strip()
+        platform_uid,
+        code,
+        name,
+        platform=str(current.get("platform") or "telegram"),
     )
+    if quantity and cost_price:
+        await stock_watch_store.set_watchlist_position(
+            platform_uid,
+            code,
+            quantity,
+            cost_price,
+        )
     return {"success": True}
 
 

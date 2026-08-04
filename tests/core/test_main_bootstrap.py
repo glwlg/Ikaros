@@ -19,6 +19,9 @@ async def test_init_services_starts_extension_runtime(monkeypatch):
     def fake_scheduler_start():
         calls.append("scheduler.start")
 
+    def fake_scheduler_add_job(*_args, **_kwargs):
+        calls.append("scheduler.add_job")
+
     def fake_start_dynamic_skill_scheduler():
         calls.append("start_dynamic_skill_scheduler")
 
@@ -61,7 +64,7 @@ async def test_init_services_starts_extension_runtime(monkeypatch):
         sys.modules,
         "core.scheduler",
         types.SimpleNamespace(
-            scheduler=types.SimpleNamespace(start=fake_scheduler_start),
+            scheduler=types.SimpleNamespace(start=fake_scheduler_start, add_job=fake_scheduler_add_job),
             load_jobs_from_db=fake_load_jobs,
             start_dynamic_skill_scheduler=fake_start_dynamic_skill_scheduler,
         ),
@@ -109,6 +112,7 @@ async def test_init_services_starts_extension_runtime(monkeypatch):
 
     assert "init_db" in calls
     assert "scheduler.start" in calls
+    assert "scheduler.add_job" in calls
     assert "load_jobs" in calls
     assert "start_dynamic_skill_scheduler" in calls
     assert "memory_registry.activate_extension" in calls

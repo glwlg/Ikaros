@@ -6,6 +6,10 @@ from typing import Any
 from core.runtime_v2 import runtime_v2
 from core.state_paths import SINGLE_USER_SCOPE
 from core.storage_service import now_iso
+from core.trading_calendar import (
+    RUN_CALENDAR_ALWAYS,
+    normalize_run_calendar,
+)
 
 
 def scheduler_task_session_id(task_id: int | str) -> str:
@@ -56,6 +60,9 @@ def _normalize_scheduled_task(raw: dict[str, Any]) -> dict[str, Any]:
             or SINGLE_USER_SCOPE
         ).strip(),
         "need_push": bool(metadata.get("need_push", True)),
+        "run_calendar": normalize_run_calendar(
+            metadata.get("run_calendar") or RUN_CALENDAR_ALWAYS
+        ),
         "is_active": bool(raw.get("enabled", 1)),
         "created_at": str(raw.get("created_at") or now_iso()),
         "updated_at": str(raw.get("updated_at") or now_iso()),
@@ -110,6 +117,7 @@ async def add_scheduled_task(
     chat_id: str = "",
     session_id: str = "",
     need_push: bool = True,
+    run_calendar: str = RUN_CALENDAR_ALWAYS,
 ) -> int:
     _ = session_id
     job = runtime_v2.create_scheduler_job(
@@ -121,6 +129,7 @@ async def add_scheduled_task(
         enabled=True,
         metadata={
             "need_push": bool(need_push),
+            "run_calendar": normalize_run_calendar(run_calendar),
             "created_by_user_id": str(user_id or "").strip(),
         },
     )
@@ -169,7 +178,10 @@ async def update_task_status(
         platform=task["platform"],
         chat_id=task["chat_id"],
         enabled=bool(is_active),
-        metadata={"need_push": task["need_push"]},
+        metadata={
+            "need_push": task["need_push"],
+            "run_calendar": task["run_calendar"],
+        },
     )
     return True
 
@@ -183,16 +195,22 @@ async def update_task_delivery_target(
     session_id: str = "",
 ) -> bool:
     _ = session_id
-    existing = _get_scheduler_job_for_user(task_id, user_id)
+    # Binding is an explicit admin action: allow updating even when the job was
+    # created under a legacy owner (e.g. "user") so the channel can be fixed.
+    existing = runtime_v2.get_scheduler_job(str(int(task_id)))
     if not existing:
         return False
     task = _normalize_scheduled_task(existing)
     target_platform = str(platform or "telegram").strip() or "telegram"
     target_chat_id = str(chat_id or "").strip()
+    if not target_chat_id:
+        return False
+    # Prefer the acting user so web/admin list filters can find the job later.
+    owner = _owner_user_id(user_id) or task.get("user_id") or SINGLE_USER_SCOPE
     scheduler_session_id = _ensure_scheduler_session(
         task_id,
         instruction=task["instruction"],
-        user_id=user_id,
+        user_id=owner,
         platform=target_platform,
         chat_id=target_chat_id,
     )
@@ -204,7 +222,13 @@ async def update_task_delivery_target(
         platform=target_platform,
         chat_id=target_chat_id,
         enabled=task["is_active"],
-        metadata={"need_push": task["need_push"]},
+        metadata={
+            "need_push": task["need_push"],
+            "run_calendar": task["run_calendar"],
+            "created_by_user_id": str(
+                task.get("user_id") or owner or ""
+            ).strip(),
+        },
     )
     return True
 
@@ -220,6 +244,7 @@ async def update_scheduled_task(
     user_id: int | str | None = None,
     crontab: str | None = None,
     instruction: str | None = None,
+    run_calendar: str | None = None,
 ) -> bool:
     existing = _get_scheduler_job_for_user(task_id, user_id)
     if not existing:
@@ -228,6 +253,11 @@ async def update_scheduled_task(
     next_crontab = task["crontab"] if crontab is None else str(crontab).strip()
     next_instruction = (
         task["instruction"] if instruction is None else str(instruction).strip()
+    )
+    next_run_calendar = (
+        task["run_calendar"]
+        if run_calendar is None
+        else normalize_run_calendar(run_calendar)
     )
     session_id = _ensure_scheduler_session(
         task_id,
@@ -244,7 +274,10 @@ async def update_scheduled_task(
         platform=task["platform"],
         chat_id=task["chat_id"],
         enabled=task["is_active"],
-        metadata={"need_push": task["need_push"]},
+        metadata={
+            "need_push": task["need_push"],
+            "run_calendar": next_run_calendar,
+        },
     )
     return True
 

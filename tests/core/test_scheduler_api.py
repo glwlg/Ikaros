@@ -69,10 +69,13 @@ async def test_scheduler_list_endpoint_returns_paused_tasks(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scheduler_create_endpoint_reloads_runtime(monkeypatch):
-    async def fake_add_scheduled_task(crontab, instruction, user_id):
+    async def fake_add_scheduled_task(
+        crontab, instruction, user_id, run_calendar="always", **kwargs
+    ):
         assert crontab == "15 8 * * *"
         assert instruction == "早报"
         assert user_id == "telegram-user"
+        assert run_calendar == "trading_days"
         return 11
 
     _patch_platform_uid(monkeypatch)
@@ -84,7 +87,11 @@ async def test_scheduler_create_endpoint_reloads_runtime(monkeypatch):
     )
 
     result = await scheduler_endpoint.create_task(
-        scheduler_endpoint.TaskCreate(crontab="15 8 * * *", instruction="早报"),
+        scheduler_endpoint.TaskCreate(
+            crontab="15 8 * * *",
+            instruction="早报",
+            run_calendar="trading_days",
+        ),
         current_user=SimpleNamespace(id=42),
         session="session",
     )
@@ -95,11 +102,14 @@ async def test_scheduler_create_endpoint_reloads_runtime(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scheduler_update_endpoint_reloads_runtime(monkeypatch):
-    async def fake_update_scheduled_task(task_id, user_id, *, crontab, instruction):
+    async def fake_update_scheduled_task(
+        task_id, user_id, *, crontab, instruction, run_calendar=None
+    ):
         assert task_id == 9
         assert user_id == "telegram-user"
         assert crontab == "20 11 * * *"
         assert instruction is None
+        assert run_calendar == "weekdays"
         return True
 
     _patch_platform_uid(monkeypatch)
@@ -112,7 +122,7 @@ async def test_scheduler_update_endpoint_reloads_runtime(monkeypatch):
 
     result = await scheduler_endpoint.update_task(
         9,
-        scheduler_endpoint.TaskUpdate(crontab="20 11 * * *"),
+        scheduler_endpoint.TaskUpdate(crontab="20 11 * * *", run_calendar="weekdays"),
         current_user=SimpleNamespace(id=42),
         session="session",
     )

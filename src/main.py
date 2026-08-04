@@ -64,6 +64,10 @@ async def init_services():
         scheduler.start()
         await load_jobs_from_db()
 
+        from core.subscription_reminders import start_subscription_reminder_scheduler
+
+        await start_subscription_reminder_scheduler(scheduler)
+
         runtime = init_extension_runtime(scheduler=scheduler)
         memory_registry.activate_extension(runtime)
         await long_term_memory.initialize()

@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from core.app_paths import data_dir
-from services.ai_service import AiService
+from core.agents import AgentsSdkAssistantRuntime
 from shared.contracts.dispatch import TaskEnvelope, TaskResult
 
 logger = logging.getLogger(__name__)
 
-_ai_service = AiService()
+_assistant_runtime = AgentsSdkAssistantRuntime()
 _VALID_RECORD_TYPES = {"支出", "收入", "转账"}
 
 
@@ -244,7 +244,7 @@ async def run_web_accounting_auto_image_task(task: TaskEnvelope) -> TaskResult:
 
     async def consume_stream() -> None:
         nonlocal final_text
-        async for chunk in _ai_service.generate_response_stream(
+        async for chunk in _assistant_runtime.generate_response_stream(
             message_history,
             tools=[tool_decl],
             tool_executor=tool_executor,

@@ -351,6 +351,57 @@ async def deliver_result_files(
     return result
 
 
+async def deliver_agent_message(
+    *,
+    ctx: Any,
+    text: str = "",
+    file_rows: list[dict[str, Any]] | None = None,
+    runtime_session_id: str = "",
+    runtime_turn_id: str = "",
+    runtime_store: Any | None = None,
+) -> dict[str, Any]:
+    """Deliver an intermediate agent message and/or attachments immediately.
+
+    Unlike the normal result-file path, this function is intended for a tool
+    call made while the agent is still running.  Delivered files are recorded
+    but are not returned as pending artifacts, so the outer final-response
+    handler will not send them a second time.
+    """
+
+    rendered_text = str(text or "").strip()
+    delivered_text = False
+    if rendered_text:
+        await deliver_text_message(
+            ctx=ctx,
+            payload=rendered_text,
+            runtime_session_id=runtime_session_id,
+            runtime_turn_id=runtime_turn_id,
+            event_type="agent_message_sent",
+            runtime_store=runtime_store,
+        )
+        delivered_text = True
+
+    file_result = RuntimeDeliveryResult()
+    if file_rows:
+        file_result = await deliver_result_files(
+            ctx=ctx,
+            file_rows=file_rows,
+            runtime_session_id=runtime_session_id,
+            runtime_turn_id=runtime_turn_id,
+            source="agent_tool",
+            ledger_source="agent_message",
+            warn_on_failed=False,
+            runtime_store=runtime_store,
+        )
+
+    return {
+        "delivered_text": delivered_text,
+        "delivered_files": list(file_result.delivered_rows),
+        "failed_files": list(file_result.failed_rows),
+        "target": file_result.target,
+    }
+
+
 def _payload_text(payload: Any) -> str:
     if isinstance(payload, dict):
         return str(payload.get("text") or "")

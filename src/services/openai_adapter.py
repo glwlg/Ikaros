@@ -228,6 +228,7 @@ def build_chat_completion_from_stream_chunks(chunks: list[Any]) -> Any:
     text_chunks: list[str] = []
     refusal_chunks: list[str] = []
     tool_calls: dict[int, dict[str, str]] = {}
+    reasoning_content_chunks: list[str] = []
     response_id = ""
     response_model = ""
     response_object = ""
@@ -265,6 +266,9 @@ def build_chat_completion_from_stream_chunks(chunks: list[Any]) -> Any:
             text = extract_text_from_chat_completion_stream_delta(delta)
             refusal = _extract_text_value(_read_key_or_attr(delta, "refusal"))
             stream_tool_calls = _read_key_or_attr(delta, "tool_calls") or []
+            reasoning_content = _read_key_or_attr(delta, "reasoning_content")
+            if reasoning_content is None:
+                reasoning_content = _read_key_or_attr(delta, "reasoning")
         else:
             text = _extract_text_from_content(
                 _read_key_or_attr(message, "content"),
@@ -272,11 +276,18 @@ def build_chat_completion_from_stream_chunks(chunks: list[Any]) -> Any:
             )
             refusal = _extract_text_value(_read_key_or_attr(message, "refusal"))
             stream_tool_calls = _read_key_or_attr(message, "tool_calls") or []
+            reasoning_content = _read_key_or_attr(message, "reasoning_content")
+            if reasoning_content is None:
+                reasoning_content = _read_key_or_attr(message, "reasoning")
 
         if text:
             text_chunks.append(text)
         if refusal:
             refusal_chunks.append(refusal)
+        if reasoning_content is not None:
+            rendered_reasoning = str(reasoning_content)
+            if rendered_reasoning:
+                reasoning_content_chunks.append(rendered_reasoning)
         _merge_stream_tool_calls(tool_calls, stream_tool_calls)
 
     content = "".join(text_chunks).strip()
@@ -293,6 +304,14 @@ def build_chat_completion_from_stream_chunks(chunks: list[Any]) -> Any:
         if str(item.get("name") or "").strip()
     ]
 
+    message = SimpleNamespace(
+        content=content,
+        tool_calls=merged_tool_calls,
+        refusal=refusal_text or None,
+    )
+    if reasoning_content_chunks:
+        message.reasoning_content = "".join(reasoning_content_chunks)
+
     return SimpleNamespace(
         id=response_id or None,
         model=response_model or None,
@@ -302,11 +321,7 @@ def build_chat_completion_from_stream_chunks(chunks: list[Any]) -> Any:
         choices=[
             SimpleNamespace(
                 finish_reason=finish_reason or None,
-                message=SimpleNamespace(
-                    content=content,
-                    tool_calls=merged_tool_calls,
-                    refusal=refusal_text or None,
-                ),
+                message=message,
             )
         ],
     )

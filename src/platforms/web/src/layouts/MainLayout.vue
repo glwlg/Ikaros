@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import {
     Activity,
+    BellRing,
     Cable,
     Cctv,
     ChevronsLeft,
@@ -90,6 +91,7 @@ const etherealPrimaryNav = computed(() => [
     { label: '心跳监控', to: '/modules/monitor', icon: HeartPulse },
     { label: '实时监控', to: '/modules/cameras', icon: Cctv },
     { label: '市场追踪', to: '/modules/watchlist', icon: Activity },
+    { label: '订阅管理', to: '/modules/subscriptions', icon: BellRing },
 ])
 
 const etherealAdminNav = computed(() => {
@@ -120,6 +122,7 @@ const routeAlias = computed(() => {
         ModuleMonitor: 'Heartbeat',
         ModuleCameras: 'Cameras',
         ModuleWatchlist: 'Stocks',
+        ModuleSubscriptions: 'Subscriptions',
         AdminRuntime: 'Runtime',
         AdminModels: 'Models',
         AdminUsers: 'Users',

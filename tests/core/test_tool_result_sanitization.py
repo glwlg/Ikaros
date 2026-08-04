@@ -1,28 +1,10 @@
 from core.skill_cli import TOOL_RESULT_PREFIX, _json_default, _normalize_raw_tool_result
-from services.ai_service import AiService, MAX_TOOL_HISTORY_STRING
 
 
 def test_skill_cli_json_default_compacts_binary_payload():
     rendered = _json_default(b"\x00\x01\x02")
 
     assert rendered == "<binary:3 bytes>"
-
-
-def test_ai_service_sanitize_tool_result_truncates_huge_strings():
-    huge = "x" * (MAX_TOOL_HISTORY_STRING + 256)
-
-    result = AiService._sanitize_tool_result_for_history(
-        {
-            "ok": True,
-            "text": huge,
-            "data": {"output": huge},
-        }
-    )
-
-    assert isinstance(result, dict)
-    assert str(result["text"]).endswith("...[truncated]")
-    assert len(str(result["text"])) < len(huge)
-    assert str(result["data"]["output"]).endswith("...[truncated]")
 
 
 def test_skill_cli_normalize_raw_tool_result_collapses_progress_stream():

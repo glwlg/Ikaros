@@ -8,6 +8,7 @@ from api.auth.users import current_active_user
 from api.auth.models import User
 from api.core.database import get_async_session
 from api.api.binding_helpers import get_primary_platform_user_id
+from core.trading_calendar import RUN_CALENDAR_ALWAYS, normalize_run_calendar
 from extension.skills.builtin.scheduler_manager.scripts import store as scheduler_store
 
 router = APIRouter()
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 class TaskCreate(BaseModel):
     crontab: str
     instruction: str
+    run_calendar: str = RUN_CALENDAR_ALWAYS
 
 
 class TaskStatusUpdate(BaseModel):
@@ -61,7 +63,10 @@ async def create_task(
     platform_uid = await _resolve_platform_uid(current_user, session)
     try:
         await scheduler_store.add_scheduled_task(
-            task.crontab, task.instruction, platform_uid
+            task.crontab,
+            task.instruction,
+            platform_uid,
+            run_calendar=normalize_run_calendar(task.run_calendar),
         )
         await _reload_scheduler_runtime()
         return {"success": True}
@@ -109,6 +114,7 @@ async def update_task_status(
 class TaskUpdate(BaseModel):
     crontab: str | None = None
     instruction: str | None = None
+    run_calendar: str | None = None
 
 
 @router.put("/{task_id}")
@@ -121,7 +127,15 @@ async def update_task(
     platform_uid = await _resolve_platform_uid(current_user, session)
     try:
         ok = await scheduler_store.update_scheduled_task(
-            task_id, platform_uid, crontab=task.crontab, instruction=task.instruction
+            task_id,
+            platform_uid,
+            crontab=task.crontab,
+            instruction=task.instruction,
+            run_calendar=(
+                None
+                if task.run_calendar is None
+                else normalize_run_calendar(task.run_calendar)
+            ),
         )
         if not ok:
             raise HTTPException(status_code=404, detail="Task not found")

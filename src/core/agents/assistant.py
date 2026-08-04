@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 from typing import Any, AsyncIterator, Callable
 
 from core.agents.runtime import (
     build_agent_model,
     looks_like_unexecuted_tool_call,
+    looks_like_pending_action,
+    parse_legacy_dsml_tool_calls,
     resolve_agents_model_config,
     sanitize_visible_assistant_text,
 )
@@ -124,16 +127,47 @@ class AgentsSdkAssistantRuntime:
         model_config = resolve_agents_model_config()
         model = self._model_builder(model_config)
         runtime_state: dict[str, Any] = {}
+
+        async def _agent_event_callback(event: str, payload: dict[str, Any]) -> Any:
+            if event == "tool_call_started":
+                runtime_state["tool_call_seen"] = True
+            return await self._emit(event_callback, event, payload)
+
         agent_tools = build_agent_tools(
             tools=tools,
             tool_executor=tool_executor,
-            event_callback=event_callback,
+            event_callback=_agent_event_callback,
             runtime_state=runtime_state,
         )
+        agent_tool_by_name = {
+            str(getattr(tool, "name", "") or "").strip(): tool
+            for tool in agent_tools
+            if str(getattr(tool, "name", "") or "").strip()
+        }
+        extra_body = {
+            # Some OpenAI-compatible DeepSeek endpoints use this flag to
+            # disable hidden thinking. Keep the existing vLLM-compatible form
+            # as well because different gateways honor different shapes.
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        official_openai_endpoint = (
+            str(model_config.provider or "").strip().lower() == "openai"
+            and (
+                not str(model_config.base_url or "").strip()
+                or "api.openai.com" in str(model_config.base_url or "").lower()
+            )
+        )
+        if not official_openai_endpoint and not bool(
+            getattr(model_config, "reasoning", False)
+        ):
+            extra_body["thinking"] = {"type": "disabled"}
+        model_settings_kwargs: dict[str, Any] = {
+            "temperature": _env_float("OPENAI_TEMPERATURE"),
+            "tool_choice": "auto" if agent_tools else None,
+            "extra_body": extra_body,
+        }
         model_settings = sdk.ModelSettings(
-            temperature=_env_float("OPENAI_TEMPERATURE"),
-            tool_choice="auto" if agent_tools else None,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            **model_settings_kwargs,
         )
         agent = sdk.Agent(
             name="Ikaros Assistant",
@@ -142,24 +176,138 @@ class AgentsSdkAssistantRuntime:
             model_settings=model_settings,
             tools=agent_tools,
         )
-        result = sdk.Runner.run_streamed(
-            agent,
-            input=to_agents_sdk_input(build_messages(contents=message_history)),
-            max_turns=_env_int("AI_TOOL_MAX_TURNS", 40),
-        )
+        base_input = to_agents_sdk_input(build_messages(contents=message_history))
 
-        output_text_chunks: list[str] = []
-        async for event in result.stream_events():
-            delta = _extract_output_text_delta(event)
-            if delta:
-                if looks_like_unexecuted_tool_call(delta):
+        async def _run_once(input_items: list[dict[str, Any]]) -> str:
+            result = sdk.Runner.run_streamed(
+                agent,
+                input=input_items,
+                max_turns=_env_int("AI_TOOL_MAX_TURNS", 40),
+            )
+            output_text_chunks: list[str] = []
+            raw_output_text_chunks: list[str] = []
+            async for event in result.stream_events():
+                delta = _extract_output_text_delta(event)
+                if delta:
+                    raw_output_text_chunks.append(delta)
+                    if looks_like_unexecuted_tool_call(delta):
+                        continue
+                    output_text_chunks.append(delta)
                     continue
-                output_text_chunks.append(delta)
-                continue
+            result_text = str(getattr(result, "final_output", "") or "").strip()
+            if not result_text:
+                result_text = "".join(raw_output_text_chunks or output_text_chunks)
+            return sanitize_visible_assistant_text(
+                result_text
+            )
 
-        final_text = sanitize_visible_assistant_text(
-            str(getattr(result, "final_output", "") or "".join(output_text_chunks))
-        )
+        final_text = await _run_once(base_input)
+
+        # DeepSeek-compatible gateways sometimes return their native DSML tool
+        # syntax as plain assistant text. Execute those calls through the same
+        # FunctionTool wrapper used by the Agents SDK, then give the model the
+        # result in a fresh turn. This keeps the channel delivery side effects
+        # and tool event bookkeeping identical to a structured tool call.
+        legacy_dsml_signatures: set[str] = set()
+        for _legacy_round in range(2):
+            if runtime_state.get("tool_call_seen") and not legacy_dsml_signatures:
+                break
+            legacy_calls = parse_legacy_dsml_tool_calls(
+                final_text,
+                allowed_tool_names=set(agent_tool_by_name),
+            )
+            if not legacy_calls:
+                break
+            fresh_calls: list[dict[str, Any]] = []
+            for call in legacy_calls:
+                signature = json.dumps(
+                    {
+                        "name": call.get("name"),
+                        "args": call.get("args") or {},
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                if signature in legacy_dsml_signatures:
+                    continue
+                legacy_dsml_signatures.add(signature)
+                fresh_calls.append(call)
+            if not fresh_calls:
+                break
+
+            tool_results: list[str] = []
+            for call in fresh_calls:
+                name = str(call.get("name") or "").strip()
+                tool = agent_tool_by_name.get(name)
+                if tool is None:
+                    continue
+                raw_args = json.dumps(
+                    call.get("args") if isinstance(call.get("args"), dict) else {},
+                    ensure_ascii=False,
+                )
+                result_text = await tool.on_invoke_tool(None, raw_args)
+                tool_results.append(f"工具 `{name}` 返回：{str(result_text)[:12000]}")
+
+            terminal_stop_text = str(
+                runtime_state.get("terminal_stop_text") or ""
+            ).strip()
+            if terminal_stop_text:
+                final_text = terminal_stop_text
+                break
+            if not tool_results:
+                break
+
+            retry_input = list(base_input)
+            retry_input.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": "（运行时已解析并执行上一条旧版 DSML 工具调用。）",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "系统提示：上一条回复使用了旧版 DSML 工具格式，运行时已经实际执行。"
+                            "请直接基于下面的工具结果回复用户；不要再次输出 DSML 标记，"
+                            "如结果包含用户要求发送的图片或文件路径，必须继续调用 `send_message` 立即发送，"
+                            "不要只报告路径；如仍需其他操作请调用可用的标准工具。\n"
+                            + "\n".join(tool_results)
+                        ),
+                    },
+                ]
+            )
+            final_text = await _run_once(retry_input)
+
+        # Models occasionally emit a progress promise as their final answer
+        # instead of invoking the visible tool (notably for media/download
+        # requests). Give them one explicit execution-only continuation. This
+        # path is limited to a single retry and only applies before any tool has
+        # actually run, so it cannot duplicate side effects.
+        if (
+            agent_tools
+            and not runtime_state.get("tool_call_seen")
+            and looks_like_pending_action(
+                _latest_user_text(message_history),
+                final_text,
+            )
+        ):
+            runtime_state["tool_call_seen"] = False
+            retry_input = list(base_input)
+            retry_input.extend(
+                [
+                    {"role": "assistant", "content": final_text},
+                    {
+                        "role": "user",
+                        "content": (
+                            "系统提示：上一条回复只承诺了动作，但没有调用任何工具。"
+                            "不要再次输出计划、承诺或‘正在处理’；必须立即调用与用户请求匹配的可用工具并根据工具结果回复。"
+                            "如果确实没有可用工具，明确说明无法完成，不要声称已经开始。"
+                        ),
+                    },
+                ]
+            )
+            final_text = await _run_once(retry_input)
         terminal_stop_text = str(runtime_state.get("terminal_stop_text") or "").strip()
         if terminal_stop_text:
             final_text = terminal_stop_text
@@ -252,6 +400,35 @@ def _read_value(item: Any, key: str) -> Any:
     if isinstance(item, dict):
         return item.get(key)
     return getattr(item, key, None)
+
+
+def _latest_user_text(message_history: list[Any]) -> str:
+    """Extract text from the most recent user item for execution guards."""
+
+    for item in reversed(list(message_history or [])):
+        if not isinstance(item, dict) or str(item.get("role") or "").lower() != "user":
+            continue
+        parts = item.get("parts")
+        if isinstance(parts, list):
+            texts = [
+                str(part.get("text") or "").strip()
+                for part in parts
+                if isinstance(part, dict) and str(part.get("text") or "").strip()
+            ]
+            if texts:
+                return "\n".join(texts)
+        content = item.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            texts = [
+                str(part.get("text") or "").strip()
+                for part in content
+                if isinstance(part, dict) and str(part.get("text") or "").strip()
+            ]
+            if texts:
+                return "\n".join(texts)
+    return ""
 
 
 def _env_int(name: str, default: int) -> int:

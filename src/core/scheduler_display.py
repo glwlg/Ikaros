@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 SCHEDULER_INSTRUCTION_PREVIEW_LIMIT = 30
+SCHEDULER_INSTRUCTION_UI_PREVIEW_LIMIT = 96
 
 
 def summarize_scheduler_instruction(
@@ -12,6 +13,15 @@ def summarize_scheduler_instruction(
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "..."
+
+
+def summarize_scheduler_instruction_for_ui(
+    instruction: str,
+    *,
+    limit: int = SCHEDULER_INSTRUCTION_UI_PREVIEW_LIMIT,
+) -> str:
+    """Slightly longer preview for admin web list cards."""
+    return summarize_scheduler_instruction(instruction, limit=limit)
 
 
 def format_scheduler_report(instruction: str, response: str) -> str:
