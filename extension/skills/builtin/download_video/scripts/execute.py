@@ -8,8 +8,6 @@ import sys
 from pathlib import Path
 from typing import Dict, Any
 
-from core.file_artifacts import classify_file_kind
-
 REPO_ROOT = Path(__file__).resolve().parents[5]
 SRC_ROOT = REPO_ROOT / "src"
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -20,6 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
+from core.file_artifacts import classify_file_kind
 from core.platform.models import UnifiedContext
 from core.skill_menu import make_callback, parse_callback
 from core.config import is_user_admin, is_user_allowed
