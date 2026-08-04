@@ -1085,21 +1085,10 @@ class CodexKernelProvider:
             session_id=session_id,
             result=result,
         )
-        result_files = normalize_file_rows(result.get("files"))
-        if result_files:
-            await event_callback(
-                "codex_result_files",
-                {
-                    "source": "codex_kernel",
-                    "kernel_provider": "codex",
-                    "turn": 1,
-                    "task_id": _safe_text(getattr(runtime_ctx, "task_id", ""), 80),
-                    "codex_thread_id": _safe_text(result.get("thread_id"), 160),
-                    "codex_turn_id": _safe_text(result.get("turn_id"), 160),
-                    "files": result_files,
-                    "terminal_payload": {"files": result_files},
-                },
-            )
+        # _run_turn emits ``codex_result_files`` as soon as it finalizes its
+        # artifact list.  Do not emit the same rows again here: consumers send
+        # files as part of that event, and a second event can result in two
+        # uploads of the same video (with one platform-side transcode failing).
         needs_user = self._needs_user(result)
         runtime_v2.update_turn_status(
             runtime_turn_id,
