@@ -30,6 +30,40 @@ def add_months(value: date, months: int) -> date:
     return date(year, month, day)
 
 
+def advance_expiry_date(
+    expiry_date: date,
+    cycle_months: int,
+    *,
+    today: date,
+    start_date: date | None = None,
+) -> date:
+    """Advance an expired renewal date to the first occurrence on/after today."""
+    if expiry_date >= today:
+        return expiry_date
+
+    anchor = expiry_date
+    elapsed_periods = 0
+    if start_date is not None:
+        elapsed_months = (expiry_date.year - start_date.year) * 12 + (
+            expiry_date.month - start_date.month
+        )
+        if (
+            elapsed_months >= int(cycle_months)
+            and elapsed_months % int(cycle_months) == 0
+            and add_months(start_date, elapsed_months) == expiry_date
+        ):
+            anchor = start_date
+            elapsed_periods = elapsed_months // int(cycle_months)
+
+    months_behind = (today.year - anchor.year) * 12 + (today.month - anchor.month)
+    periods = max(elapsed_periods + 1, months_behind // int(cycle_months))
+    candidate = add_months(anchor, periods * int(cycle_months))
+    while candidate < today:
+        periods += 1
+        candidate = add_months(anchor, periods * int(cycle_months))
+    return candidate
+
+
 def _date_value(value: Any, *, field: str) -> date:
     if isinstance(value, datetime):
         return value.date()
@@ -248,9 +282,74 @@ async def get_subscription(
         return await _read(active_conn)
 
 
-async def list_subscriptions(owner_user_id: int | str) -> list[dict[str, Any]]:
+async def _roll_forward_expired_subscriptions(
+    conn: aiosqlite.Connection,
+    *,
+    today: date,
+    owner_user_id: str = "",
+) -> int:
+    params: list[Any] = [today.isoformat()]
+    owner_filter = ""
+    if owner_user_id:
+        owner_filter = " AND owner_user_id = ?"
+        params.append(owner_user_id)
+
+    cursor = await conn.execute(
+        f"""
+        SELECT id, start_date, expiry_date, cycle_months
+        FROM subscriptions
+        WHERE expiry_date < ?{owner_filter}
+        """,
+        params,
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        return 0
+
+    updated_at = _now_iso()
+    advanced = 0
+    for row in rows:
+        previous_expiry = _date_value(row["expiry_date"], field="expiry_date")
+        next_expiry = advance_expiry_date(
+            previous_expiry,
+            int(row["cycle_months"]),
+            today=today,
+            start_date=_date_value(row["start_date"], field="start_date"),
+        )
+        update_cursor = await conn.execute(
+            """
+            UPDATE subscriptions
+            SET expiry_date = ?, last_reminded_for_expiry = '',
+                last_reminded_at = '', updated_at = ?
+            WHERE id = ? AND expiry_date = ?
+            """,
+            (
+                next_expiry.isoformat(),
+                updated_at,
+                int(row["id"]),
+                previous_expiry.isoformat(),
+            ),
+        )
+        advanced += max(0, int(update_cursor.rowcount or 0))
+
+    if advanced:
+        await conn.commit()
+    return advanced
+
+
+async def list_subscriptions(
+    owner_user_id: int | str,
+    *,
+    today: date | None = None,
+) -> list[dict[str, Any]]:
     owner = str(owner_user_id or "").strip()
+    current_date = today or date.today()
     async with _connection() as conn:
+        await _roll_forward_expired_subscriptions(
+            conn,
+            today=current_date,
+            owner_user_id=owner,
+        )
         cursor = await conn.execute(
             """
             SELECT * FROM subscriptions
@@ -332,6 +431,10 @@ async def list_due_subscriptions(
 ) -> list[dict[str, Any]]:
     current_date = today or date.today()
     async with _connection() as conn:
+        await _roll_forward_expired_subscriptions(
+            conn,
+            today=current_date,
+        )
         cursor = await conn.execute(
             """
             SELECT * FROM subscriptions

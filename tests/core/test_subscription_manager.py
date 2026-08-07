@@ -12,6 +12,30 @@ def test_add_months_clamps_to_target_month_end():
     assert subscription_store.add_months(date(2026, 8, 31), 6) == date(2027, 2, 28)
 
 
+def test_advance_expiry_date_uses_first_current_or_future_cycle():
+    assert subscription_store.advance_expiry_date(
+        date(2026, 8, 5),
+        1,
+        today=date(2026, 8, 7),
+    ) == date(2026, 9, 5)
+    assert subscription_store.advance_expiry_date(
+        date(2026, 8, 7),
+        1,
+        today=date(2026, 8, 7),
+    ) == date(2026, 8, 7)
+    assert subscription_store.advance_expiry_date(
+        date(2025, 11, 30),
+        3,
+        today=date(2026, 8, 7),
+    ) == date(2026, 8, 30)
+    assert subscription_store.advance_expiry_date(
+        date(2026, 2, 28),
+        1,
+        today=date(2026, 3, 1),
+        start_date=date(2026, 1, 31),
+    ) == date(2026, 3, 31)
+
+
 @pytest.mark.asyncio
 async def test_existing_subscription_database_adds_cost_column(mock_db):
     path = subscription_store.subscription_database_path()
@@ -135,6 +159,65 @@ async def test_due_subscription_is_not_selected_twice_after_success(mock_db):
         reminded_at="2026-08-03T09:00:00+08:00",
     )
     assert await subscription_store.list_due_subscriptions(today=date(2026, 8, 3)) == []
+
+
+@pytest.mark.asyncio
+async def test_expired_subscription_rolls_forward_and_resets_reminder(mock_db):
+    created = await subscription_store.create_subscription(
+        "web-1",
+        {
+            "name": "ChatGPT Plus",
+            "start_date": "2026-07-05",
+            "cycle_months": 1,
+            "expiry_date": "2026-08-05",
+            "reminder_days_before": 3,
+            "delivery_platform": "telegram",
+            "delivery_user_id": "tg-1",
+        },
+    )
+    assert await subscription_store.mark_subscription_reminded(
+        created["id"],
+        created["expiry_date"],
+        reminded_at="2026-08-02T09:00:00+08:00",
+    )
+
+    rows = await subscription_store.list_subscriptions(
+        "web-1",
+        today=date(2026, 8, 7),
+    )
+
+    assert rows[0]["expiry_date"] == "2026-09-05"
+    assert rows[0]["last_reminded_for_expiry"] == ""
+    assert rows[0]["last_reminded_at"] == ""
+    stored = await subscription_store.get_subscription("web-1", created["id"])
+    assert stored is not None
+    assert stored["expiry_date"] == "2026-09-05"
+
+
+@pytest.mark.asyncio
+async def test_reminder_scan_rolls_forward_before_selecting_due_rows(mock_db):
+    created = await subscription_store.create_subscription(
+        "web-1",
+        {
+            "name": "月付会员",
+            "start_date": "2026-06-05",
+            "cycle_months": 1,
+            "expiry_date": "2026-07-05",
+            "reminder_days_before": 3,
+            "delivery_platform": "telegram",
+            "delivery_user_id": "tg-1",
+        },
+    )
+
+    assert await subscription_store.list_due_subscriptions(
+        today=date(2026, 8, 1)
+    ) == []
+    stored = await subscription_store.get_subscription("web-1", created["id"])
+    assert stored is not None
+    assert stored["expiry_date"] == "2026-08-05"
+
+    due = await subscription_store.list_due_subscriptions(today=date(2026, 8, 2))
+    assert [row["id"] for row in due] == [created["id"]]
 
 
 @pytest.mark.asyncio
