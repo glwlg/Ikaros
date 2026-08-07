@@ -21,7 +21,11 @@ if str(SCRIPT_ROOT) not in sys.path:
 from core.file_artifacts import classify_file_kind
 from core.platform.models import UnifiedContext
 from core.skill_menu import make_callback, parse_callback
-from core.config import is_user_admin, is_user_allowed
+from core.config import (
+    get_local_file_delivery_max_mb,
+    is_user_admin,
+    is_user_allowed,
+)
 from utils import extract_video_url
 
 if __package__:
@@ -248,12 +252,17 @@ async def process_video_download(
         return {"text": "❌ 下载失败：缺少平台上下文。", "ui": {}}
 
     format_text = "音频" if audio_only else "视频"
+    delivery_platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
 
     processing_message = await ctx.reply(f"正在下载{format_text}，请稍候... ⏳")
 
     # 下载视频/音频
     result = await download_video(
-        url, user_id, processing_message, audio_only=audio_only
+        url,
+        user_id,
+        processing_message,
+        audio_only=audio_only,
+        delivery_platform=delivery_platform,
     )
 
     if (
@@ -292,6 +301,7 @@ async def process_video_download(
                     user_id,
                     processing_message,
                     audio_only=audio_only,
+                    delivery_platform=delivery_platform,
                 )
             else:
                 return {
@@ -319,6 +329,14 @@ async def process_video_download(
 
     # 处理文件过大情况
     if result.is_too_large:
+        max_file_size_mb = int(
+            getattr(result, "max_file_size_mb", 0)
+            or get_local_file_delivery_max_mb(delivery_platform)
+        )
+        platform_label = {
+            "telegram": "Telegram",
+            "weixin": "微信",
+        }.get(delivery_platform, "当前")
         # 暂存路径到 user_data以供后续操作
         ctx.user_data["large_file_path"] = file_path
         ui = {
@@ -339,14 +357,14 @@ async def process_video_download(
             await ctx.edit_message(
                 msg_id,
                 f"⚠️ **视频文件过大 ({result.file_size_mb:.1f}MB)**\n\n"
-                f"超过 Telegram 限制 (50MB)，无法直接发送。\n"
+                f"超过{platform_label}渠道限制 ({max_file_size_mb}MB)，无法直接发送。\n"
                 f"您可以选择：",
                 ui=ui,
             )
         return {
             "text": (
                 f"⚠️ **视频文件过大 ({result.file_size_mb:.1f}MB)**\n\n"
-                f"超过 Telegram 限制 (50MB)，无法直接发送。\n"
+                f"超过{platform_label}渠道限制 ({max_file_size_mb}MB)，无法直接发送。\n"
                 f"您可以选择："
             ),
             "ui": ui,

@@ -216,3 +216,29 @@ async def test_send_local_file_video_prepares_payload_without_immediate_delivery
     assert files[0]["kind"] == "video"
     assert result["data"]["kind"] == "video"
     assert result["data"]["already_delivered"] is False
+
+
+@pytest.mark.asyncio
+async def test_send_local_file_uses_platform_specific_size_limit(monkeypatch, tmp_path):
+    monkeypatch.delenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB", raising=False)
+    monkeypatch.delenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB_TELEGRAM", raising=False)
+    monkeypatch.delenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB_WEIXIN", raising=False)
+    target = (tmp_path / "large-video.mp4").resolve()
+    with target.open("wb") as file_obj:
+        file_obj.truncate(50 * 1024 * 1024)
+
+    weixin_result = await send_local_file(
+        _FakeCtx(platform="weixin"),
+        path=str(target),
+        task_workspace_root=str(tmp_path),
+    )
+    telegram_result = await send_local_file(
+        _FakeCtx(platform="telegram"),
+        path=str(target),
+        task_workspace_root=str(tmp_path),
+    )
+
+    assert weixin_result["ok"] is True
+    assert telegram_result["ok"] is False
+    assert telegram_result["terminal"] is True
+    assert "too large" in telegram_result["message"]

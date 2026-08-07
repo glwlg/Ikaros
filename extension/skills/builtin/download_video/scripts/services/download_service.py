@@ -14,8 +14,8 @@ from core.config import (
     DOWNLOAD_DIR,
     UPDATE_INTERVAL_SECONDS,
     UPDATE_INTERVAL_SECONDS,
-    MAX_FILE_SIZE_MB,
     COOKIES_FILE,
+    get_local_file_delivery_max_mb,
 )
 from utils import create_progress_bar
 
@@ -65,6 +65,7 @@ class DownloadResult:
     file_size_mb: float = 0.0
     error_message: Optional[str] = None
     is_too_large: bool = False
+    max_file_size_mb: int = 0
     auth_required: bool = False
     auth_platform: Optional[str] = None
 
@@ -93,6 +94,7 @@ async def download_video(
     user_id: int | str,
     progress_message: TelegramMessage,
     audio_only: bool = False,
+    delivery_platform: str = "",
 ) -> DownloadResult:
     """
     从给定 URL 下载视频或音频，提供进度更新，检查文件大小
@@ -129,7 +131,12 @@ async def download_video(
     expected_path = os.path.join(download_dir, expected_filename)
     if os.path.exists(expected_path):
         logger.info(f"[{user_id}] File already exists: {expected_path}")
-        return await _handle_downloaded_file(expected_path, user_id, progress_message)
+        return await _handle_downloaded_file(
+            expected_path,
+            user_id,
+            progress_message,
+            delivery_platform=delivery_platform,
+        )
 
     platform = detect_login_platform(url)
     with materialized_cookie_file(user_id, platform) as session_cookie_file:
@@ -213,7 +220,12 @@ async def download_video(
                 auth_platform=auth_platform,
             )
 
-        return await _handle_downloaded_file(expected_path, user_id, progress_message)
+        return await _handle_downloaded_file(
+            expected_path,
+            user_id,
+            progress_message,
+            delivery_platform=delivery_platform,
+        )
 
 
 async def _update_download_progress(proc, progress_message: TelegramMessage) -> None:
@@ -245,7 +257,11 @@ async def _update_download_progress(proc, progress_message: TelegramMessage) -> 
 
 
 async def _handle_downloaded_file(
-    file_path: str, user_id: int, progress_message: TelegramMessage
+    file_path: str,
+    user_id: int,
+    progress_message: TelegramMessage,
+    *,
+    delivery_platform: str = "",
 ) -> DownloadResult:
     """处理下载完成的文件，检查大小并决定是否可发送"""
     try:
@@ -262,9 +278,10 @@ async def _handle_downloaded_file(
         logger.info(
             f"[{user_id}] Downloaded file: {file_path}, Size: {file_size_mb:.2f} MB"
         )
+        max_file_size_mb = get_local_file_delivery_max_mb(delivery_platform)
 
         # 如果文件太大，标记 is_too_large=True，但暂时保留文件在 downloads 目录
-        if file_size_mb > MAX_FILE_SIZE_MB:
+        if file_size_mb > max_file_size_mb:
             logger.info(
                 f"File is too large ({file_size_mb:.2f} MB). Marking as too large."
             )
@@ -276,7 +293,8 @@ async def _handle_downloaded_file(
                 success=True,
                 file_path=file_path,
                 file_size_mb=file_size_mb,
-                is_too_large=True
+                is_too_large=True,
+                max_file_size_mb=max_file_size_mb,
             )
 
         # 文件大小合适，可以发送
@@ -285,7 +303,8 @@ async def _handle_downloaded_file(
             success=True, 
             file_path=file_path, 
             file_size_mb=file_size_mb,
-            is_too_large=False
+            is_too_large=False,
+            max_file_size_mb=max_file_size_mb,
         )
 
     except Exception as e:

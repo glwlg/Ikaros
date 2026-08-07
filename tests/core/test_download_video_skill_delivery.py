@@ -10,6 +10,9 @@ class _ProgressMessage:
     id = "progress-message"
     message_id = "progress-message"
 
+    async def edit_text(self, _text):
+        return None
+
 
 class _FakeContext:
     platform_ctx = object()
@@ -19,6 +22,7 @@ class _FakeContext:
             chat=SimpleNamespace(id="chat-1"),
             user=SimpleNamespace(id="user-1"),
             text="/download https://example.com/video",
+            platform="weixin",
         )
         self.user_data = {}
         self.replies: list[str] = []
@@ -63,11 +67,18 @@ async def test_download_video_returns_file_payload_without_direct_send(monkeypat
     media_path = tmp_path / "clip.mp4"
     media_path.write_bytes(b"fake video")
 
-    async def fake_download_video(url, user_id, progress_message, audio_only=False):
+    async def fake_download_video(
+        url,
+        user_id,
+        progress_message,
+        audio_only=False,
+        delivery_platform="",
+    ):
         assert url == "https://example.com/video"
         assert user_id == "user-1"
         assert progress_message.id == "progress-message"
         assert audio_only is False
+        assert delivery_platform == "weixin"
         return SimpleNamespace(
             success=True,
             error_message="",
@@ -100,14 +111,54 @@ async def test_download_video_returns_file_payload_without_direct_send(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_downloaded_file_size_limit_depends_on_delivery_platform(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.delenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB", raising=False)
+    monkeypatch.delenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB_TELEGRAM", raising=False)
+    monkeypatch.delenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB_WEIXIN", raising=False)
+    module = _load_download_module("download_video_platform_limit_test")
+    service_module = sys.modules[module.download_video.__module__]
+    media_path = tmp_path / "large-video.mp4"
+    with media_path.open("wb") as file_obj:
+        file_obj.truncate(50 * 1024 * 1024)
+
+    weixin_result = await service_module._handle_downloaded_file(
+        str(media_path),
+        "user-1",
+        _ProgressMessage(),
+        delivery_platform="weixin",
+    )
+    telegram_result = await service_module._handle_downloaded_file(
+        str(media_path),
+        "user-1",
+        _ProgressMessage(),
+        delivery_platform="telegram",
+    )
+
+    assert weixin_result.is_too_large is False
+    assert weixin_result.max_file_size_mb == 100
+    assert telegram_result.is_too_large is True
+    assert telegram_result.max_file_size_mb == 49
+
+
+@pytest.mark.asyncio
 async def test_download_video_qr_login_retries_original_download(monkeypatch, tmp_path):
     module = _load_download_module("download_video_auth_retry_test")
     media_path = tmp_path / "douyin.mp4"
     media_path.write_bytes(b"fake video")
     calls = []
 
-    async def fake_download_video(url, user_id, progress_message, audio_only=False):
+    async def fake_download_video(
+        url,
+        user_id,
+        progress_message,
+        audio_only=False,
+        delivery_platform="",
+    ):
         calls.append((url, user_id, progress_message.id, audio_only))
+        assert delivery_platform == "weixin"
         if len(calls) == 1:
             return SimpleNamespace(
                 success=False,

@@ -199,8 +199,43 @@ DOWNLOAD_DIR = "downloads"
 DATA_DIR = str(data_dir())
 PERMANENT_STORAGE_DIR = "/app/media"  # For files > 49MB
 UPDATE_INTERVAL_SECONDS = 2  # 进度更新间隔（秒）
-MAX_FILE_SIZE_MB = 49  # Telegram 最大文件大小限制
 COOKIES_FILE = os.path.join(DATA_DIR, "cookies.txt")  # yt-dlp cookies file path
+
+_LOCAL_FILE_DELIVERY_PLATFORM_DEFAULTS_MB = {
+    "telegram": 49,
+    "weixin": 100,
+}
+
+
+def get_local_file_delivery_max_mb(platform: str = "") -> int:
+    """Return the configured local-file delivery limit for one channel."""
+    safe_platform = str(platform or "").strip().lower()
+    if safe_platform == "wechat":
+        safe_platform = "weixin"
+
+    default_limit = max(1, _env_int("LOCAL_FILE_DELIVERY_MAX_FILE_MB", 49))
+    platform_default = _LOCAL_FILE_DELIVERY_PLATFORM_DEFAULTS_MB.get(
+        safe_platform,
+        default_limit,
+    )
+    if not safe_platform:
+        return default_limit
+
+    env_suffix = "".join(
+        char if char.isalnum() else "_" for char in safe_platform
+    ).upper()
+    return max(
+        1,
+        _env_int(
+            f"LOCAL_FILE_DELIVERY_MAX_FILE_MB_{env_suffix}",
+            platform_default,
+        ),
+    )
+
+
+def get_local_file_delivery_max_bytes(platform: str = "") -> int:
+    return get_local_file_delivery_max_mb(platform) * 1024 * 1024
+
 
 # 会话状态常量
 WAITING_FOR_VIDEO_URL = 1

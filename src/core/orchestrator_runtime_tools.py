@@ -256,6 +256,7 @@ class ToolCallDispatcher:
             path_obj, validation_error = validate_local_delivery_target(
                 path_text,
                 task_workspace_root=self.task_workspace_root,
+                platform=self.platform_name,
             )
             if path_obj is None:
                 errors.append(validation_error or f"invalid file path: {path_text}")

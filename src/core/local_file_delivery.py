@@ -5,15 +5,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.config import get_local_file_delivery_max_bytes
 from core.file_artifacts import classify_file_kind
 from core.platform.models import UnifiedContext
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_FILE_BYTES = max(
-    1,
-    int(os.getenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB", "49")) * 1024 * 1024,
-)
 _SUPPORTED_KINDS = {"auto", "document", "photo", "video", "audio"}
 
 
@@ -41,7 +38,8 @@ def validate_local_delivery_target(
     path: str,
     *,
     task_workspace_root: str = "",
-    max_bytes: int = _DEFAULT_MAX_FILE_BYTES,
+    platform: str = "",
+    max_bytes: int | None = None,
 ) -> tuple[Path | None, str]:
     try:
         path_obj = _resolve_target_path(path, task_workspace_root=task_workspace_root)
@@ -60,7 +58,12 @@ def validate_local_delivery_target(
         return None, f"file is not readable by bot process: {path_obj}"
 
     size_bytes = int(path_obj.stat().st_size or 0)
-    if size_bytes > max(1, int(max_bytes or _DEFAULT_MAX_FILE_BYTES)):
+    configured_max_bytes = get_local_file_delivery_max_bytes(platform)
+    effective_max_bytes = max(
+        1,
+        int(max_bytes or configured_max_bytes),
+    )
+    if size_bytes > effective_max_bytes:
         return None, f"file is too large to send: {size_bytes} bytes"
 
     return path_obj, ""
@@ -100,11 +103,13 @@ async def send_local_file(
     filename: str = "",
     kind: str = "auto",
     task_workspace_root: str = "",
-    max_bytes: int = _DEFAULT_MAX_FILE_BYTES,
+    max_bytes: int | None = None,
 ) -> dict[str, Any]:
+    safe_platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
     path_obj, validation_error = validate_local_delivery_target(
         path,
         task_workspace_root=task_workspace_root,
+        platform=safe_platform,
         max_bytes=max_bytes,
     )
     if path_obj is None:
@@ -128,7 +133,6 @@ async def send_local_file(
             "terminal": terminal,
         }
 
-    safe_platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
     try:
         delivery_kind = _resolve_delivery_kind(
             kind,
