@@ -813,9 +813,11 @@ class AgentOrchestrator:
                 "\n\n【工具执行约束】\n"
                 "- 用户要求下载、发送、获取、查询、分析、执行或其他可由当前工具完成的动作时，"
                 "必须先调用匹配工具，再根据工具结果回复。\n"
-                "- 如果需要在长任务中同步进度或逐个交付文件，调用 `send_message`；"
-                "它会立即发送，多个图片应分多次调用，不要把已发送的文件再放进最终答复。\n"
-                "- 工具结果中的 `files` 只表示已生成的产物；需要用户收到时，必须显式调用 `send_message(files=...)`。\n"
+                "- `send_message` 是唯一的对外发送工具，可发送文本、附件或两者；"
+                "需要同步进度或交付文件时由你显式调用。多个图片应分多次调用，不要把已发送的文件再放进最终答复。\n"
+                "- 工具结果中的 `files` 只表示已生成的产物，不会自动发送；需要用户收到时，必须显式调用 `send_message(files=...)`。\n"
+                "- 只有 `send_message` 返回的 `text_sent` 或 `delivered_files` 能证明发送成功；"
+                "若有 `failed_files`，可根据错误更换受支持的 `kind` 后重试，不能谎报已发送。\n"
                 "- 不要只回复‘我先看看/正在处理/稍后发给你’来代替工具调用；没有实际调用就不能声称已经开始或即将完成。\n"
                 "- 如果当前工具确实无法完成请求，要明确说明缺少能力或信息。"
             )
@@ -824,6 +826,7 @@ class AgentOrchestrator:
                 "\n\nTask Closure Protocol:\n"
                 "- In task mode, do not end the task by replying with plain text after tool use.\n"
                 "- When the task is done, blocked, waiting for user confirmation, or waiting for an external condition, call `complete_task`.\n"
+                "- If the task must deliver files, send them with `send_message(files=...)` and verify delivery before calling `complete_task`; `complete_task` does not send attachments.\n"
                 "- Use `complete_task.status=done|failed|partial|waiting_user|waiting_external` and put the exact user-facing output in `text`.\n"
             )
         return instruction

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { computed, onMounted, ref, watch } from 'vue'
-import { Activity, Bot, Box, Copy, Globe2, Loader2, MoreVertical, Play, Plus, Save, ShieldCheck, Trash2 } from 'lucide-vue-next'
+import { Activity, Bot, Box, Copy, Download, Globe2, Loader2, MoreVertical, Play, Plus, Save, ShieldCheck, Trash2 } from 'lucide-vue-next'
 
+import ViewToastStack from '@/components/ViewToastStack.vue'
+import { useViewToasts } from '@/composables/useViewToasts'
 import {
     getModelsSnapshot,
     patchModelsSnapshot,
     postModelsLatencyCheck,
+    postModelsProviderFetch,
     type ModelsLatencyCheckResponse,
     type ModelsQuickRoleSnapshot,
     type ModelsSnapshot,
@@ -58,6 +61,8 @@ interface ModelForm {
     id: string
     name: string
     reasoning: boolean
+    reasoningEffort: string
+    reasoningEffortOptions: string[]
     input: InputType[]
     output: OutputType[]
     cost: CostForm
@@ -113,6 +118,8 @@ interface ModelOption {
     input: InputType[]
     output: OutputType[]
     reasoning: boolean
+    reasoningEffort: string
+    reasoningEffortOptions: string[]
 }
 
 interface QuickRoleForm {
@@ -195,6 +202,29 @@ const routingLatencyChecking = ref(false)
 const routingLatencyError = ref('')
 const routingLatencyResult = ref<ModelsLatencyCheckResponse | null>(null)
 
+const { toasts: viewToasts, push: pushViewToast, dismiss: dismissViewToast } = useViewToasts()
+
+watch(errorText, value => {
+    if (value) {
+        pushViewToast('error', value)
+    }
+})
+watch(successText, value => {
+    if (value) {
+        pushViewToast('success', value)
+    }
+})
+watch(modelsConfigError, value => {
+    if (value) {
+        pushViewToast('warning', value)
+    }
+})
+watch(routingLatencyError, value => {
+    if (value) {
+        pushViewToast('error', value)
+    }
+})
+
 const nextUid = (prefix: string) => `${prefix}-${uidCounter++}`
 
 const parseErrorMessage = (error: unknown, fallback: string) => {
@@ -251,6 +281,20 @@ const normalizeOutputTypes = (value: unknown): OutputType[] => {
     return normalized
 }
 
+const normalizeEffortOptions = (value: unknown): string[] => {
+    if (!Array.isArray(value)) {
+        return []
+    }
+    const normalized: string[] = []
+    for (const item of value) {
+        const token = String(item || '').trim()
+        if (token && !normalized.includes(token)) {
+            normalized.push(token)
+        }
+    }
+    return normalized
+}
+
 const normalizeSelectionStrategy = (value: unknown): SelectionStrategy => {
     const normalized = String(value || '').trim().toLowerCase() as SelectionStrategy
     if (selectionStrategyOptions.includes(normalized)) {
@@ -278,6 +322,8 @@ const createEmptyModel = (): ModelForm => ({
     id: '',
     name: '',
     reasoning: false,
+    reasoningEffort: '',
+    reasoningEffortOptions: [],
     input: ['text'],
     output: ['text'],
     cost: {
@@ -355,6 +401,8 @@ const availableModelOptions = computed<ModelOption[]>(() => {
                     input: [...model.input],
                     output: [...model.output],
                     reasoning: Boolean(model.reasoning),
+                    reasoningEffort: model.reasoningEffort.trim(),
+                    reasoningEffortOptions: [...model.reasoningEffortOptions],
                 }
             })
             .filter((item): item is ModelOption => Boolean(item))
@@ -413,6 +461,14 @@ const roleCards = computed(() =>
         const roleConfig = modelConfigForm.value?.roles[role]
         const selectedOption = roleConfig ? availableModelMap.value[roleConfig.bindingUid] : null
         const poolOptions = rolePoolOptions(role)
+        const pulledEffortOptions = selectedOption?.reasoningEffortOptions || []
+        const effortOptions = pulledEffortOptions.length
+            ? [...pulledEffortOptions]
+            : ['low', 'medium', 'high', 'xhigh', 'max']
+        const currentEffort = selectedOption?.reasoningEffort || ''
+        if (currentEffort && !effortOptions.includes(currentEffort)) {
+            effortOptions.unshift(currentEffort)
+        }
         return {
             role,
             label: roleLabels[role],
@@ -422,6 +478,9 @@ const roleCards = computed(() =>
             candidateOptions: roleCandidateOptions(role),
             capabilityText: roleCapabilityText[role],
             selectionStrategy: roleConfig?.selectionStrategy || 'priority',
+            effortEnabled: Boolean(selectedOption),
+            effortValue: currentEffort,
+            effortOptions,
         }
     })
 )
@@ -618,6 +677,8 @@ const serializeProviderConfig = (provider: ProviderForm) => {
                     id: model.id.trim(),
                     name: model.name.trim() || model.id.trim(),
                     reasoning: Boolean(model.reasoning),
+                    ...(model.reasoningEffort.trim() ? { reasoningEffort: model.reasoningEffort.trim() } : {}),
+                    ...(model.reasoningEffortOptions.length ? { reasoningEfforts: [...model.reasoningEffortOptions] } : {}),
                     input: [...model.input],
                     output: [...model.output],
                     cost: {
@@ -902,6 +963,7 @@ const testRoutingLatency = async () => {
             model_id: routing.modelId.trim(),
         })
         routingLatencyResult.value = response.data
+        successText.value = `Routing 测试通过：${response.data.model_key} · ${response.data.elapsed_ms} ms`
     } catch (error) {
         routingLatencyError.value = parseErrorMessage(error, 'Routing 模型延迟测试失败')
     } finally {
@@ -979,6 +1041,8 @@ const hydrateModelsConfigForm = (payload: Record<string, unknown>) => {
                 id: String(rawModel.id || '').trim(),
                 name: String(rawModel.name || rawModel.id || '').trim(),
                 reasoning: Boolean(rawModel.reasoning),
+                reasoningEffort: String(rawModel.reasoningEffort || '').trim(),
+                reasoningEffortOptions: normalizeEffortOptions(rawModel.reasoningEfforts),
                 input: normalizeInputTypes(rawModel.input),
                 output: normalizeOutputTypes(rawModel.output),
                 cost: {
@@ -995,7 +1059,7 @@ const hydrateModelsConfigForm = (payload: Record<string, unknown>) => {
                 },
                 contextWindow: coerceInteger(rawModel.contextWindow, 1000000, 1),
                 maxTokens: coerceInteger(rawModel.maxTokens, 65536, 1),
-                extras: omitKeys(rawModel, ['id', 'name', 'reasoning', 'input', 'output', 'cost', 'limits', 'contextWindow', 'maxTokens']),
+                extras: omitKeys(rawModel, ['id', 'name', 'reasoning', 'reasoningEffort', 'reasoningEfforts', 'input', 'output', 'cost', 'limits', 'contextWindow', 'maxTokens']),
             }
             provider.models.push(model)
             if (provider.name && model.id) {
@@ -1123,6 +1187,117 @@ const addProviderModel = (providerUid: string) => {
     provider.models.push(createEmptyModel())
 }
 
+const fetchActionKeyForProvider = (providerUid: string) => `provider-fetch:${providerUid}`
+
+const fetchProviderModels = async (provider: ProviderForm) => {
+    const baseUrl = provider.baseUrl.trim()
+    if (!baseUrl) {
+        errorText.value = `${provider.name || '当前 Provider'} 请先填写 Base URL 再拉取模型`
+        successText.value = ''
+        return
+    }
+
+    const actionKey = fetchActionKeyForProvider(provider.uid)
+    setTestingAction(actionKey, true)
+    errorText.value = ''
+    successText.value = ''
+    modelsConfigError.value = ''
+    try {
+        const response = await postModelsProviderFetch({
+            base_url: baseUrl,
+            api_key: provider.apiKey,
+            headers: providerHeadersPayload(provider),
+        })
+        const fetched = response.data.models
+        if (!fetched.length) {
+            successText.value = `${provider.name || 'Provider'} 没有返回任何模型`
+            return
+        }
+
+        const existingById = new Map(
+            provider.models
+                .map(model => [model.id.trim(), model] as const)
+                .filter(([modelId]) => Boolean(modelId))
+        )
+        let added = 0
+        let inputApplied = 0
+        let reasoningApplied = 0
+        let effortApplied = 0
+        let contextApplied = 0
+        let manualKept = 0
+        for (const item of fetched) {
+            let target = existingById.get(item.id)
+            if (!target) {
+                target = createEmptyModel()
+                target.id = item.id
+                target.name = item.name || item.id
+                provider.models.push(target)
+                existingById.set(item.id, target)
+                added += 1
+            }
+            let applied = false
+            const fetchedInputs = normalizeInputTypes(item.input)
+            if (fetchedInputs.length) {
+                target.input = fetchedInputs
+                inputApplied += 1
+                applied = true
+            }
+            if (typeof item.reasoning === 'boolean') {
+                target.reasoning = item.reasoning
+                reasoningApplied += 1
+                applied = true
+            }
+            if (item.reasoningEffort && item.reasoningEffort.trim()) {
+                target.reasoningEffort = item.reasoningEffort.trim()
+                effortApplied += 1
+                applied = true
+            }
+            if (item.reasoningEfforts.length) {
+                target.reasoningEffortOptions = [...item.reasoningEfforts]
+            }
+            if (typeof item.contextWindow === 'number' && item.contextWindow > 0) {
+                target.contextWindow = item.contextWindow
+                contextApplied += 1
+                applied = true
+            }
+            if (typeof item.maxTokens === 'number' && item.maxTokens > 0) {
+                target.maxTokens = item.maxTokens
+                contextApplied += 1
+                applied = true
+            }
+            if (!applied) {
+                manualKept += 1
+            }
+        }
+
+        const appliedBits: string[] = []
+        if (inputApplied) {
+            appliedBits.push(`输入能力 ${inputApplied}`)
+        }
+        if (reasoningApplied) {
+            appliedBits.push(`Reasoning ${reasoningApplied}`)
+        }
+        if (effortApplied) {
+            appliedBits.push(`思考程度 ${effortApplied}`)
+        }
+        if (contextApplied) {
+            appliedBits.push(`上下文/输出上限 ${contextApplied}`)
+        }
+        const summary = [`拉取 ${fetched.length} 个模型：新增 ${added} 个`]
+        if (appliedBits.length) {
+            summary.push(`应用 Provider 参数：${appliedBits.join('、')}`)
+        }
+        if (manualKept) {
+            summary.push(`${manualKept} 个未返回可应用参数，保持手动配置`)
+        }
+        successText.value = `${provider.name || 'Provider'} ${summary.join('，')}。保存后生效`
+    } catch (error) {
+        errorText.value = parseErrorMessage(error, `${provider.name || 'Provider'} 拉取模型失败`)
+    } finally {
+        setTestingAction(actionKey, false)
+    }
+}
+
 const addProviderHeader = (providerUid: string) => {
     const provider = modelConfigForm.value?.providers.find(item => item.uid === providerUid)
     if (!provider) {
@@ -1220,6 +1395,20 @@ const setRoleBinding = (role: RoleKey, modelUid: string) => {
     }
 }
 
+const setRoleEffort = (role: RoleKey, effort: string) => {
+    const bindingUid = modelConfigForm.value?.roles[role]?.bindingUid
+    const entry = bindingUid ? findModelEntryByUid(bindingUid) : null
+    if (!entry) {
+        return
+    }
+    const value = effort.trim()
+    entry.model.reasoningEffort = value
+    // 思考程度只有开启 Reasoning 才会发送；选了档位就自动开启，避免配置了不生效
+    if (value) {
+        entry.model.reasoning = true
+    }
+}
+
 const applyQuickRolesToModelConfigForm = () => {
     const form = modelConfigForm.value
     if (!form) {
@@ -1311,6 +1500,8 @@ const buildModelsConfigSubmission = () => {
                 id: modelId,
                 name: model.name.trim() || modelId,
                 reasoning: Boolean(model.reasoning),
+                ...(model.reasoningEffort.trim() ? { reasoningEffort: model.reasoningEffort.trim() } : {}),
+                ...(model.reasoningEffortOptions.length ? { reasoningEfforts: [...model.reasoningEffortOptions] } : {}),
                 input: [...model.input],
                 output: [...model.output],
                 cost: {
@@ -1467,15 +1658,9 @@ onMounted(load)
           保存更改
         </button>
       </div>
-
-      <div v-if="errorText" class="notice danger">{{ errorText }}</div>
-      <div v-if="successText" class="notice success">{{ successText }}</div>
-      <div v-if="modelsConfigError" class="notice warning">{{ modelsConfigError }}</div>
-      <div v-if="routingLatencyError" class="notice danger">{{ routingLatencyError }}</div>
-      <div v-else-if="routingLatencyResult" class="notice success">
-        Routing 测试通过：{{ routingLatencyResult.model_key }} · {{ routingLatencyResult.elapsed_ms }} ms
-      </div>
     </section>
+
+    <ViewToastStack :toasts="viewToasts" @dismiss="dismissViewToast" />
 
     <div v-if="loading" class="loading-card">
       <Loader2 class="h-4 w-4 animate-spin" />
@@ -1550,6 +1735,13 @@ onMounted(load)
                         <option value="">未绑定</option>
                         <option v-for="option in card.bindingOptions" :key="option.uid" :value="option.uid">{{ option.key }}</option>
                       </select>
+                      <label v-if="card.effortEnabled" class="route-effort">
+                        <span>思考程度</span>
+                        <select :value="card.effortValue" @change="setRoleEffort(card.role, ($event.target as HTMLSelectElement).value)">
+                          <option value="">Provider 默认</option>
+                          <option v-for="option in card.effortOptions" :key="`${card.role}-effort-${option}`" :value="option">{{ option }}</option>
+                        </select>
+                      </label>
                     </td>
                     <td>
                       <select v-model="modelConfigForm.roles[card.role].selectionStrategy">
@@ -1719,7 +1911,19 @@ onMounted(load)
             <div class="provider-section">
               <div class="model-list-head">
                 <h3>模型列表（{{ selectedProviderModels.length }}）</h3>
-                <button type="button" class="secondary-btn small" @click="addProviderModel(selectedProvider.uid)"><Plus class="h-4 w-4" />新增模型</button>
+                <div class="model-list-actions">
+                  <button
+                    type="button"
+                    class="secondary-btn small"
+                    :disabled="isTestingAction(fetchActionKeyForProvider(selectedProvider.uid))"
+                    @click="fetchProviderModels(selectedProvider)"
+                  >
+                    <Loader2 v-if="isTestingAction(fetchActionKeyForProvider(selectedProvider.uid))" class="h-4 w-4 animate-spin" />
+                    <Download v-else class="h-4 w-4" />
+                    {{ isTestingAction(fetchActionKeyForProvider(selectedProvider.uid)) ? '拉取中' : '从 Provider 拉取' }}
+                  </button>
+                  <button type="button" class="secondary-btn small" @click="addProviderModel(selectedProvider.uid)"><Plus class="h-4 w-4" />新增模型</button>
+                </div>
               </div>
               <div class="model-table-wrap">
                 <table>
@@ -1751,10 +1955,12 @@ onMounted(load)
                           </div>
                         </td>
                         <td>
-                          <button type="button" class="text-action" @click="toggleModelEditor(model.uid)">
-                            {{ expandedModelUid === model.uid ? '收起' : '编辑' }}
-                          </button>
-                          <button type="button" class="text-action danger" @click="removeProviderModel(selectedProvider.uid, model.uid)">删除</button>
+                          <div class="row-actions">
+                            <button type="button" class="text-action" @click="toggleModelEditor(model.uid)">
+                              {{ expandedModelUid === model.uid ? '收起' : '编辑' }}
+                            </button>
+                            <button type="button" class="text-action danger" @click="removeProviderModel(selectedProvider.uid, model.uid)">删除</button>
+                          </div>
                         </td>
                       </tr>
                       <tr v-if="expandedModelUid === model.uid" class="model-edit-row">
@@ -2397,17 +2603,12 @@ onMounted(load)
   font-size: 13px;
 }
 
-.notice,
 .loading-card {
   grid-column: 1 / -1;
   border-radius: 8px;
   padding: 12px 14px;
   font-size: 14px;
 }
-
-.notice.success { background: #ecfdf3; color: #15803d; }
-.notice.warning { background: #fffbeb; color: #b45309; }
-.notice.danger { background: #fff1f2; color: #be123c; }
 
 .loading-card {
   display: flex;
@@ -2609,6 +2810,12 @@ onMounted(load)
 }
 
 .provider-detail-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.model-list-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -2865,6 +3072,10 @@ onMounted(load)
   gap: 8px;
 }
 
+.limit-inline input {
+  min-width: 0;
+}
+
 .mini-tags,
 .capability-list {
   display: flex;
@@ -2891,6 +3102,30 @@ onMounted(load)
 
 .text-action.danger {
   color: #ef4444;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.route-effort {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.route-effort span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.route-effort select {
+  height: 34px;
+  font-size: 13px;
 }
 
 .role-pool-grid {

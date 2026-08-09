@@ -25,6 +25,7 @@ class _DummyContext:
         self.platform_event = platform_event
         self.platform_ctx = None
         self._adapter = SimpleNamespace(can_update_message=True)
+        self.user_data = {}
         self.replies = []
         self.edits = []
         self.actions = []
@@ -75,7 +76,13 @@ def _build_discord_message(msg_type: MessageType, content_type: str):
 
 
 @pytest.mark.asyncio
-async def test_handle_ai_photo_works_for_discord_without_telegram_update(monkeypatch):
+@pytest.mark.parametrize(
+    ("platform", "caption"),
+    [("discord", ""), ("weixin", "请分析这张图")],
+)
+async def test_handle_ai_photo_processes_immediately_when_platform_supports_it(
+    monkeypatch, platform, caption
+):
     import core.config as config_module
 
     async def _allow_user(_user_id):
@@ -110,6 +117,8 @@ async def test_handle_ai_photo_works_for_discord_without_telegram_update(monkeyp
     )
 
     message = _build_discord_message(MessageType.IMAGE, "image/png")
+    message.platform = platform
+    message.caption = caption
     platform_event = SimpleNamespace(
         attachments=[SimpleNamespace(id="att-1", content_type="image/png", size=1234)]
     )

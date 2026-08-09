@@ -26,6 +26,7 @@ from core.config import (
     is_user_admin,
     is_user_allowed,
 )
+from extension.skills.runtime_context import dispatch_context, notify_target
 from utils import extract_video_url
 
 if __package__:
@@ -45,6 +46,33 @@ else:
 
 logger = logging.getLogger(__name__)
 DOWNLOAD_MENU_NS = "dlm"
+
+
+def _normalize_delivery_platform(value: Any) -> str:
+    platform = str(value or "").strip().lower()
+    return "weixin" if platform == "wechat" else platform
+
+
+def _resolve_delivery_platform(
+    ctx: UnifiedContext | None = None,
+    params: dict[str, Any] | None = None,
+    *,
+    explicit: str = "",
+) -> str:
+    dispatch = dispatch_context(params)
+    target = notify_target(ctx, params)
+    message = getattr(ctx, "message", None)
+    for candidate in (
+        explicit,
+        target.get("notify_platform"),
+        dispatch.get("platform_name"),
+        getattr(message, "platform", ""),
+        os.getenv("X_BOT_RUNTIME_PLATFORM", ""),
+    ):
+        platform = _normalize_delivery_platform(candidate)
+        if platform:
+            return platform
+    return ""
 
 
 async def check_permission(ctx: UnifiedContext) -> bool:
@@ -176,7 +204,12 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> Dict[str, 
     if not url:
         return {"text": _download_usage_text(), "ui": _download_menu_ui()}
 
-    return await process_video_download(ctx, url, audio_only=(format_type == "audio"))
+    return await process_video_download(
+        ctx,
+        url,
+        audio_only=(format_type == "audio"),
+        delivery_platform=_resolve_delivery_platform(ctx, params),
+    )
 
 
 async def download_command(ctx: UnifiedContext):
@@ -240,7 +273,10 @@ async def _delete_message_safely(ctx: UnifiedContext, message: Any) -> None:
 
 
 async def process_video_download(
-    ctx: UnifiedContext, url: str, audio_only: bool = False
+    ctx: UnifiedContext,
+    url: str,
+    audio_only: bool = False,
+    delivery_platform: str = "",
 ) -> Dict[str, Any]:
     """
     Core video download logic, shared by direct command and AI router.
@@ -252,7 +288,7 @@ async def process_video_download(
         return {"text": "❌ 下载失败：缺少平台上下文。", "ui": {}}
 
     format_text = "音频" if audio_only else "视频"
-    delivery_platform = str(getattr(ctx.message, "platform", "") or "").strip().lower()
+    delivery_platform = _resolve_delivery_platform(ctx, explicit=delivery_platform)
 
     processing_message = await ctx.reply(f"正在下载{format_text}，请稍候... ⏳")
 
@@ -574,6 +610,7 @@ async def _run_cli() -> int:
         user_id=0,
         progress_message=progress,
         audio_only=str(args.format or "video").strip().lower() == "audio",
+        delivery_platform=_resolve_delivery_platform(),
     )
     if not result.success:
         print(result.error_message or "download failed", file=sys.stderr)

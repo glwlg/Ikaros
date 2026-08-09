@@ -60,6 +60,30 @@ export interface ModelsLatencyCheckResponse {
     prompt: string
 }
 
+export interface ModelsProviderFetchPayload {
+    base_url: string
+    api_key?: string
+    headers?: Record<string, string>
+}
+
+export interface ProviderFetchedModel {
+    id: string
+    name: string
+    /** 以下字段为 null/空 表示 Provider 未上报，保持手动配置 */
+    input: string[] | null
+    reasoning: boolean | null
+    reasoningEffort: string | null
+    reasoningEfforts: string[]
+    contextWindow: number | null
+    maxTokens: number | null
+}
+
+export interface ModelsProviderFetchResponse {
+    base_url: string
+    total: number
+    models: ProviderFetchedModel[]
+}
+
 export const getModelsSnapshot = () =>
     request.get<ModelsSnapshot>('/admin/models')
 
@@ -68,3 +92,6 @@ export const patchModelsSnapshot = (payload: ModelsPatchPayload) =>
 
 export const postModelsLatencyCheck = (payload: ModelsLatencyCheckPayload) =>
     request.post<ModelsLatencyCheckResponse>('/admin/models/latency-check', payload)
+
+export const postModelsProviderFetch = (payload: ModelsProviderFetchPayload) =>
+    request.post<ModelsProviderFetchResponse>('/admin/models/fetch-provider-models', payload)

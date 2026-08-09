@@ -92,9 +92,8 @@ async def test_orchestrator_ikaros_tool_surface_matches_current_runtime(monkeypa
         "coding_session",
         "git_ops",
         "gh_cli",
-            "repo_workspace",
-            "send_message",
-            "send_local_file",
+        "repo_workspace",
+        "send_message",
         "spawn_subagent",
         "task_tracker",
     }

@@ -21,6 +21,12 @@ from core.document_artifacts import (
     build_document_forward_text,
     pop_pending_document_artifacts,
 )
+from core.image_artifacts import (
+    append_pending_image_artifact,
+    cleanup_image_artifacts,
+    persist_image_artifact,
+    pop_pending_image_artifacts,
+)
 from core.channel_runtime_store import channel_runtime_store
 from core.model_config import select_model_for_role
 from core.platform.exceptions import MediaProcessingError, MessageSendError
@@ -1206,6 +1212,7 @@ async def handle_ai_chat(
             pending_document_artifacts,
             user_message,
         )
+    pending_image_artifacts = pop_pending_image_artifacts(ctx.user_data)
 
     await _acknowledge_received(ctx)
 
@@ -1215,13 +1222,20 @@ async def handle_ai_chat(
     from core.agent_input import MAX_INLINE_IMAGE_INPUTS, build_agent_message_history
     from core.agent_orchestrator import agent_orchestrator
 
-    prepared_input = await build_agent_message_history(
-        ctx,
-        user_message=user_message,
-        include_reply=True,
-        strip_refs_from_user_message=True,
-        max_inline_inputs=MAX_INLINE_IMAGE_INPUTS,
-    )
+    try:
+        prepared_input = await build_agent_message_history(
+            ctx,
+            user_message=user_message,
+            include_reply=True,
+            inline_input_source_texts=[
+                user_message,
+                *[artifact.path for artifact in pending_image_artifacts],
+            ],
+            strip_refs_from_user_message=True,
+            max_inline_inputs=MAX_INLINE_IMAGE_INPUTS,
+        )
+    finally:
+        cleanup_image_artifacts(pending_image_artifacts)
     current_inline_resolution = prepared_input.current_resolution
     reply_resolution = prepared_input.reply_resolution
     combined_inline_inputs = list(prepared_input.inline_inputs or [])
@@ -1889,7 +1903,33 @@ async def handle_ai_photo(ctx: UnifiedContext) -> None:
         await ctx.reply("❌ 无法获取图片数据，请重新发送。")
         return
 
-    caption = media.caption or "请分析这张图片"
+    caption = str(media.caption or "").strip()
+    if ctx.message.platform == "weixin" and not caption:
+        try:
+            artifact = persist_image_artifact(
+                file_bytes=bytes(media.content),
+                mime_type=media.mime_type,
+                file_name=media.file_name,
+            )
+        except ValueError as exc:
+            error_code = str(exc or "").strip()
+            if error_code == "image_too_large":
+                await ctx.reply("⚠️ 图片过大（超过 8MB），请发送较小的图片。")
+            else:
+                await ctx.reply("❌ 图片格式无法识别，请重新发送普通图片。")
+            return
+
+        pending = append_pending_image_artifact(ctx.user_data, artifact)
+        pending_hint = (
+            f"当前待处理图片：{len(pending)} 张。" if len(pending) > 1 else ""
+        )
+        await ctx.reply(
+            "🖼️ 图片已接收并下载完成。请继续发送你希望我对它做什么。"
+            f"{pending_hint}"
+        )
+        return
+
+    caption = caption or "请分析这张图片"
     history_text = f"【用户发送了一张图片】 {caption}"
     await bind_delivery_target(ctx, user_id)
     await add_message(ctx, user_id, "user", history_text)

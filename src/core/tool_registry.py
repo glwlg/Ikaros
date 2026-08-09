@@ -146,23 +146,6 @@ CORE_TOOLS: List[Dict[str, Any]] = [
                     "default": "recoverable",
                     "description": "Failure severity when status=failed.",
                 },
-                "files": {
-                    "type": "array",
-                    "description": "Optional user-visible file artifacts to preserve with the result.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "filename": {"type": "string"},
-                            "kind": {
-                                "type": "string",
-                                "enum": ["auto", "document", "photo", "video", "audio"],
-                            },
-                            "caption": {"type": "string"},
-                        },
-                        "required": ["path"],
-                    },
-                },
                 "ui": {
                     "type": "object",
                     "description": "Optional UI payload for the current platform.",
@@ -183,11 +166,11 @@ IKAROS_INTERNAL_TOOLS: List[Dict[str, Any]] = [
     {
         "name": "send_message",
         "description": (
-            "Send an intermediate user-visible message immediately during the current agent turn. "
-            "Use text for progress updates and files for attachments; each call is delivered now, "
-            "so send multiple images with separate calls when the user asks for them one by one. "
-            "Tool result files are not delivered automatically; call this explicitly for every "
-            "attachment the user should receive. Do not use this for the final answer."
+            "Send user-visible text and/or attachments immediately during the current agent turn. "
+            "This is the only tool for delivering messages or files to the user. Each call returns "
+            "the actual delivery result, so inspect delivered_files and failed_files and retry with "
+            "a different supported kind when appropriate. Tool result files are never delivered "
+            "automatically; call this explicitly for every attachment the user should receive."
         ),
         "parameters": {
             "type": "object",
@@ -214,37 +197,6 @@ IKAROS_INTERNAL_TOOLS: List[Dict[str, Any]] = [
                     },
                 },
             },
-        },
-    },
-    {
-        "name": "send_local_file",
-        "description": (
-            "Prepare an existing safe server-side file for user delivery by the final outer handler. "
-            "Use this when the user explicitly asks to receive a file, not just its contents."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Absolute or workspace-relative file path on the server",
-                },
-                "caption": {
-                    "type": "string",
-                    "description": "Optional short caption shown with the attachment",
-                },
-                "filename": {
-                    "type": "string",
-                    "description": "Optional override filename shown to the user",
-                },
-                "kind": {
-                    "type": "string",
-                    "enum": ["auto", "document", "photo", "video", "audio"],
-                    "default": "auto",
-                    "description": "Preferred delivery type. Use auto unless you need to force document delivery.",
-                },
-            },
-            "required": ["path"],
         },
     },
     {

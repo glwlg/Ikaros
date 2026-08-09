@@ -67,9 +67,11 @@ python scripts/execute.py <url> [--format video|audio]
 
 1. 用户未明确格式时，默认用 `--format video`。
 2. 用户明确要 mp3、音频、只听声音时，用 `--format audio`。
-3. 下载后读取脚本输出里的 `saved_path`，再告诉用户真实落盘位置。
-4. **不要** 自己拼 `yt-dlp` 命令，不要自定义输出目录，不要绕过脚本。
-5. 需要登录时让用户扫描 Ikaros 发出的平台二维码，不要要求用户在聊天中粘贴 Cookie。
+3. 下载后读取脚本输出里的 `saved_path` 和 `is_too_large`。
+4. 用户明确要求“发给我”且 `is_too_large=false` 时，必须调用 `send_message(files=[...])` 发送该绝对路径；视频使用 `kind=video`，音频使用 `kind=audio`。
+5. 检查 `send_message` 返回的 `delivered_files` 和 `failed_files`。失败时可根据错误改用 `kind=document` 重试；只有拿到真实投递成功结果后才能声称“已发送”。
+6. **不要** 自己拼 `yt-dlp` 命令，不要自定义输出目录，不要绕过脚本。
+7. 需要登录时让用户扫描 Ikaros 发出的平台二维码，不要要求用户在聊天中粘贴 Cookie。
 
 ## 示例
 

@@ -32,7 +32,9 @@ def to_agents_sdk_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         role = str(message.get("role") or "").strip() or "user"
         content = message.get("content")
         if isinstance(content, str) or content is None:
-            converted.append({"role": role, "content": content if content is not None else ""})
+            converted.append(
+                {"role": role, "content": content if content is not None else ""}
+            )
             continue
         if not isinstance(content, list):
             converted.append({"role": role, "content": str(content)})
@@ -150,17 +152,31 @@ class AgentsSdkAssistantRuntime:
             # as well because different gateways honor different shapes.
             "chat_template_kwargs": {"enable_thinking": False},
         }
-        official_openai_endpoint = (
-            str(model_config.provider or "").strip().lower() == "openai"
-            and (
-                not str(model_config.base_url or "").strip()
-                or "api.openai.com" in str(model_config.base_url or "").lower()
-            )
+        official_openai_endpoint = str(
+            model_config.provider or ""
+        ).strip().lower() == "openai" and (
+            not str(model_config.base_url or "").strip()
+            or "api.openai.com" in str(model_config.base_url or "").lower()
         )
         if not official_openai_endpoint and not bool(
             getattr(model_config, "reasoning", False)
         ):
             extra_body["thinking"] = {"type": "disabled"}
+        # Per-model reasoning effort from models.json. Sent via extra_body so
+        # OpenAI-compatible gateways accepting non-standard levels (xhigh,
+        # ultra, ...) work; the Responses API path uses SDK defaults instead.
+        reasoning_effort = str(
+            getattr(model_config, "reasoning_effort", "") or ""
+        ).strip()
+        responses_api_path = official_openai_endpoint and bool(
+            getattr(model_config, "force_responses_model", False)
+        )
+        if (
+            reasoning_effort
+            and bool(getattr(model_config, "reasoning", False))
+            and not responses_api_path
+        ):
+            extra_body["reasoning_effort"] = reasoning_effort
         model_settings_kwargs: dict[str, Any] = {
             "temperature": _env_float("OPENAI_TEMPERATURE"),
             "tool_choice": "auto" if agent_tools else None,
@@ -197,9 +213,7 @@ class AgentsSdkAssistantRuntime:
             result_text = str(getattr(result, "final_output", "") or "").strip()
             if not result_text:
                 result_text = "".join(raw_output_text_chunks or output_text_chunks)
-            return sanitize_visible_assistant_text(
-                result_text
-            )
+            return sanitize_visible_assistant_text(result_text)
 
         final_text = await _run_once(base_input)
 

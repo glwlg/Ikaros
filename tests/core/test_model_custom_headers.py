@@ -34,6 +34,30 @@ def test_parse_models_config_loads_provider_headers():
     }
 
 
+def test_parse_models_config_loads_reasoning_effort():
+    config = model_config_module._parse_models_config_data(
+        {
+            "providers": {
+                "proxy": {
+                    "baseUrl": "https://example.invalid/v1",
+                    "apiKey": "test-key",
+                    "models": [
+                        {
+                            "id": "model-1",
+                            "reasoning": True,
+                            "reasoningEffort": "xhigh",
+                        },
+                        {"id": "model-2"},
+                    ],
+                }
+            }
+        }
+    )
+
+    assert config.get_model("proxy/model-1").reasoningEffort == "xhigh"
+    assert config.get_model("proxy/model-2").reasoningEffort == ""
+
+
 def test_openai_client_receives_provider_headers(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -67,9 +91,7 @@ def test_openai_client_receives_provider_headers(monkeypatch):
 
     config_module.get_client_for_model("proxy/model-1", is_async=True)
 
-    assert captured["default_headers"] == {
-        "opencodex-api-key": "custom-key"
-    }
+    assert captured["default_headers"] == {"opencodex-api-key": "custom-key"}
 
 
 def test_openai_client_can_suppress_bearer_auth(monkeypatch):
@@ -141,9 +163,7 @@ def test_agents_sdk_client_receives_provider_headers():
         client_factory=lambda **kwargs: captured.update(kwargs) or object(),
     )
 
-    assert captured["default_headers"] == {
-        "opencodex-api-key": "custom-key"
-    }
+    assert captured["default_headers"] == {"opencodex-api-key": "custom-key"}
 
 
 @pytest.mark.asyncio
@@ -177,6 +197,4 @@ async def test_models_latency_check_sends_custom_headers(monkeypatch):
         )
     )
 
-    assert captured["default_headers"] == {
-        "opencodex-api-key": "custom-key"
-    }
+    assert captured["default_headers"] == {"opencodex-api-key": "custom-key"}

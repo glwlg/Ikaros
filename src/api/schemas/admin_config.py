@@ -104,3 +104,11 @@ class ModelsLatencyCheckRequest(BaseModel):
     headers: dict[str, str] | None = None
     api_style: str | None = None
     model_id: str
+
+
+class ModelsProviderFetchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str
+    api_key: str | None = None
+    headers: dict[str, str] | None = None

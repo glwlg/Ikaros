@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,7 @@ from api.auth.models import User, UserRole
 from api.schemas.admin_config import (
     AdminProfilePatch,
     ModelsLatencyCheckRequest,
+    ModelsProviderFetchRequest,
     RuntimeChannelsPatch,
     RuntimeDocGenerateRequest,
     RuntimeDocsPatch,
@@ -46,13 +48,17 @@ from core.model_config import (
 )
 from core.runtime_config_store import runtime_config_store
 from core.soul_store import soul_store
-from services.openai_adapter import create_chat_completion, extract_text_from_chat_completion
+from services.openai_adapter import (
+    create_chat_completion,
+    extract_text_from_chat_completion,
+)
 
 
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 MANAGED_MODEL_ROLES = ("primary", "routing", "vision", "image_generation", "voice")
 LATENCY_CHECK_TIMEOUT_SEC = 20.0
 LATENCY_CHECK_PROMPT = "Reply with pong."
+PROVIDER_MODELS_FETCH_TIMEOUT_SEC = 15.0
 DEFAULT_ROLE_INPUTS: dict[str, list[str]] = {
     "primary": ["text", "image", "voice"],
     "routing": ["text"],
@@ -68,6 +74,14 @@ ROLE_REQUIRED_INPUTS: dict[str, list[str]] = {
 }
 ROLE_REQUIRED_OUTPUTS: dict[str, list[str]] = {
     "image_generation": ["image"],
+}
+
+# Provider /models 响应里常见的输入模态 token -> 系统内部输入类型
+_PROVIDER_INPUT_MODALITY_MAP: dict[str, str] = {
+    "text": "text",
+    "image": "image",
+    "audio": "voice",
+    "voice": "voice",
 }
 
 
@@ -89,7 +103,9 @@ def _redact_settings(payload: dict[str, Any]) -> dict[str, Any]:
     redacted: dict[str, Any] = {}
     for key, value in payload.items():
         normalized_key = str(key or "").strip().lower()
-        if any(token in normalized_key for token in ("key", "token", "secret", "password")):
+        if any(
+            token in normalized_key for token in ("key", "token", "secret", "password")
+        ):
             redacted[key] = bool(str(value or "").strip())
             continue
         if isinstance(value, dict):
@@ -181,7 +197,9 @@ def _normalize_provider_name(value: Any) -> str:
     if not provider_name:
         raise HTTPException(status_code=400, detail="provider_name 不能为空")
     if not SAFE_NAME_RE.match(provider_name):
-        raise HTTPException(status_code=400, detail="provider_name 只能包含字母、数字、点、下划线和横线")
+        raise HTTPException(
+            status_code=400, detail="provider_name 只能包含字母、数字、点、下划线和横线"
+        )
     return provider_name
 
 
@@ -209,12 +227,7 @@ def _normalize_provider_headers(value: Any, *, field_name: str) -> dict[str, str
         name = raw_name.strip()
         if not name:
             raise HTTPException(status_code=400, detail=f"{field_name} 包含空名称")
-        if (
-            "\r" in name
-            or "\n" in name
-            or "\r" in raw_value
-            or "\n" in raw_value
-        ):
+        if "\r" in name or "\n" in name or "\r" in raw_value or "\n" in raw_value:
             raise HTTPException(status_code=400, detail=f"{field_name} 不能包含换行符")
         normalized_name = name.lower()
         if normalized_name in seen_names:
@@ -285,9 +298,7 @@ def _normalize_models_document(payload: dict[str, Any]) -> dict[str, Any]:
         )
         if isinstance(pool_value, list):
             normalized_pools[pool_name] = [
-                model_key
-                for item in pool_value
-                if (model_key := _safe_text(item))
+                model_key for item in pool_value if (model_key := _safe_text(item))
             ]
             continue
         if isinstance(pool_value, dict):
@@ -305,7 +316,9 @@ def _normalize_models_document(payload: dict[str, Any]) -> dict[str, Any]:
 
     raw_selection = payload.get("selection") or {}
     if not isinstance(raw_selection, dict):
-        raise HTTPException(status_code=400, detail="models_config.selection 必须是对象")
+        raise HTTPException(
+            status_code=400, detail="models_config.selection 必须是对象"
+        )
     normalized_selection: dict[str, Any] = {}
     for raw_pool_name, raw_selection_value in raw_selection.items():
         safe_pool_name = _normalize_managed_role_key(
@@ -340,7 +353,9 @@ def _normalize_models_document(payload: dict[str, Any]) -> dict[str, Any]:
 
     raw_providers = payload.get("providers") or {}
     if not isinstance(raw_providers, dict):
-        raise HTTPException(status_code=400, detail="models_config.providers 必须是对象")
+        raise HTTPException(
+            status_code=400, detail="models_config.providers 必须是对象"
+        )
 
     normalized_providers: dict[str, Any] = {}
     for raw_provider_name, raw_provider in raw_providers.items():
@@ -437,9 +452,19 @@ def _normalize_models_document(payload: dict[str, Any]) -> dict[str, Any]:
                     ),
                 }
             )
-            normalized_provider_models.append(
-                normalized_model
-            )
+            reasoning_effort = _safe_text(item.get("reasoningEffort"))
+            if reasoning_effort:
+                normalized_model["reasoningEffort"] = reasoning_effort
+            raw_reasoning_efforts = item.get("reasoningEfforts")
+            if isinstance(raw_reasoning_efforts, list):
+                reasoning_efforts = [
+                    token
+                    for value in raw_reasoning_efforts
+                    if (token := _safe_text(value))
+                ]
+                if reasoning_efforts:
+                    normalized_model["reasoningEfforts"] = reasoning_efforts
+            normalized_provider_models.append(normalized_model)
 
         normalized_provider = dict(raw_provider)
         normalized_provider.update(
@@ -480,7 +505,9 @@ def _normalize_models_document(payload: dict[str, Any]) -> dict[str, Any]:
                 field_name=f"models_config.model.{raw_role}",
             )
     for pool_name, pool_value in normalized["models"].items():
-        pool_keys = pool_value if isinstance(pool_value, list) else list(pool_value.keys())
+        pool_keys = (
+            pool_value if isinstance(pool_value, list) else list(pool_value.keys())
+        )
         for model_key in pool_keys:
             if model_key and model_key not in available_model_keys:
                 raise HTTPException(
@@ -722,6 +749,181 @@ async def run_models_latency_check(
     }
 
 
+def _extract_provider_input_types(item: dict[str, Any]) -> list[str] | None:
+    """从 Provider /models 返回的单个模型条目中解析输入能力。
+
+    返回 None 表示该条目没有携带任何输入能力信息，调用方应保留手动配置。
+    """
+    candidates: list[Any] = [
+        item.get("input_modalities"),
+        item.get("input_types"),
+    ]
+    architecture = item.get("architecture")
+    if isinstance(architecture, dict):
+        candidates.append(architecture.get("input_modalities"))
+    modalities = item.get("modalities")
+    if isinstance(modalities, dict):
+        candidates.append(modalities.get("input"))
+    capabilities = item.get("capabilities")
+    if isinstance(capabilities, dict):
+        candidates.append(capabilities.get("input"))
+        candidates.append(capabilities.get("input_types"))
+
+    for candidate in candidates:
+        if not isinstance(candidate, list) or not candidate:
+            continue
+        normalized: list[str] = []
+        for value in candidate:
+            token = _PROVIDER_INPUT_MODALITY_MAP.get(_safe_text(value).lower())
+            if token and token in ALLOWED_MODEL_INPUTS and token not in normalized:
+                normalized.append(token)
+        if normalized:
+            return normalized
+    return None
+
+
+def _extract_provider_reasoning(item: dict[str, Any]) -> bool | None:
+    """解析 Provider 上报的推理（thinking）支持标记，未上报时返回 None。"""
+    for key in ("supports_reasoning", "supports_reasoning_effort"):
+        value = item.get(key)
+        if isinstance(value, bool):
+            return value
+    supported = item.get("supported_parameters")
+    if isinstance(supported, list):
+        tokens = {_safe_text(value).lower() for value in supported}
+        if "reasoning" in tokens:
+            return True
+    return None
+
+
+def _extract_provider_reasoning_efforts(item: dict[str, Any]) -> list[str]:
+    """解析 Provider 上报的可选思考程度列表（如 low/medium/high/xhigh）。"""
+    raw = item.get("reasoning_efforts")
+    if not isinstance(raw, list):
+        return []
+    options: list[str] = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            token = _safe_text(entry.get("value"))
+        else:
+            token = _safe_text(entry)
+        if token and token not in options:
+            options.append(token)
+    return options
+
+
+def _extract_provider_positive_int(item: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value: Any = item.get(key)
+        if value is None and "." in key:
+            parent_key, _, child_key = key.partition(".")
+            parent = item.get(parent_key)
+            if isinstance(parent, dict):
+                value = parent.get(child_key)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+async def fetch_provider_models(
+    payload: ModelsProviderFetchRequest,
+) -> dict[str, Any]:
+    """调用 Provider 的 GET /models 拉取模型列表及输入能力。"""
+    base_url = _safe_text(payload.base_url)
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url 不能为空")
+    api_key = str(payload.api_key or "").strip()
+    headers = _normalize_provider_headers(
+        payload.headers,
+        field_name="headers",
+    )
+
+    request_headers: dict[str, str] = {}
+    if api_key:
+        request_headers["Authorization"] = f"Bearer {api_key}"
+    request_headers.update(headers)
+
+    url = f"{base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(
+            timeout=PROVIDER_MODELS_FETCH_TIMEOUT_SEC,
+        ) as client:
+            response = await client.get(url, headers=request_headers)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"拉取模型列表超时（{int(PROVIDER_MODELS_FETCH_TIMEOUT_SEC)} 秒）",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"拉取模型列表失败: {exc}") from exc
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Provider 返回 HTTP {response.status_code}: "
+                f"{_preview_text(response.text, limit=200)}"
+            ),
+        )
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Provider 返回的不是合法 JSON"
+        ) from exc
+
+    raw_models: Any = data.get("data") if isinstance(data, dict) else data
+    if not isinstance(raw_models, list):
+        raise HTTPException(
+            status_code=502,
+            detail="Provider 返回中缺少 models 数组（data 字段）",
+        )
+
+    models: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in raw_models:
+        if not isinstance(item, dict):
+            continue
+        model_id = _safe_text(item.get("id"))
+        if not model_id or model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        models.append(
+            {
+                "id": model_id,
+                "name": _safe_text(item.get("name")) or model_id,
+                "input": _extract_provider_input_types(item),
+                "reasoning": _extract_provider_reasoning(item),
+                "reasoningEffort": _safe_text(item.get("reasoning_effort")) or None,
+                "reasoningEfforts": _extract_provider_reasoning_efforts(item),
+                "contextWindow": _extract_provider_positive_int(
+                    item,
+                    "context_length",
+                    "context_window",
+                    "max_input_tokens",
+                    "top_provider.context_length",
+                ),
+                "maxTokens": _extract_provider_positive_int(
+                    item,
+                    "max_completion_tokens",
+                    "max_output_tokens",
+                    "top_provider.max_completion_tokens",
+                ),
+            }
+        )
+
+    return {
+        "base_url": base_url,
+        "total": len(models),
+        "models": models,
+    }
+
+
 def _channels_ready(payload: dict[str, Any]) -> bool:
     channel_keys = ("telegram", "discord", "dingtalk", "weixin", "web")
     enabled_channels = [
@@ -743,7 +945,9 @@ def build_runtime_config_snapshot(admin_user: User) -> dict[str, Any]:
     user_doc_content = _read_text(user_doc_path)
     runtime_payload = runtime_config_store.read()
     features = dict(runtime_payload.get("features") or {})
-    cors_allowed_origins = list((runtime_payload.get("cors") or {}).get("allowed_origins") or [])
+    cors_allowed_origins = list(
+        (runtime_payload.get("cors") or {}).get("allowed_origins") or []
+    )
     memory = load_memory_config()
     primary = _model_role_status("primary")
     routing = _model_role_status("routing")
@@ -947,7 +1151,9 @@ def apply_runtime_channels_patch(
         )
 
     if patch.admin_user_ids is not None:
-        admin_ids = [_safe_text(item) for item in patch.admin_user_ids if _safe_text(item)]
+        admin_ids = [
+            _safe_text(item) for item in patch.admin_user_ids if _safe_text(item)
+        ]
         current_admin_id = str(current_admin_user_id)
         if current_admin_id and current_admin_id not in admin_ids:
             admin_ids.append(current_admin_id)
@@ -1007,7 +1213,9 @@ def update_memory_provider(provider: str, *, actor: str) -> dict[str, Any]:
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"memory 配置损坏: {exc}") from exc
+            raise HTTPException(
+                status_code=500, detail=f"memory 配置损坏: {exc}"
+            ) from exc
     else:
         data = {"provider": "file", "providers": {"file": {}, "mem0": {}}}
 
@@ -1066,7 +1274,9 @@ async def generate_runtime_doc(payload: RuntimeDocGenerateRequest) -> dict[str, 
         raise HTTPException(status_code=400, detail="model_key 不能为空")
     client = get_client_for_model(model_key, is_async=True)
     if client is None:
-        raise HTTPException(status_code=400, detail="当前模型没有可用客户端，请检查 base_url / api_key")
+        raise HTTPException(
+            status_code=400, detail="当前模型没有可用客户端，请检查 base_url / api_key"
+        )
 
     if payload.kind == "soul":
         system_prompt = (
@@ -1110,7 +1320,9 @@ async def generate_runtime_doc(payload: RuntimeDocGenerateRequest) -> dict[str, 
             **request_payload,
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"调用模型生成文档失败: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"调用模型生成文档失败: {exc}"
+        ) from exc
 
     content = _strip_markdown_fence(extract_text_from_chat_completion(response))
     if not content:

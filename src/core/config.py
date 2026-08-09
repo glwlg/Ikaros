@@ -49,14 +49,14 @@ WEIXIN_DEBUG_UPDATES = os.getenv("WEIXIN_DEBUG_UPDATES", "false").lower() == "tr
 WEIXIN_SEND_VIDEO_AS_FILE = (
     os.getenv("WEIXIN_SEND_VIDEO_AS_FILE", "false").lower() == "true"
 )
-# Weixin cannot attach text+image in one bubble. Buffer nearby inbound messages
-# from the same user and merge text into media caption before dispatch.
+# Legacy optional merge window. Normal Weixin media now persists immediately and
+# waits for the user's next text instruction instead of relying on a short timer.
 try:
     WEIXIN_INBOUND_MERGE_WINDOW_SEC = float(
-        os.getenv("WEIXIN_INBOUND_MERGE_WINDOW_SEC", "3.0") or 3.0
+        os.getenv("WEIXIN_INBOUND_MERGE_WINDOW_SEC", "0") or 0
     )
 except Exception:
-    WEIXIN_INBOUND_MERGE_WINDOW_SEC = 3.0
+    WEIXIN_INBOUND_MERGE_WINDOW_SEC = 0.0
 
 # 日志配置
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

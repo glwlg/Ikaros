@@ -9,6 +9,7 @@ import core.model_config as model_config_module
 from api.auth.models import User, UserRole
 from api.schemas.admin_config import (
     ModelsLatencyCheckRequest,
+    ModelsProviderFetchRequest,
     RuntimeChannelsPatch,
     RuntimeDocGenerateRequest,
     RuntimeTelegramChannelPatch,
@@ -60,9 +61,7 @@ def _models_payload() -> dict:
                     "priority": 1,
                 }
             },
-            "routing": {
-                "demo/text": {}
-            },
+            "routing": {"demo/text": {}},
             "vision": ["demo/vision"],
         },
         "selection": {
@@ -151,7 +150,9 @@ def test_runtime_snapshot_uses_runtime_shape_and_models_snapshot_includes_editor
 
     monkeypatch.setenv("MODELS_CONFIG_PATH", str(config_path))
     _reset_model_config_state(monkeypatch)
-    monkeypatch.setattr(model_config_module, "_models_config", model_config_module.ModelsConfig())
+    monkeypatch.setattr(
+        model_config_module, "_models_config", model_config_module.ModelsConfig()
+    )
 
     class _MemoryConfig:
         providers = {"file": {}}
@@ -172,8 +173,12 @@ def test_runtime_snapshot_uses_runtime_shape_and_models_snapshot_includes_editor
             "cors": {"allowed_origins": ["http://127.0.0.1:8764"]},
         },
     )
-    monkeypatch.setattr(admin_config_service, "load_memory_config", lambda: _MemoryConfig())
-    monkeypatch.setattr(admin_config_service, "get_memory_provider_name", lambda: "file")
+    monkeypatch.setattr(
+        admin_config_service, "load_memory_config", lambda: _MemoryConfig()
+    )
+    monkeypatch.setattr(
+        admin_config_service, "get_memory_provider_name", lambda: "file"
+    )
     monkeypatch.setattr(
         admin_config_service,
         "read_managed_env",
@@ -193,9 +198,13 @@ def test_runtime_snapshot_uses_runtime_shape_and_models_snapshot_includes_editor
             {"path": str((tmp_path / "SOUL.MD").resolve()), "content": "# Soul\n"},
         )(),
     )
-    monkeypatch.setattr(admin_config_service, "_admin_user_md_path", lambda admin_id: user_doc_path)
+    monkeypatch.setattr(
+        admin_config_service, "_admin_user_md_path", lambda admin_id: user_doc_path
+    )
 
-    runtime_snapshot = admin_config_service.build_runtime_config_snapshot(_build_admin_user())
+    runtime_snapshot = admin_config_service.build_runtime_config_snapshot(
+        _build_admin_user()
+    )
     models_snapshot = admin_config_service.build_models_snapshot()
 
     assert "models_config" not in runtime_snapshot
@@ -239,9 +248,19 @@ def test_apply_models_document_patch_persists_full_document_and_preserves_extra_
     assert saved["providers"]["demo"]["models"][1]["maxTokens"] == 65536
     assert model_config_module.get_configured_model("primary") == "demo/text"
     assert model_config_module.get_configured_model("vision") == "demo/vision"
-    assert model_config_module.load_models_config().get_model("demo/text").output == ["text"]
-    assert model_config_module.load_models_config().get_model("demo/text").limits.dailyTokens == 120000
-    assert model_config_module.load_models_config().get_selection_strategy("primary") == "round_robin"
+    assert model_config_module.load_models_config().get_model("demo/text").output == [
+        "text"
+    ]
+    assert (
+        model_config_module.load_models_config()
+        .get_model("demo/text")
+        .limits.dailyTokens
+        == 120000
+    )
+    assert (
+        model_config_module.load_models_config().get_selection_strategy("primary")
+        == "round_robin"
+    )
 
 
 def test_apply_models_document_patch_rejects_unknown_model_reference(
@@ -310,7 +329,9 @@ def test_apply_models_document_patch_accepts_image_generation_model_with_image_o
     assert saved["providers"]["demo"]["models"][-1]["output"] == ["image"]
 
 
-def test_apply_runtime_channels_patch_writes_only_credentials_to_env(tmp_path, monkeypatch):
+def test_apply_runtime_channels_patch_writes_only_credentials_to_env(
+    tmp_path, monkeypatch
+):
     _redirect_audit_paths(tmp_path)
     runtime_updates = []
     env_updates = {}
@@ -337,7 +358,9 @@ def test_apply_runtime_channels_patch_writes_only_credentials_to_env(tmp_path, m
     result = admin_config_service.apply_runtime_channels_patch(
         RuntimeChannelsPatch(
             admin_user_ids=["1001"],
-            telegram=RuntimeTelegramChannelPatch(enabled=True, bot_token="telegram-token"),
+            telegram=RuntimeTelegramChannelPatch(
+                enabled=True, bot_token="telegram-token"
+            ),
             weixin=RuntimeWeixinChannelPatch(
                 enabled=True,
                 base_url="https://wx.example.invalid",
@@ -457,3 +480,163 @@ async def test_run_models_latency_check_rejects_unsupported_api_style():
 
     assert exc.value.status_code == 400
     assert "openai-completions" in str(exc.value.detail)
+
+
+class _FakeProviderModelsResponse:
+    def __init__(self, *, status_code: int = 200, payload=None, text: str = ""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+class _FakeProviderModelsClient:
+    """捕获 GET 请求并返回预置响应的 httpx.AsyncClient 替身。"""
+
+    response = _FakeProviderModelsResponse(payload={"data": []})
+    requests: list[dict] = []
+    init_kwargs: list[dict] = []
+
+    def __init__(self, **kwargs):
+        type(self).init_kwargs.append(kwargs)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def get(self, url, headers=None):
+        type(self).requests.append({"url": url, "headers": dict(headers or {})})
+        return type(self).response
+
+
+def _install_fake_provider_client(monkeypatch, response: _FakeProviderModelsResponse):
+    _FakeProviderModelsClient.response = response
+    _FakeProviderModelsClient.requests = []
+    _FakeProviderModelsClient.init_kwargs = []
+    monkeypatch.setattr(
+        admin_config_service.httpx,
+        "AsyncClient",
+        _FakeProviderModelsClient,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_applies_reported_input_modalities(monkeypatch):
+    _install_fake_provider_client(
+        monkeypatch,
+        _FakeProviderModelsResponse(
+            payload={
+                "data": [
+                    {
+                        "id": "vendor/vision-pro",
+                        "name": "Vision Pro",
+                        "architecture": {
+                            "input_modalities": ["text", "image", "audio"],
+                        },
+                        "supported_parameters": ["tools", "reasoning"],
+                        "context_length": 262144,
+                        "top_provider": {"max_completion_tokens": 32768},
+                    },
+                    {
+                        "id": "vendor/text-only",
+                        "input_modalities": ["text"],
+                        "supports_reasoning_effort": True,
+                        "reasoning_effort": "low",
+                        "reasoning_efforts": [
+                            {"value": "low", "default": True},
+                            {"value": "medium"},
+                            "high",
+                        ],
+                    },
+                    {"id": "vendor/unknown"},
+                    {"id": "vendor/vision-pro"},
+                    {"name": "missing-id"},
+                ]
+            }
+        ),
+    )
+
+    result = await admin_config_service.fetch_provider_models(
+        ModelsProviderFetchRequest(
+            base_url="https://example.invalid/v1/",
+            api_key="test-key",
+            headers={"x-tenant": "demo"},
+        )
+    )
+
+    assert _FakeProviderModelsClient.requests == [
+        {
+            "url": "https://example.invalid/v1/models",
+            "headers": {
+                "Authorization": "Bearer test-key",
+                "x-tenant": "demo",
+            },
+        }
+    ]
+    assert result["total"] == 3
+    assert result["models"] == [
+        {
+            "id": "vendor/vision-pro",
+            "name": "Vision Pro",
+            "input": ["text", "image", "voice"],
+            "reasoning": True,
+            "reasoningEffort": None,
+            "reasoningEfforts": [],
+            "contextWindow": 262144,
+            "maxTokens": 32768,
+        },
+        {
+            "id": "vendor/text-only",
+            "name": "vendor/text-only",
+            "input": ["text"],
+            "reasoning": True,
+            "reasoningEffort": "low",
+            "reasoningEfforts": ["low", "medium", "high"],
+            "contextWindow": None,
+            "maxTokens": None,
+        },
+        {
+            "id": "vendor/unknown",
+            "name": "vendor/unknown",
+            "input": None,
+            "reasoning": None,
+            "reasoningEffort": None,
+            "reasoningEfforts": [],
+            "contextWindow": None,
+            "maxTokens": None,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_requires_base_url():
+    with pytest.raises(HTTPException) as exc:
+        await admin_config_service.fetch_provider_models(
+            ModelsProviderFetchRequest(base_url="  ")
+        )
+
+    assert exc.value.status_code == 400
+    assert "base_url" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_fetch_provider_models_surfaces_provider_http_error(monkeypatch):
+    _install_fake_provider_client(
+        monkeypatch,
+        _FakeProviderModelsResponse(status_code=401, text='{"error":"bad key"}'),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await admin_config_service.fetch_provider_models(
+            ModelsProviderFetchRequest(
+                base_url="https://example.invalid/v1",
+                api_key="bad-key",
+            )
+        )
+
+    assert exc.value.status_code == 502
+    assert "401" in str(exc.value.detail)

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import core.config as config_module
 import core.document_artifacts as document_artifacts
+import core.image_artifacts as image_artifacts
 import core.task_manager as task_manager_module
 from core.agent_input import (
     InlineInputResolution,
@@ -14,6 +17,7 @@ from core.agent_input import (
     ReplyMessageResolution,
 )
 from core.document_artifacts import DocumentArtifact, PENDING_DOCUMENT_ARTIFACTS_KEY
+from core.image_artifacts import ImageArtifact, PENDING_IMAGE_ARTIFACTS_KEY
 from core.platform.models import MessageType
 from handlers import ai_handlers, document_handler
 from handlers.media_utils import MediaInput
@@ -29,14 +33,21 @@ class _DummyOutgoingMessage:
 
 
 class _DummyContext:
-    def __init__(self, *, message_type: MessageType, text: str = "", caption: str = ""):
+    def __init__(
+        self,
+        *,
+        message_type: MessageType,
+        text: str = "",
+        caption: str = "",
+        platform: str = "telegram",
+    ):
         self.message = SimpleNamespace(
             type=message_type,
             text=text,
             caption=caption,
             user=SimpleNamespace(id="u-1"),
             chat=SimpleNamespace(id="c-1", type="private"),
-            platform="telegram",
+            platform=platform,
             reply_to_message=None,
             raw_data={},
             id="msg-1",
@@ -180,7 +191,53 @@ async def test_handle_document_without_caption_stashes_pending_txt_artifact(
 
 
 @pytest.mark.asyncio
-async def test_handle_ai_chat_consumes_pending_document_artifacts(
+async def test_handle_weixin_photos_without_caption_accumulates_without_agent(
+    monkeypatch, tmp_path
+):
+    async def _allow_user(_user_id):
+        return True
+
+    async def _allow_feature(_ctx, _feature):
+        return True
+
+    async def _fake_extract_media_input(_ctx, **_kwargs):
+        return MediaInput(
+            type=MessageType.IMAGE,
+            file_id="image-1",
+            mime_type="image/png",
+            caption="",
+            file_name="photo.png",
+            file_size=16,
+            content=b"\x89PNG\r\n\x1a\nimage-data",
+        )
+
+    add_message = AsyncMock()
+    monkeypatch.setattr(config_module, "is_user_allowed", _allow_user)
+    monkeypatch.setattr(ai_handlers, "require_feature_access", _allow_feature)
+    monkeypatch.setattr(ai_handlers, "extract_media_input", _fake_extract_media_input)
+    monkeypatch.setattr(ai_handlers, "add_message", add_message)
+    monkeypatch.setattr(
+        image_artifacts,
+        "IMAGE_UPLOAD_ROOT",
+        (tmp_path / "images").resolve(),
+    )
+
+    ctx = _DummyContext(message_type=MessageType.IMAGE, platform="weixin")
+
+    await ai_handlers.handle_ai_photo(ctx)
+    await ai_handlers.handle_ai_photo(ctx)
+
+    add_message.assert_not_awaited()
+    pending = ctx.user_data[PENDING_IMAGE_ARTIFACTS_KEY]
+    assert len(pending) == 2
+    assert all(Path(item["path"]).is_file() for item in pending)
+    assert len(ctx.replies) == 2
+    assert "图片已接收并下载完成" in str(ctx.replies[0][0])
+    assert "当前待处理图片：2 张" in str(ctx.replies[1][0])
+
+
+@pytest.mark.asyncio
+async def test_handle_ai_chat_combines_pending_documents_and_images(
     monkeypatch, tmp_path
 ):
     captured: dict[str, object] = {}
@@ -204,6 +261,9 @@ async def test_handle_ai_chat_consumes_pending_document_artifacts(
     async def _fake_build_agent_message_history(_ctx, **kwargs):
         user_message = str(kwargs.get("user_message") or "")
         captured["user_message"] = user_message
+        captured["inline_input_source_texts"] = list(
+            kwargs.get("inline_input_source_texts") or []
+        )
         return PreparedAgentInput(
             message_history=[{"role": "user", "parts": [{"text": user_message}]}],
             user_parts=[{"text": user_message}],
@@ -234,6 +294,7 @@ async def test_handle_ai_chat_consumes_pending_document_artifacts(
     monkeypatch.setattr(ai_handlers, "add_message", _fake_add_message)
     monkeypatch.setattr(ai_handlers, "get_user_context", _empty_history)
     monkeypatch.setattr(ai_handlers, "increment_stat", _noop)
+
     async def _identity_process_code_files(_ctx, text):
         return text
 
@@ -271,9 +332,19 @@ async def test_handle_ai_chat_consumes_pending_document_artifacts(
         original_path=str(text_path),
         text_path=str(text_path),
     )
+    image_paths = [
+        (tmp_path / "pending-1.png").resolve(),
+        (tmp_path / "pending-2.png").resolve(),
+    ]
+    for image_path in image_paths:
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage-data")
 
     ctx = _DummyContext(message_type=MessageType.TEXT, text="总结一下")
     ctx.user_data[PENDING_DOCUMENT_ARTIFACTS_KEY] = [artifact.to_payload()]
+    ctx.user_data[PENDING_IMAGE_ARTIFACTS_KEY] = [
+        ImageArtifact(path=str(image_path), mime_type="image/png").to_payload()
+        for image_path in image_paths
+    ]
 
     await ai_handlers.handle_ai_chat(ctx)
 
@@ -282,7 +353,13 @@ async def test_handle_ai_chat_consumes_pending_document_artifacts(
     assert f"文本工件：{text_path}" in user_message
     assert "用户要求：总结一下" in user_message
     assert add_message_calls == [user_message]
+    assert captured["inline_input_source_texts"] == [
+        user_message,
+        *[str(image_path) for image_path in image_paths],
+    ]
     assert PENDING_DOCUMENT_ARTIFACTS_KEY not in ctx.user_data
+    assert PENDING_IMAGE_ARTIFACTS_KEY not in ctx.user_data
+    assert not any(image_path.exists() for image_path in image_paths)
 
 
 def _read_text(path: str) -> str:

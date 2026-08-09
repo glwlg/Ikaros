@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Set
 
 from core.file_artifacts import normalize_file_rows
-from core.local_file_delivery import send_local_file, validate_local_delivery_target
+from core.local_file_delivery import validate_local_delivery_target
 from core.runtime_delivery import deliver_agent_message
 from core.tool_registry import tool_registry
 
@@ -263,7 +263,9 @@ class ToolCallDispatcher:
                 continue
             row["path"] = str(path_obj)
             rows.append(row)
-        return normalize_file_rows(rows), errors
+        # Every row has already passed the current platform's configured limit.
+        # Avoid applying normalize_file_rows' legacy global 49MB default again.
+        return normalize_file_rows(rows, max_size_bytes=None), errors
 
     def _is_ikaros_runtime(self) -> bool:
         uid = str(self.runtime_user_id or "").strip().lower()
@@ -666,7 +668,6 @@ class ToolCallDispatcher:
                 or "recoverable"
             )
             followup = tool_args.get("followup")
-            files = normalize_file_rows(tool_args.get("files"))
             ui = tool_args.get("ui") if isinstance(tool_args.get("ui"), dict) else {}
 
             if status not in {
@@ -701,8 +702,6 @@ class ToolCallDispatcher:
                 "summary": summary,
                 "completion_signal": signal,
             }
-            if files:
-                payload["files"] = files
             if ui:
                 payload["ui"] = ui
 
@@ -716,8 +715,6 @@ class ToolCallDispatcher:
                 "completion_signal": signal,
                 "ui": ui,
             }
-            if files:
-                result["files"] = files
             if status == "failed":
                 result["failure_mode"] = (
                     failure_mode if failure_mode in {"recoverable", "fatal"} else "recoverable"
@@ -803,38 +800,6 @@ class ToolCallDispatcher:
                 "history_visibility": "suppress_success" if ok else "",
                 "failure_mode": "recoverable" if not ok else "",
             }
-
-        if tool_name == "send_local_file":
-            if self._runtime_role() != "ikaros":
-                return {
-                    "ok": False,
-                    "error_code": "policy_blocked",
-                    "message": "Tool policy blocked: send_local_file",
-                    "failure_mode": "fatal",
-                    "terminal": True,
-                    "text": "❌ 当前执行上下文不允许直接向用户发送服务器文件。",
-                }
-            if not self._policy_allows(tool_name, kind="tool"):
-                return {
-                    "ok": False,
-                    "error_code": "policy_blocked",
-                    "message": f"Tool policy blocked: {tool_name}",
-                    "failure_mode": "fatal",
-                    "terminal": True,
-                    "text": "❌ 当前策略不允许直接向用户发送服务器文件。",
-                }
-            result = await send_local_file(
-                self.ctx,
-                path=str(tool_args.get("path") or ""),
-                caption=str(tool_args.get("caption") or ""),
-                filename=str(tool_args.get("filename") or ""),
-                kind=str(tool_args.get("kind") or "auto"),
-                task_workspace_root=self.task_workspace_root,
-            )
-            self.todo_mark_step(
-                "act", "in_progress", "Tool `send_local_file` finished."
-            )
-            return result
 
         if tool_name in {"spawn_subagent", "await_subagents"}:
             if self._runtime_role() != "ikaros":

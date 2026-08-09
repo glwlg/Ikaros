@@ -259,10 +259,7 @@ class ToolAccessStore:
         if name in {"read", "write", "edit", "load_skill"}:
             groups.add("group:fs")
             groups.add("group:primitives")
-        if name == "send_local_file":
-            groups.add("group:fs")
-            groups.add("group:delivery")
-        elif name == "send_message":
+        if name == "send_message":
             groups.add("group:delivery")
         if name in {"coding_backend", "coding-backend"}:
             groups.add("group:coding")

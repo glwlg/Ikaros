@@ -14,6 +14,7 @@ from api.core.database import get_async_session
 from api.schemas.admin_config import (
     ModelsConfigPatchRequest,
     ModelsLatencyCheckRequest,
+    ModelsProviderFetchRequest,
     RuntimeConfigPatchRequest,
     RuntimeDocGenerateRequest,
 )
@@ -26,6 +27,7 @@ from api.services.admin_config_service import (
     apply_runtime_settings_patch,
     build_models_snapshot,
     build_runtime_config_snapshot,
+    fetch_provider_models,
     generate_runtime_doc,
     run_models_latency_check,
     update_memory_provider,
@@ -109,7 +111,9 @@ def _redact_settings(payload: dict[str, Any]) -> dict[str, Any]:
     redacted: dict[str, Any] = {}
     for key, value in payload.items():
         normalized_key = str(key or "").strip().lower()
-        if any(token in normalized_key for token in ("key", "token", "secret", "password")):
+        if any(
+            token in normalized_key for token in ("key", "token", "secret", "password")
+        ):
             redacted[key] = bool(str(value or "").strip())
             continue
         if isinstance(value, dict):
@@ -173,10 +177,14 @@ async def patch_runtime_snapshot(
             next_username = str(payload.admin_user.username or "").strip()
             if next_username:
                 existing = await session.execute(
-                    select(User).where(User.username == next_username, User.id != admin_user.id)
+                    select(User).where(
+                        User.username == next_username, User.id != admin_user.id
+                    )
                 )
                 if existing.unique().scalar_one_or_none() is not None:
-                    raise HTTPException(status_code=400, detail="该用户名已被其他用户占用")
+                    raise HTTPException(
+                        status_code=400, detail="该用户名已被其他用户占用"
+                    )
         await apply_admin_profile_patch(
             admin_user,
             payload.admin_user,
@@ -292,6 +300,26 @@ async def models_latency_check(
             "summary": (
                 f"checked {result.get('model_key')} latency={result.get('elapsed_ms')}ms"
             ),
+            "ip": _client_ip(request),
+            "status": "success",
+        }
+    )
+    return result
+
+
+@router.post("/models/fetch-provider-models")
+async def models_fetch_provider_models(
+    payload: ModelsProviderFetchRequest,
+    request: Request,
+    admin_user: User = Depends(require_admin),
+):
+    result = await fetch_provider_models(payload)
+    await record_admin_audit(
+        {
+            "action": "models_fetch_provider_models",
+            "actor": _actor(admin_user),
+            "target": "models",
+            "summary": f"fetched {result.get('total')} models from {result.get('base_url')}",
             "ip": _client_ip(request),
             "status": "success",
         }

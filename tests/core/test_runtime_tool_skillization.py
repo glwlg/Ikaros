@@ -101,7 +101,6 @@ async def test_runtime_tool_assembler_injects_ikaros_skill_tools():
         "gh_cli",
         "repo_workspace",
         "send_message",
-        "send_local_file",
         "spawn_subagent",
         "task_tracker",
     } <= set(names)

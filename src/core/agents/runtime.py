@@ -22,6 +22,7 @@ class AgentsModelConfig:
     model: str
     provider: str = "openai"
     reasoning: bool = False
+    reasoning_effort: str = ""
     force_responses_model: bool = False
     tracing_disabled: bool = True
     timeout: float = 600.0
@@ -85,9 +86,7 @@ def looks_like_unexecuted_tool_call(text: str) -> bool:
     return any(pattern.search(payload) for pattern in _UNEXECUTED_TOOL_PATTERNS)
 
 
-_DSML_MARKER_RE = re.compile(
-    r"<\s*/?\s*[|｜]\s*/?\s*DSML\s*[|｜]\s*>", re.IGNORECASE
-)
+_DSML_MARKER_RE = re.compile(r"<\s*/?\s*[|｜]\s*/?\s*DSML\s*[|｜]\s*>", re.IGNORECASE)
 _DSML_ATTRIBUTE_RE = re.compile(
     r"(?P<key>[A-Za-z_][\w-]*)\s*=\s*(?:\"(?P<double>[^\"]*)\"|'(?P<single>[^']*)'|(?P<bare>[^\s>]+))",
     re.IGNORECASE,
@@ -227,7 +226,9 @@ def parse_legacy_dsml_tool_calls(
 
 def _split_dsml_header(part: str, keyword: str) -> tuple[str, str]:
     rendered = str(part or "").strip()
-    match = re.match(rf"{re.escape(keyword)}\b(?P<rest>.*)", rendered, re.IGNORECASE | re.DOTALL)
+    match = re.match(
+        rf"{re.escape(keyword)}\b(?P<rest>.*)", rendered, re.IGNORECASE | re.DOTALL
+    )
     if not match:
         return rendered, ""
     rest = str(match.group("rest") or "").strip()
@@ -241,10 +242,7 @@ def _parse_dsml_attributes(value: str) -> dict[str, str]:
     output: dict[str, str] = {}
     for match in _DSML_ATTRIBUTE_RE.finditer(str(value or "")):
         output[str(match.group("key") or "").strip().lower()] = str(
-            match.group("double")
-            or match.group("single")
-            or match.group("bare")
-            or ""
+            match.group("double") or match.group("single") or match.group("bare") or ""
         )
     return output
 
@@ -303,7 +301,9 @@ def looks_like_pending_action(user_text: str, assistant_text: str) -> bool:
         return False
     if not any(marker in request for marker in _ACTION_REQUEST_MARKERS):
         return False
-    return any(pattern.search(response) for pattern in _PENDING_ACTION_RESPONSE_PATTERNS)
+    return any(
+        pattern.search(response) for pattern in _PENDING_ACTION_RESPONSE_PATTERNS
+    )
 
 
 def sanitize_visible_assistant_text(text: str) -> str:
@@ -364,6 +364,7 @@ def resolve_agents_model_config(
         models_config.get_model(resolved_model_key) if models_config else None
     )
     reasoning_enabled = bool(getattr(model_metadata, "reasoning", False))
+    reasoning_effort = str(getattr(model_metadata, "reasoningEffort", "") or "").strip()
     resolved_provider = str(
         provider or os.getenv("OPENAI_PROVIDER") or ""
     ).strip().lower() or _infer_provider(base_url)
@@ -380,6 +381,7 @@ def resolve_agents_model_config(
         headers=headers,
         provider=resolved_provider,
         reasoning=reasoning_enabled,
+        reasoning_effort=reasoning_effort,
         force_responses_model=force_responses_model,
         tracing_disabled=tracing_disabled,
     )
@@ -438,9 +440,9 @@ class _ReasoningCompatibleClient:
 
     Some OpenAI-compatible gateways enter thinking mode for a tool turn but do
     not return the provider's hidden reasoning field.  The next request then
-    fails validation before the Agents SDK can produce a final answer.  When
-    that specific error occurs, retain the visible tool results as user context
-    and ask for a final response without another tool call.
+    fails validation before the Agents SDK can continue.  When that specific
+    error occurs, retain the visible tool results as user context while keeping
+    the current tools available so the agent can finish any remaining action.
     """
 
     def __init__(self, delegate: Any):
@@ -466,9 +468,7 @@ class _ReasoningCompatibleCompletions:
         except Exception as exc:
             if not _is_reasoning_replay_error(exc):
                 raise
-            fallback_messages = _flatten_tool_history_for_retry(
-                kwargs.get("messages")
-            )
+            fallback_messages = _flatten_tool_history_for_retry(kwargs.get("messages"))
             if fallback_messages is None:
                 raise
             logger.warning(
@@ -476,7 +476,6 @@ class _ReasoningCompatibleCompletions:
             )
             retry_kwargs = _strip_reasoning_retry_fields(kwargs)
             retry_kwargs["messages"] = fallback_messages
-            retry_kwargs["tool_choice"] = "none"
             response = await self._delegate.create(**retry_kwargs)
             if retry_kwargs.get("stream") and hasattr(response, "__aiter__"):
                 return _ReasoningCompatibleStream(self, response, retry_kwargs)
@@ -519,7 +518,6 @@ class _ReasoningCompatibleStream:
             return
         retry_kwargs = _strip_reasoning_retry_fields(self._kwargs)
         retry_kwargs["messages"] = fallback_messages
-        retry_kwargs["tool_choice"] = "none"
         retry_stream = await self._owner._delegate.create(**retry_kwargs)
         async for chunk in retry_stream:
             yield _normalize_reasoning_chunk(chunk)
@@ -533,8 +531,6 @@ def _is_reasoning_replay_error(exc: Exception) -> bool:
 def _strip_reasoning_retry_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
     retry_kwargs = dict(kwargs)
     for key in (
-        "tools",
-        "parallel_tool_calls",
         "response_format",
         "reasoning_effort",
     ):
@@ -634,8 +630,9 @@ def _flatten_tool_history_for_retry(messages: Any) -> list[dict[str, Any]] | Non
             {
                 "role": "user",
                 "content": (
-                    "系统提示：前面的工具已经执行完毕。以下是工具结果，请直接基于结果回复用户，"
-                    "不要再次调用工具。\n" + "\n".join(tool_results)
+                    "系统提示：前面的工具已经执行完毕。以下是工具结果。"
+                    "请继续完成用户要求；如仍需执行动作，请调用当前可用工具，"
+                    "只有全部动作真实完成后才能回复完成。\n" + "\n".join(tool_results)
                 ),
             }
         )

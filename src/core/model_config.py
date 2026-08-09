@@ -124,10 +124,13 @@ class ModelConfig:
     id: str
     name: str
     reasoning: bool = False
+    reasoningEffort: str = ""  # 思考程度，如 low/medium/high；空表示不设置
     input: list[str] = field(
         default_factory=lambda: ["text"]
     )  # 支持的输入类型: text, image
-    output: list[str] = field(default_factory=list)  # 支持的输出类型: text, image, voice, video
+    output: list[str] = field(
+        default_factory=list
+    )  # 支持的输出类型: text, image, voice, video
     cost: ModelCost = field(default_factory=ModelCost)
     limits: ModelLimits = field(default_factory=ModelLimits)
     contextWindow: int = 1000000
@@ -214,9 +217,7 @@ class ModelsConfig:
 
     def get_image_generation_model(self) -> str:
         """获取图片生成模型。"""
-        return self.model.get("image_generation", "") or self.model.get(
-            "image_gen", ""
-        )
+        return self.model.get("image_generation", "") or self.model.get("image_gen", "")
 
     def get_image_model(self) -> str:
         """兼容旧接口：返回视觉理解模型。"""
@@ -270,7 +271,9 @@ class ModelsConfig:
 
     def get_model_pool(self, pool_type: str = "primary") -> list[str]:
         """获取指定类型的模型池"""
-        return [model_key for model_key, _meta in self.get_model_pool_entries(pool_type)]
+        return [
+            model_key for model_key, _meta in self.get_model_pool_entries(pool_type)
+        ]
 
     def get_model_pool_meta(
         self,
@@ -423,7 +426,9 @@ class ModelManager:
             return max(0, int(model_config.limits.dailyImages or 0))
         return max(0, int(model_config.limits.dailyTokens or 0))
 
-    def _needs_usage_snapshot(self, pool_type: str, strategy: str, model_keys: list[str]) -> bool:
+    def _needs_usage_snapshot(
+        self, pool_type: str, strategy: str, model_keys: list[str]
+    ) -> bool:
         if strategy == "least_usage":
             return True
         for model_key in model_keys:
@@ -442,7 +447,9 @@ class ModelManager:
 
             return llm_usage_store.summarize_models(model_keys, day=None)
         except Exception:
-            logger.debug("Failed to load llm usage summary for model selection", exc_info=True)
+            logger.debug(
+                "Failed to load llm usage summary for model selection", exc_info=True
+            )
             return {}
 
     def _within_usage_limit(
@@ -472,7 +479,10 @@ class ModelManager:
         preferred = str(preferred_model or "").strip()
         if preferred in candidates:
             return preferred
-        if normalize_pool_type(pool_type) == "primary" and self._current_model in candidates:
+        if (
+            normalize_pool_type(pool_type) == "primary"
+            and self._current_model in candidates
+        ):
             return self._current_model
         configured = self.config.get_configured_model_for_pool(pool_type)
         if configured in candidates:
@@ -481,11 +491,17 @@ class ModelManager:
             return self.primary_model
         return ""
 
-    def _round_robin_order(self, *, candidates: list[str], base_order: list[str], pool_type: str) -> list[str]:
+    def _round_robin_order(
+        self, *, candidates: list[str], base_order: list[str], pool_type: str
+    ) -> list[str]:
         if not candidates or not base_order:
             return []
         candidate_set = set(candidates)
-        positions = [index for index, model_key in enumerate(base_order) if model_key in candidate_set]
+        positions = [
+            index
+            for index, model_key in enumerate(base_order)
+            if model_key in candidate_set
+        ]
         if not positions:
             return []
         pool_key = normalize_pool_type(pool_type)
@@ -523,7 +539,9 @@ class ModelManager:
     ) -> list[str]:
         preferred = str(preferred_model or "").strip()
         if preferred and preferred in ordered_models:
-            return [preferred] + [model for model in ordered_models if model != preferred]
+            return [preferred] + [
+                model for model in ordered_models if model != preferred
+            ]
         return ordered_models
 
     def _ordered_candidates(
@@ -544,7 +562,9 @@ class ModelManager:
         candidates: list[str] = []
         for model_key in base_order:
             model_config = self.config.get_model(model_key)
-            if model_config is None or not model_config.supports_input(required_input_type):
+            if model_config is None or not model_config.supports_input(
+                required_input_type
+            ):
                 continue
             if not include_failed and model_key in self._failed_models:
                 continue
@@ -564,14 +584,18 @@ class ModelManager:
                 pool_type=pool_type,
                 usage_snapshot=usage_snapshot,
             )
-            ordered_models = self._move_preferred_to_front(ordered_models, preferred_model)
+            ordered_models = self._move_preferred_to_front(
+                ordered_models, preferred_model
+            )
         elif strategy == "round_robin":
             ordered_models = self._round_robin_order(
                 candidates=candidates,
                 base_order=base_order,
                 pool_type=pool_type,
             )
-            ordered_models = self._move_preferred_to_front(ordered_models, preferred_model)
+            ordered_models = self._move_preferred_to_front(
+                ordered_models, preferred_model
+            )
         else:
             ordered_models = list(candidates)
             ordered_models = self._move_preferred_to_front(
@@ -672,6 +696,7 @@ def _config_mtime_ns(path: Path) -> Optional[int]:
 
 def _parse_models_config_data(data: dict[str, Any]) -> ModelsConfig:
     """将原始 JSON 数据解析为 ModelsConfig。"""
+
     def _non_negative_int(value: Any) -> int:
         try:
             return max(0, int(value or 0))
@@ -688,6 +713,7 @@ def _parse_models_config_data(data: dict[str, Any]) -> ModelsConfig:
                 id=model_data["id"],
                 name=model_data.get("name", model_data["id"]),
                 reasoning=model_data.get("reasoning", False),
+                reasoningEffort=str(model_data.get("reasoningEffort") or "").strip(),
                 input=model_data.get("input", ["text"]),
                 output=model_data.get("output", []),
                 cost=ModelCost(
@@ -740,7 +766,10 @@ def _ensure_models_loaded() -> Optional[ModelsConfig]:
 
     config_file = resolve_models_config_path()
     current_mtime_ns = _config_mtime_ns(config_file)
-    if config_file != _loaded_config_path or current_mtime_ns != _loaded_config_mtime_ns:
+    if (
+        config_file != _loaded_config_path
+        or current_mtime_ns != _loaded_config_mtime_ns
+    ):
         load_models_config(config_path=str(config_file), force_reload=True)
     return _models_config
 

@@ -12,6 +12,7 @@ from core.state_file import parse_state_payload
 from core.platform.models import Chat, UnifiedContext, UnifiedMessage, User
 from core.platform.models import MessageType
 from extension.channels.weixin.adapter import (
+    DEFAULT_INBOUND_MERGE_WINDOW_SEC,
     WEIXIN_TYPING_STATUS_CANCEL,
     WEIXIN_TYPING_STATUS_TYPING,
     WeixinAdapter,
@@ -773,3 +774,7 @@ async def test_inbound_merge_disabled_dispatches_immediately():
 
     assert dispatched == ["text", "image"]
     await adapter.stop()
+
+
+def test_inbound_merge_default_is_disabled():
+    assert DEFAULT_INBOUND_MERGE_WINDOW_SEC == 0.0

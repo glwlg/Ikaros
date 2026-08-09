@@ -61,6 +61,66 @@ def _load_download_module(module_name: str):
     return module
 
 
+def test_download_video_resolves_dispatch_platform_when_message_platform_is_empty(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.delenv("X_BOT_RUNTIME_PLATFORM", raising=False)
+    module = _load_download_module("download_video_dispatch_platform_test")
+    ctx = _FakeContext(tmp_path)
+    ctx.message.platform = ""
+
+    platform = module._resolve_delivery_platform(
+        ctx,
+        {"_ikaros_dispatch": {"notify_platform": "weixin"}},
+    )
+
+    assert platform == "weixin"
+
+
+@pytest.mark.asyncio
+async def test_download_video_cli_uses_runtime_platform(monkeypatch, tmp_path):
+    module = _load_download_module("download_video_cli_platform_test")
+    media_path = tmp_path / "clip.mp4"
+    media_path.write_bytes(b"fake video")
+    captured: dict[str, str] = {}
+
+    async def fake_download_video(
+        url,
+        user_id,
+        progress_message,
+        audio_only=False,
+        delivery_platform="",
+    ):
+        _ = (user_id, progress_message, audio_only)
+        captured["url"] = url
+        captured["delivery_platform"] = delivery_platform
+        return SimpleNamespace(
+            success=True,
+            error_message="",
+            file_path=str(media_path),
+            is_too_large=False,
+            file_size_mb=90.59,
+        )
+
+    monkeypatch.setenv("X_BOT_RUNTIME_PLATFORM", "weixin")
+    monkeypatch.setattr(module, "download_video", fake_download_video)
+    monkeypatch.setattr(module, "get_download_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["execute.py", "https://example.com/video"],
+    )
+
+    exit_code = await module._run_cli()
+
+    assert exit_code == 0
+    assert captured == {
+        "url": "https://example.com/video",
+        "delivery_platform": "weixin",
+    }
+
+
 @pytest.mark.asyncio
 async def test_download_video_returns_file_payload_without_direct_send(monkeypatch, tmp_path):
     module = _load_download_module("download_video_delivery_test")
@@ -122,7 +182,7 @@ async def test_downloaded_file_size_limit_depends_on_delivery_platform(
     service_module = sys.modules[module.download_video.__module__]
     media_path = tmp_path / "large-video.mp4"
     with media_path.open("wb") as file_obj:
-        file_obj.truncate(50 * 1024 * 1024)
+        file_obj.truncate(95 * 1024 * 1024)
 
     weixin_result = await service_module._handle_downloaded_file(
         str(media_path),

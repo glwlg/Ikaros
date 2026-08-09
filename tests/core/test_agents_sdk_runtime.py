@@ -119,14 +119,18 @@ def test_orchestrator_uses_agents_sdk_by_default(monkeypatch):
     monkeypatch.delenv("IKAROS_KERNEL", raising=False)
     orchestrator = AgentOrchestrator()
 
-    assert isinstance(orchestrator._select_assistant_runtime(), AgentsSdkAssistantRuntime)
+    assert isinstance(
+        orchestrator._select_assistant_runtime(), AgentsSdkAssistantRuntime
+    )
 
 
 def test_removed_native_kernel_alias_uses_agents_sdk(monkeypatch):
     monkeypatch.setenv("IKAROS_KERNEL", "native")
     orchestrator = AgentOrchestrator()
 
-    assert isinstance(orchestrator._select_assistant_runtime(), AgentsSdkAssistantRuntime)
+    assert isinstance(
+        orchestrator._select_assistant_runtime(), AgentsSdkAssistantRuntime
+    )
 
 
 class _FakeFunctionTool:
@@ -325,9 +329,13 @@ async def test_reasoning_gateway_retry_flattens_tool_history():
     )
 
     assert result == "final"
-    assert delegate.calls[1]["tool_choice"] == "none"
+    assert delegate.calls[1]["tool_choice"] == "auto"
     assert delegate.calls[1]["messages"][-1]["role"] == "user"
     assert "完成" in delegate.calls[1]["messages"][-1]["content"]
+    assert (
+        "如仍需执行动作，请调用当前可用工具"
+        in delegate.calls[1]["messages"][-1]["content"]
+    )
 
 
 @pytest.mark.asyncio
@@ -373,8 +381,8 @@ async def test_reasoning_gateway_retry_handles_stream_iteration_error():
     chunks = [chunk async for chunk in stream]
 
     assert chunks == ["final"]
-    assert delegate.calls[1]["tool_choice"] == "none"
-    assert "tools" not in delegate.calls[1]
+    assert delegate.calls[1]["tool_choice"] == "auto"
+    assert delegate.calls[1]["tools"] == [{"type": "function"}]
 
 
 class _FakeAgent:
@@ -496,6 +504,76 @@ async def test_assistant_runtime_only_streams_output_text_delta(monkeypatch):
     assert settings.kwargs["extra_body"]["thinking"] == {"type": "disabled"}
     assert events[-1][0] == "final_response"
     assert "secret" not in events[-1][1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_assistant_runtime_sends_configured_reasoning_effort(monkeypatch):
+    _FakeRunner.result = _FakeStreamingResult(events=[], final_output="ok")
+    runtime = AgentsSdkAssistantRuntime(
+        runner=_FakeRunner,
+        agent_cls=_FakeAgent,
+        model_settings_cls=_FakeModelSettings,
+        model_builder=lambda _config: "model",
+    )
+    monkeypatch.setattr(
+        "core.agents.assistant.resolve_agents_model_config",
+        lambda: AgentsModelConfig(
+            api_key="key",
+            base_url="http://proxy.example/v1",
+            model="gpt-5.6-terra",
+            provider="openai-compatible",
+            reasoning=True,
+            reasoning_effort="xhigh",
+        ),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in runtime.generate_response_stream(
+            [{"role": "user", "parts": [{"text": "hi"}]}]
+        )
+    ]
+
+    assert chunks == ["ok"]
+    settings = _FakeRunner.captured["agent"].kwargs["model_settings"]
+    assert settings.kwargs["extra_body"]["reasoning_effort"] == "xhigh"
+    assert "thinking" not in settings.kwargs["extra_body"]
+
+
+@pytest.mark.asyncio
+async def test_assistant_runtime_skips_reasoning_effort_when_reasoning_disabled(
+    monkeypatch,
+):
+    _FakeRunner.result = _FakeStreamingResult(events=[], final_output="ok")
+    runtime = AgentsSdkAssistantRuntime(
+        runner=_FakeRunner,
+        agent_cls=_FakeAgent,
+        model_settings_cls=_FakeModelSettings,
+        model_builder=lambda _config: "model",
+    )
+    monkeypatch.setattr(
+        "core.agents.assistant.resolve_agents_model_config",
+        lambda: AgentsModelConfig(
+            api_key="key",
+            base_url="http://proxy.example/v1",
+            model="deepseek-v4-flash",
+            provider="openai-compatible",
+            reasoning=False,
+            reasoning_effort="low",
+        ),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in runtime.generate_response_stream(
+            [{"role": "user", "parts": [{"text": "hi"}]}]
+        )
+    ]
+
+    assert chunks == ["ok"]
+    settings = _FakeRunner.captured["agent"].kwargs["model_settings"]
+    assert "reasoning_effort" not in settings.kwargs["extra_body"]
+    assert settings.kwargs["extra_body"]["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.asyncio

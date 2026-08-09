@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import axios from 'axios'
 import { computed, onMounted, ref } from 'vue'
 import {
     Bot,
@@ -14,20 +15,48 @@ import {
     RefreshCw,
     Search,
     KeyRound,
-    SlidersHorizontal,
     Terminal,
     Wrench,
 } from 'lucide-vue-next'
 
-import { getSkills, setSkillEnabled, type SkillInfo } from '@/api/skills'
+import ViewToastStack from '@/components/ViewToastStack.vue'
+import { useViewToasts } from '@/composables/useViewToasts'
+import {
+    createSkill,
+    deleteSkill,
+    getSkillDetail,
+    getSkills,
+    importSkill,
+    setSkillEnabled,
+    type SkillDetail,
+    type SkillInfo,
+} from '@/api/skills'
 
 const skills = ref<SkillInfo[]>([])
 const loading = ref(false)
 const toggling = ref<string | null>(null)
+const searchText = ref('')
+const filterCategory = ref('')
+const filterStatus = ref('')
+const filterTrigger = ref('')
 
-const skillRows = computed(() =>
-    [...skills.value].sort((a, b) => a.name.localeCompare(b.name))
-)
+const { toasts: viewToasts, push: pushViewToast, dismiss: dismissViewToast } = useViewToasts()
+
+const parseErrorMessage = (error: unknown, fallback: string) => {
+    if (axios.isAxiosError(error)) {
+        const detail = error.response?.data?.detail
+        if (Array.isArray(detail) && detail.length > 0) {
+            return String(detail[0]?.msg || fallback)
+        }
+        if (typeof detail === 'string' && detail.trim()) {
+            return detail
+        }
+    }
+    if (error instanceof Error && error.message.trim()) {
+        return error.message
+    }
+    return fallback
+}
 
 const categoryFor = (skill: SkillInfo) => {
     if (skill.name.includes('credential')) return '安全与凭证'
@@ -52,11 +81,48 @@ const iconFor = (skill: SkillInfo) => {
     return Wrench
 }
 
+const categoryOptions = computed(() =>
+    [...new Set(skills.value.map(skill => categoryFor(skill)))].sort()
+)
+
+const triggerOptions = computed(() =>
+    [...new Set(skills.value.flatMap(skill => skill.triggers))].sort()
+)
+
+const skillRows = computed(() => {
+    const keyword = searchText.value.trim().toLowerCase()
+    return [...skills.value]
+        .filter(skill => {
+            if (filterCategory.value && categoryFor(skill) !== filterCategory.value) {
+                return false
+            }
+            if (filterStatus.value === 'enabled' && !skill.enabled) {
+                return false
+            }
+            if (filterStatus.value === 'disabled' && skill.enabled) {
+                return false
+            }
+            if (filterTrigger.value && !skill.triggers.includes(filterTrigger.value)) {
+                return false
+            }
+            if (keyword) {
+                const haystack = `${skill.name} ${skill.description} ${skill.triggers.join(' ')}`.toLowerCase()
+                if (!haystack.includes(keyword)) {
+                    return false
+                }
+            }
+            return true
+        })
+        .sort((a, b) => a.name.localeCompare(b.name))
+})
+
 const load = async () => {
     loading.value = true
     try {
         const response = await getSkills()
         skills.value = response.data.skills || []
+    } catch (error) {
+        pushViewToast('error', parseErrorMessage(error, '技能列表加载失败'))
     } finally {
         loading.value = false
     }
@@ -67,8 +133,128 @@ const toggleSkill = async (skill: SkillInfo) => {
     try {
         const response = await setSkillEnabled(skill.name, !skill.enabled)
         skill.enabled = response.data.enabled
+    } catch (error) {
+        pushViewToast('error', parseErrorMessage(error, `${skill.name} 状态切换失败`))
     } finally {
         toggling.value = null
+    }
+}
+
+const showCreateDialog = ref(false)
+const creating = ref(false)
+const createForm = ref({ name: '', description: '', triggersText: '', content: '' })
+
+const openCreateDialog = () => {
+    createForm.value = { name: '', description: '', triggersText: '', content: '' }
+    showCreateDialog.value = true
+}
+
+const submitCreate = async () => {
+    const name = createForm.value.name.trim()
+    if (!name) {
+        pushViewToast('warning', '请填写技能名称')
+        return
+    }
+    creating.value = true
+    try {
+        await createSkill({
+            name,
+            description: createForm.value.description.trim(),
+            triggers: createForm.value.triggersText
+                .split(/[,，]/)
+                .map(item => item.trim())
+                .filter(Boolean),
+            content: createForm.value.content,
+        })
+        showCreateDialog.value = false
+        pushViewToast('success', `技能 ${name} 已创建`)
+        await load()
+    } catch (error) {
+        pushViewToast('error', parseErrorMessage(error, '创建技能失败'))
+    } finally {
+        creating.value = false
+    }
+}
+
+const importInput = ref<HTMLInputElement | null>(null)
+const importing = ref(false)
+
+const triggerImport = () => {
+    importInput.value?.click()
+}
+
+const onImportFile = async (event: Event) => {
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) {
+        return
+    }
+    importing.value = true
+    try {
+        const response = await importSkill(file)
+        pushViewToast('success', `技能 ${response.data.name} 已导入`)
+        await load()
+    } catch (error) {
+        pushViewToast('error', parseErrorMessage(error, '导入技能失败'))
+    } finally {
+        importing.value = false
+    }
+}
+
+const rowMenu = ref<{ name: string; top: number; left: number } | null>(null)
+const confirmDeleteFor = ref('')
+const deleting = ref<string | null>(null)
+const showDetailDialog = ref(false)
+const detailSkill = ref<SkillDetail | null>(null)
+
+const rowMenuSkill = computed(() =>
+    skills.value.find(skill => skill.name === rowMenu.value?.name) || null
+)
+
+const toggleRowMenu = (skill: SkillInfo, event: MouseEvent) => {
+    confirmDeleteFor.value = ''
+    if (rowMenu.value?.name === skill.name) {
+        rowMenu.value = null
+        return
+    }
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+    rowMenu.value = {
+        name: skill.name,
+        top: Math.min(rect.bottom + 6, window.innerHeight - 120),
+        left: Math.max(12, rect.right - 150),
+    }
+}
+
+const openSkillDetail = async (skill: SkillInfo) => {
+    rowMenu.value = null
+    detailSkill.value = null
+    showDetailDialog.value = true
+    try {
+        const response = await getSkillDetail(skill.name)
+        detailSkill.value = response.data
+    } catch (error) {
+        showDetailDialog.value = false
+        pushViewToast('error', parseErrorMessage(error, '技能详情加载失败'))
+    }
+}
+
+const requestDeleteSkill = async (skill: SkillInfo) => {
+    if (confirmDeleteFor.value !== skill.name) {
+        confirmDeleteFor.value = skill.name
+        return
+    }
+    deleting.value = skill.name
+    try {
+        await deleteSkill(skill.name)
+        pushViewToast('success', `技能 ${skill.name} 已删除`)
+        rowMenu.value = null
+        confirmDeleteFor.value = ''
+        await load()
+    } catch (error) {
+        pushViewToast('error', parseErrorMessage(error, '删除技能失败'))
+    } finally {
+        deleting.value = null
     }
 }
 
@@ -83,36 +269,45 @@ onMounted(load)
         <p>管理系统中的技能模块，启用或禁用特定技能，配置能力与权限。</p>
       </div>
       <div class="hero-actions">
-        <button type="button" class="primary-action">
+        <button type="button" class="primary-action" @click="openCreateDialog">
           <Plus class="h-4 w-4" />
           新增技能
         </button>
-        <button type="button" class="secondary-action">
-          <Import class="h-4 w-4" />
-          导入技能
+        <button type="button" class="secondary-action" :disabled="importing" @click="triggerImport">
+          <Loader2 v-if="importing" class="h-4 w-4 animate-spin" />
+          <Import v-else class="h-4 w-4" />
+          {{ importing ? '导入中' : '导入技能' }}
         </button>
+        <input ref="importInput" type="file" accept=".md,.zip" hidden @change="onImportFile">
       </div>
     </section>
 
     <section class="filter-panel">
-      <button type="button" class="filter-select">
+      <label class="filter-select">
         <span>分类</span>
-        全部分类
-        <SlidersHorizontal class="h-4 w-4" />
-      </button>
-      <button type="button" class="filter-select">
+        <select v-model="filterCategory">
+          <option value="">全部分类</option>
+          <option v-for="option in categoryOptions" :key="option" :value="option">{{ option }}</option>
+        </select>
+      </label>
+      <label class="filter-select">
         <span>状态</span>
-        全部状态
-        <SlidersHorizontal class="h-4 w-4" />
-      </button>
-      <button type="button" class="filter-select">
+        <select v-model="filterStatus">
+          <option value="">全部状态</option>
+          <option value="enabled">已启用</option>
+          <option value="disabled">已禁用</option>
+        </select>
+      </label>
+      <label class="filter-select">
         <span>能力类型</span>
-        全部类型
-        <SlidersHorizontal class="h-4 w-4" />
-      </button>
+        <select v-model="filterTrigger">
+          <option value="">全部类型</option>
+          <option v-for="option in triggerOptions" :key="option" :value="option">{{ option }}</option>
+        </select>
+      </label>
       <label class="skills-search">
         <Search class="h-4 w-4" />
-        <input type="search" placeholder="搜索技能名称、描述或标签...">
+        <input v-model="searchText" type="search" placeholder="搜索技能名称、描述或标签...">
       </label>
       <button type="button" class="refresh-btn" @click="load">
         <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loading }" />
@@ -177,7 +372,7 @@ onMounted(load)
                 </button>
               </td>
               <td>
-                <button type="button" class="row-menu">
+                <button type="button" class="row-menu" @click="toggleRowMenu(skill, $event)">
                   <MoreHorizontal class="h-4 w-4" />
                 </button>
               </td>
@@ -190,6 +385,77 @@ onMounted(load)
         </div>
       </div>
     </section>
+
+    <ViewToastStack :toasts="viewToasts" @dismiss="dismissViewToast" />
+
+    <template v-if="rowMenu && rowMenuSkill">
+      <div class="menu-overlay" @click="rowMenu = null" />
+      <div class="row-action-menu" :style="{ top: `${rowMenu.top}px`, left: `${rowMenu.left}px` }">
+        <button type="button" @click="openSkillDetail(rowMenuSkill)">查看详情</button>
+        <button
+          v-if="rowMenuSkill.source === 'learned'"
+          type="button"
+          class="danger"
+          :disabled="deleting === rowMenuSkill.name"
+          @click="requestDeleteSkill(rowMenuSkill)"
+        >
+          {{ confirmDeleteFor === rowMenuSkill.name ? '确认删除？' : '删除' }}
+        </button>
+      </div>
+    </template>
+
+    <div v-if="showCreateDialog" class="dialog-backdrop" @click.self="showCreateDialog = false">
+      <div class="dialog-card">
+        <h3>新增技能</h3>
+        <label>
+          名称
+          <input v-model="createForm.name" type="text" placeholder="如 daily_brief（字母、数字、._-）">
+        </label>
+        <label>
+          描述
+          <input v-model="createForm.description" type="text" placeholder="这个技能做什么">
+        </label>
+        <label>
+          触发词（逗号分隔，可选）
+          <input v-model="createForm.triggersText" type="text" placeholder="如 每日简报, brief">
+        </label>
+        <label>
+          内容（Markdown，可选）
+          <textarea v-model="createForm.content" rows="8" placeholder="# 使用说明"></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" class="secondary-action" :disabled="creating" @click="showCreateDialog = false">取消</button>
+          <button type="button" class="primary-action" :disabled="creating" @click="submitCreate">
+            <Loader2 v-if="creating" class="h-4 w-4 animate-spin" />
+            {{ creating ? '创建中' : '创建' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showDetailDialog" class="dialog-backdrop" @click.self="showDetailDialog = false">
+      <div class="dialog-card detail-card">
+        <template v-if="detailSkill">
+          <h3>{{ detailSkill.name }}</h3>
+          <p class="detail-desc">{{ detailSkill.description || '暂无描述' }}</p>
+          <div v-if="detailSkill.triggers.length" class="tag-list">
+            <span v-for="trigger in detailSkill.triggers" :key="trigger">{{ trigger }}</span>
+          </div>
+          <div v-if="detailSkill.scripts.length" class="detail-scripts">
+            <strong>脚本</strong>
+            <code v-for="script in detailSkill.scripts" :key="script">scripts/{{ script }}</code>
+          </div>
+          <pre class="skill-md-preview">{{ detailSkill.content }}</pre>
+        </template>
+        <div v-else class="loading-row">
+          <Loader2 class="h-4 w-4 animate-spin" />
+          正在加载技能详情
+        </div>
+        <div class="dialog-actions">
+          <button type="button" class="secondary-action" @click="showDetailDialog = false">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -283,15 +549,28 @@ onMounted(load)
 
 .filter-select {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 16px;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   padding: 0 14px;
   text-align: left;
+  cursor: pointer;
 }
 
 .filter-select span {
   color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.filter-select select {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-body);
+  font-size: 14px;
+  cursor: pointer;
 }
 
 .skills-search {
@@ -314,6 +593,139 @@ onMounted(load)
 .row-menu {
   width: 42px;
   color: var(--text-body);
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.dialog-card {
+  display: grid;
+  gap: 14px;
+  width: min(560px, 100%);
+  max-height: 85vh;
+  overflow-y: auto;
+  border-radius: 14px;
+  background: #fff;
+  padding: 24px;
+}
+
+.dialog-card h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 18px;
+}
+
+.dialog-card label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-body);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.dialog-card input,
+.dialog-card textarea {
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--text-body);
+  font-size: 14px;
+  font-family: inherit;
+  font-weight: 400;
+}
+
+.dialog-card textarea {
+  resize: vertical;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.row-action-menu {
+  position: fixed;
+  z-index: 41;
+  display: grid;
+  min-width: 150px;
+  padding: 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 18px 40px rgb(15 23 42 / 12%);
+}
+
+.row-action-menu button {
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 9px 12px;
+  color: var(--text-body);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row-action-menu button:hover {
+  background: #f1f5f9;
+}
+
+.row-action-menu button.danger {
+  color: #ef4444;
+}
+
+.detail-card {
+  width: min(680px, 100%);
+}
+
+.detail-desc {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.detail-scripts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.detail-scripts code {
+  border-radius: 6px;
+  background: #f1f5f9;
+  padding: 3px 8px;
+}
+
+.skill-md-preview {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .skills-table-panel {

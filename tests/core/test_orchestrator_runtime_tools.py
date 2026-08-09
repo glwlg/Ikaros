@@ -134,50 +134,6 @@ async def test_ikaros_allows_bash_for_coding_requests_without_legacy_pipeline(
 
 
 @pytest.mark.asyncio
-async def test_ikaros_can_send_local_file_via_dispatcher(tmp_path, monkeypatch):
-    monkeypatch.setenv("LOCAL_FILE_DELIVERY_ALLOWED_ROOTS", str(tmp_path))
-    target = (tmp_path / "README.md").resolve()
-    target.write_text("# demo\n", encoding="utf-8")
-
-    async def append_event(_event: str):
-        return None
-
-    ctx = _FakeDeliveryCtx(platform="telegram")
-    dispatcher = ToolCallDispatcher(
-        runtime_user_id="u-send-1",
-        platform_name="telegram",
-        task_id="task-send-1",
-        task_inbox_id="",
-        task_workspace_root=str(tmp_path),
-        ctx=ctx,
-        runtime=object(),
-        tool_broker=object(),
-        runtime_tool_allowed=lambda **_kwargs: True,
-        todo_mark_step=lambda *_args, **_kwargs: None,
-        append_session_event=append_event,
-    )
-    dispatcher.set_available_tool_names({"send_local_file"})
-
-    result = await dispatcher.execute(
-        name="send_local_file",
-        args={"path": "README.md", "caption": "请查收"},
-        execution_policy=None,
-        started=time.perf_counter(),
-    )
-
-    assert result["ok"] is True
-    assert result["terminal"] is False
-    assert ctx.documents == []
-    assert ctx.photos == []
-    assert ctx.videos == []
-    assert ctx.audios == []
-    assert result["files"] == result["payload"]["files"]
-    assert result["files"][0]["path"] == str(target)
-    assert result["files"][0]["filename"] == "README.md"
-    assert result["files"][0]["caption"] == "请查收"
-
-
-@pytest.mark.asyncio
 async def test_ikaros_can_send_intermediate_message_and_file_immediately(tmp_path):
     target = (tmp_path / "image.jpg").resolve()
     target.write_bytes(b"fake-image")
@@ -221,12 +177,51 @@ async def test_ikaros_can_send_intermediate_message_and_file_immediately(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_complete_task_dispatcher_emits_structured_terminal_payload(tmp_path):
+async def test_send_message_uses_weixin_size_limit_for_large_video(
+    monkeypatch, tmp_path
+):
+    monkeypatch.delenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB", raising=False)
+    monkeypatch.delenv("LOCAL_FILE_DELIVERY_MAX_FILE_MB_WEIXIN", raising=False)
+    target = (tmp_path / "large-video.mp4").resolve()
+    with target.open("wb") as file_obj:
+        file_obj.truncate(95 * 1024 * 1024)
+
     async def append_event(_event: str):
         return None
 
-    demo_file = (tmp_path / "demo.txt").resolve()
-    demo_file.write_text("done\n", encoding="utf-8")
+    ctx = _FakeDeliveryCtx(platform="weixin")
+    dispatcher = ToolCallDispatcher(
+        runtime_user_id="u-send-large-1",
+        platform_name="weixin",
+        task_id="task-send-large-1",
+        task_inbox_id="",
+        task_workspace_root=str(tmp_path),
+        ctx=ctx,
+        runtime=object(),
+        tool_broker=object(),
+        runtime_tool_allowed=lambda **_kwargs: True,
+        todo_mark_step=lambda *_args, **_kwargs: None,
+        append_session_event=append_event,
+    )
+    dispatcher.set_available_tool_names({"send_message"})
+
+    result = await dispatcher.execute(
+        name="send_message",
+        args={"files": [{"path": str(target), "kind": "video"}]},
+        execution_policy=None,
+        started=time.perf_counter(),
+    )
+
+    assert result["ok"] is True
+    assert len(ctx.videos) == 1
+    assert ctx.videos[0]["video"] == str(target)
+    assert result["data"]["delivered_files"][0]["path"] == str(target)
+
+
+@pytest.mark.asyncio
+async def test_complete_task_dispatcher_emits_structured_terminal_payload():
+    async def append_event(_event: str):
+        return None
 
     dispatcher = ToolCallDispatcher(
         runtime_user_id="u-complete-1",
@@ -249,7 +244,6 @@ async def test_complete_task_dispatcher_emits_structured_terminal_payload(tmp_pa
             "status": "done",
             "text": "任务已完成。",
             "summary": "done summary",
-            "files": [{"path": str(demo_file), "filename": "demo.txt"}],
             "followup": {"ignored": True},
         },
         execution_policy=None,
@@ -261,8 +255,9 @@ async def test_complete_task_dispatcher_emits_structured_terminal_payload(tmp_pa
     assert result["task_outcome"] == "done"
     assert result["completion_signal"]["explicit"] is True
     assert result["completion_signal"]["status"] == "done"
-    assert result["payload"]["files"][0]["filename"] == "demo.txt"
     assert result["payload"]["text"] == "任务已完成。"
+    assert "files" not in result
+    assert "files" not in result["payload"]
 
 
 @pytest.mark.asyncio
