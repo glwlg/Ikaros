@@ -4,15 +4,18 @@ import io
 import re
 import shutil
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from api.auth.models import User
-from api.auth.router import require_operator
+from api.auth.router import require_admin, require_operator
+from api.services.admin_audit import record_admin_audit
+from core.config import DATA_DIR
 from core.runtime_config_store import runtime_config_store
 
 router = APIRouter()
@@ -43,6 +46,19 @@ class SkillInfo(BaseModel):
     ikaros_only: bool
 
 
+def _client_ip(request: Request) -> str:
+    forwarded = str(request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client is None:
+        return ""
+    return str(request.client.host or "").strip()
+
+
+def _actor(user: User) -> str:
+    return f"{user.id}:{user.email}"
+
+
 def _get_skill_registry() -> Any:
     from extension.skills.registry import skill_registry
 
@@ -51,6 +67,24 @@ def _get_skill_registry() -> Any:
 
 def _learned_skills_dir(registry: Any) -> Path:
     return Path(str(registry.skills_dir)) / "learned"
+
+
+def _skill_backup_dir() -> Path:
+    return (Path(DATA_DIR) / "kernel" / "skill-backups").resolve()
+
+
+def _backup_skill_dir(skill_dir: Path, name: str) -> Path | None:
+    if not skill_dir.is_dir():
+        return None
+    backup_dir = _skill_backup_dir()
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive = shutil.make_archive(
+        str(backup_dir / f"{name}-{timestamp}"),
+        "zip",
+        root_dir=skill_dir,
+    )
+    return Path(archive)
 
 
 def _normalize_skill_name(value: Any) -> str:
@@ -198,7 +232,8 @@ async def list_skills(
 async def patch_skill_enabled(
     skill_name: str,
     payload: SkillEnabledPatch,
-    _: User = Depends(require_operator),
+    request: Request,
+    admin_user: User = Depends(require_admin),
 ) -> dict[str, Any]:
     skill_registry = _get_skill_registry()
     skill_registry.refresh_if_changed()
@@ -213,8 +248,19 @@ async def patch_skill_enabled(
     runtime_config_store.set_skill_enabled(
         skill_name,
         payload.enabled,
-        actor="admin",
+        actor=_actor(admin_user),
         reason="admin_toggle_skill",
+    )
+
+    await record_admin_audit(
+        {
+            "action": "toggle_skill",
+            "actor": _actor(admin_user),
+            "target": f"skill:{skill_name}",
+            "summary": f"{'enabled' if payload.enabled else 'disabled'} {skill_name}",
+            "ip": _client_ip(request),
+            "status": "success",
+        }
     )
 
     disabled_skills = runtime_config_store.get_disabled_skills()
@@ -227,7 +273,8 @@ async def patch_skill_enabled(
 @router.post("")
 async def create_skill(
     payload: SkillCreateRequest,
-    _: User = Depends(require_operator),
+    request: Request,
+    admin_user: User = Depends(require_admin),
 ) -> dict[str, Any]:
     registry = _get_skill_registry()
     name = _normalize_skill_name(payload.name)
@@ -249,13 +296,24 @@ async def create_skill(
     skill_dir = _learned_skills_dir(registry) / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(rendered, encoding="utf-8")
+    await record_admin_audit(
+        {
+            "action": "create_skill",
+            "actor": _actor(admin_user),
+            "target": f"skill:{name}",
+            "summary": f"created learned skill {name}",
+            "ip": _client_ip(request),
+            "status": "success",
+        }
+    )
     return _skill_response(registry, name)
 
 
 @router.post("/import")
 async def import_skill(
+    request: Request,
     file: UploadFile = File(...),
-    _: User = Depends(require_operator),
+    admin_user: User = Depends(require_admin),
 ) -> dict[str, Any]:
     registry = _get_skill_registry()
     filename = str(file.filename or "").strip()
@@ -292,6 +350,16 @@ async def import_skill(
             target = skill_dir / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
+        await record_admin_audit(
+            {
+                "action": "import_skill",
+                "actor": _actor(admin_user),
+                "target": f"skill:{name}",
+                "summary": f"imported learned skill {name} from {filename or 'upload'}",
+                "ip": _client_ip(request),
+                "status": "success",
+            }
+        )
         return _skill_response(registry, name)
     except Exception:
         shutil.rmtree(skill_dir, ignore_errors=True)
@@ -330,7 +398,8 @@ async def get_skill_detail(
 @router.delete("/{skill_name}")
 async def delete_skill(
     skill_name: str,
-    _: User = Depends(require_operator),
+    request: Request,
+    admin_user: User = Depends(require_admin),
 ) -> dict[str, Any]:
     registry = _get_skill_registry()
     registry.refresh_if_changed()
@@ -340,12 +409,28 @@ async def delete_skill(
     if info.get("source") != "learned":
         raise HTTPException(status_code=400, detail="只有已学习技能可以删除")
 
+    backup_path = _backup_skill_dir(Path(str(info["skill_dir"])), info["name"])
     shutil.rmtree(str(info["skill_dir"]), ignore_errors=True)
     runtime_config_store.set_skill_enabled(
         info["name"],
         True,
-        actor="admin",
+        actor=_actor(admin_user),
         reason="admin_delete_skill",
     )
     registry.refresh_if_changed()
-    return {"name": info["name"], "deleted": True}
+    await record_admin_audit(
+        {
+            "action": "delete_skill",
+            "actor": _actor(admin_user),
+            "target": f"skill:{skill_name}",
+            "summary": f"deleted learned skill {skill_name}"
+            + (f", backup: {backup_path}" if backup_path else ""),
+            "ip": _client_ip(request),
+            "status": "success",
+        }
+    )
+    return {
+        "name": info["name"],
+        "deleted": True,
+        "backup": str(backup_path) if backup_path else "",
+    }

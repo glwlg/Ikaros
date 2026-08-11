@@ -33,7 +33,7 @@ export const getSkillDetail = (name: string) =>
     request.get<SkillDetail>(`/skills/${encodeURIComponent(name)}/detail`)
 
 export const deleteSkill = (name: string) =>
-    request.delete<{ name: string; deleted: boolean }>(`/skills/${encodeURIComponent(name)}`)
+    request.delete<{ name: string; deleted: boolean; backup?: string }>(`/skills/${encodeURIComponent(name)}`)
 
 export interface SkillCreatePayload {
     name: string

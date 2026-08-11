@@ -246,8 +246,13 @@ const requestDeleteSkill = async (skill: SkillInfo) => {
     }
     deleting.value = skill.name
     try {
-        await deleteSkill(skill.name)
-        pushViewToast('success', `技能 ${skill.name} 已删除`)
+        const { data } = await deleteSkill(skill.name)
+        pushViewToast(
+            'success',
+            data.backup
+                ? `技能 ${skill.name} 已删除，备份已保存：${data.backup}`
+                : `技能 ${skill.name} 已删除`
+        )
         rowMenu.value = null
         confirmDeleteFor.value = ''
         await load()

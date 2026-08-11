@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -33,4 +33,9 @@ export default defineConfig({
 
   // 生产环境使用相对路径
   base: '/',
+
+  test: {
+    // vitest 只管 src 内的单元测试；tests/ 目录是 node:test 用例，用 npm run test:node 跑
+    include: ['src/**/*.test.ts'],
+  },
 })

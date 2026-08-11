@@ -14,6 +14,36 @@ import {
     type ModelsQuickRoleSnapshot,
     type ModelsSnapshot,
 } from '@/api/models'
+import {
+    buildFetchSummary,
+    buildModelKey,
+    buildModelOptions,
+    buildModelsConfigPayload,
+    createEmptyModel as createEmptyModelForUid,
+    createEmptyProvider as createEmptyProviderForUid,
+    createUidGenerator,
+    hydrateModelsConfig,
+    inputTypeOptions,
+    mergeProviderFetchedModels,
+    normalizeRoleSelections as normalizeRoleSelectionsPure,
+    outputTypeOptions,
+    providerHeadersPayload,
+    resolveRoleEffort,
+    roleCapabilityText,
+    roleCompatibilityStatus,
+    roleLabels,
+    roleOrder,
+    selectionStrategyLabels,
+    selectionStrategyOptions,
+    serializeProviderConfig,
+    type InputType,
+    type ModelConfigForm,
+    type ModelForm,
+    type ModelOption,
+    type OutputType,
+    type ProviderForm,
+    type RoleKey,
+} from '@/utils/modelConfig'
 
 const snapshot = ref<ModelsSnapshot | null>(null)
 const modelConfigForm = ref<ModelConfigForm | null>(null)
@@ -25,102 +55,10 @@ const modelsConfigError = ref('')
 const activeModelTab = ref<'defaults' | 'providers' | 'roles' | 'matrix'>('defaults')
 const selectedProviderUid = ref('')
 const testingActions = ref<Record<string, boolean>>({})
+const providerSearchText = ref('')
 const openRouteMenuRole = ref<RoleKey | ''>('')
 const expandedModelUid = ref('')
 const providerConnectionStatus = ref<Record<string, ProviderConnectionStatus>>({})
-
-const roleOrder = ['primary', 'routing', 'vision', 'image_generation', 'voice'] as const
-const quickRoleOrder = ['primary', 'routing'] as const
-const inputTypeOptions = ['text', 'image', 'voice'] as const
-const outputTypeOptions = ['text', 'image', 'voice', 'video'] as const
-const selectionStrategyOptions = ['priority', 'round_robin', 'least_usage'] as const
-
-type RoleKey = (typeof roleOrder)[number]
-type QuickRoleKey = (typeof quickRoleOrder)[number]
-type InputType = (typeof inputTypeOptions)[number]
-type OutputType = (typeof outputTypeOptions)[number]
-type SelectionStrategy = (typeof selectionStrategyOptions)[number]
-type NumericValue = number | ''
-
-interface CostForm {
-    input: NumericValue
-    output: NumericValue
-    cacheRead: NumericValue
-    cacheWrite: NumericValue
-    extras: Record<string, unknown>
-}
-
-interface LimitsForm {
-    dailyTokens: NumericValue
-    dailyImages: NumericValue
-    extras: Record<string, unknown>
-}
-
-interface ModelForm {
-    uid: string
-    id: string
-    name: string
-    reasoning: boolean
-    reasoningEffort: string
-    reasoningEffortOptions: string[]
-    input: InputType[]
-    output: OutputType[]
-    cost: CostForm
-    limits: LimitsForm
-    contextWindow: NumericValue
-    maxTokens: NumericValue
-    extras: Record<string, unknown>
-}
-
-interface HeaderForm {
-    uid: string
-    name: string
-    value: string
-}
-
-interface ProviderForm {
-    uid: string
-    name: string
-    baseUrl: string
-    apiKey: string
-    headers: HeaderForm[]
-    api: string
-    models: ModelForm[]
-    extras: Record<string, unknown>
-}
-
-interface RoleConfigForm {
-    bindingUid: string
-    bindingKey: string
-    poolKey: string
-    poolUids: string[]
-    poolMetaByUid: Record<string, Record<string, unknown>>
-    selectionStrategy: SelectionStrategy
-    selectionExtras: Record<string, unknown>
-}
-
-interface ModelConfigForm {
-    mode: string
-    topLevelExtras: Record<string, unknown>
-    modelExtras: Record<string, unknown>
-    poolExtras: Record<string, unknown>
-    selectionExtras: Record<string, unknown>
-    providers: ProviderForm[]
-    roles: Record<RoleKey, RoleConfigForm>
-}
-
-interface ModelOption {
-    uid: string
-    key: string
-    providerName: string
-    modelId: string
-    name: string
-    input: InputType[]
-    output: OutputType[]
-    reasoning: boolean
-    reasoningEffort: string
-    reasoningEffortOptions: string[]
-}
 
 interface QuickRoleForm {
     providerName: string
@@ -141,43 +79,9 @@ interface ProviderConnectionStatus {
     elapsedMs?: number
 }
 
-const roleLabels: Record<RoleKey, string> = {
-    primary: 'Primary',
-    routing: 'Routing',
-    vision: 'Vision',
-    image_generation: 'Image Generation',
-    voice: 'Voice',
-}
+const quickRoleOrder = ['primary', 'routing'] as const
+type QuickRoleKey = (typeof quickRoleOrder)[number]
 
-const primaryRoleStorageKey = (role: RoleKey) => role
-const roleRequiredInputs: Record<RoleKey, InputType[]> = {
-    primary: ['text'],
-    routing: ['text'],
-    vision: ['image'],
-    image_generation: [],
-    voice: ['voice'],
-}
-const roleRequiredOutputs: Record<RoleKey, OutputType[]> = {
-    primary: [],
-    routing: [],
-    vision: [],
-    image_generation: ['image'],
-    voice: [],
-}
-const roleCapabilityText: Record<RoleKey, string> = {
-    primary: '至少支持 text 输入',
-    routing: '至少支持 text 输入',
-    vision: '至少支持 image 输入',
-    image_generation: '至少支持 image 输出',
-    voice: '至少支持 voice 输入',
-}
-const selectionStrategyLabels: Record<SelectionStrategy, string> = {
-    priority: '优先级顺序',
-    round_robin: '轮询均衡',
-    least_usage: '按今日最低用量',
-}
-
-let uidCounter = 0
 const createDefaultQuickRole = (role: QuickRoleKey): QuickRoleForm => ({
     providerName: '',
     baseUrl: '',
@@ -225,7 +129,10 @@ watch(routingLatencyError, value => {
     }
 })
 
-const nextUid = (prefix: string) => `${prefix}-${uidCounter++}`
+let nextUid = createUidGenerator()
+
+const createEmptyModel = () => createEmptyModelForUid(nextUid)
+const createEmptyProvider = () => createEmptyProviderForUid(nextUid)
 
 const parseErrorMessage = (error: unknown, fallback: string) => {
     if (axios.isAxiosError(error)) {
@@ -243,170 +150,9 @@ const parseErrorMessage = (error: unknown, fallback: string) => {
     return fallback
 }
 
-const asObject = (value: unknown): Record<string, unknown> | null => {
-    if (!value || Array.isArray(value) || typeof value !== 'object') {
-        return null
-    }
-    return { ...(value as Record<string, unknown>) }
-}
-
-const omitKeys = (source: Record<string, unknown>, keys: string[]) =>
-    Object.fromEntries(Object.entries(source).filter(([key]) => !keys.includes(key)))
-
-const normalizeInputTypes = (value: unknown): InputType[] => {
-    const normalized: InputType[] = []
-    if (!Array.isArray(value)) {
-        return normalized
-    }
-    for (const item of value) {
-        const token = String(item || '').trim().toLowerCase() as InputType
-        if (inputTypeOptions.includes(token) && !normalized.includes(token)) {
-            normalized.push(token)
-        }
-    }
-    return normalized
-}
-
-const normalizeOutputTypes = (value: unknown): OutputType[] => {
-    const normalized: OutputType[] = []
-    if (!Array.isArray(value)) {
-        return normalized
-    }
-    for (const item of value) {
-        const token = String(item || '').trim().toLowerCase() as OutputType
-        if (outputTypeOptions.includes(token) && !normalized.includes(token)) {
-            normalized.push(token)
-        }
-    }
-    return normalized
-}
-
-const normalizeEffortOptions = (value: unknown): string[] => {
-    if (!Array.isArray(value)) {
-        return []
-    }
-    const normalized: string[] = []
-    for (const item of value) {
-        const token = String(item || '').trim()
-        if (token && !normalized.includes(token)) {
-            normalized.push(token)
-        }
-    }
-    return normalized
-}
-
-const normalizeSelectionStrategy = (value: unknown): SelectionStrategy => {
-    const normalized = String(value || '').trim().toLowerCase() as SelectionStrategy
-    if (selectionStrategyOptions.includes(normalized)) {
-        return normalized
-    }
-    return 'priority'
-}
-
-const coerceNumber = (value: unknown, fallback: number, minimum = 0) => {
-    const parsed = Number(value)
-    if (!Number.isFinite(parsed)) {
-        return fallback
-    }
-    return Math.max(minimum, parsed)
-}
-
-const coerceInteger = (value: unknown, fallback: number, minimum = 1) =>
-    Math.max(minimum, Math.round(coerceNumber(value, fallback, minimum)))
-
-const buildModelKey = (providerName: string, modelId: string) =>
-    `${providerName.trim()}/${modelId.trim()}`
-
-const createEmptyModel = (): ModelForm => ({
-    uid: nextUid('model'),
-    id: '',
-    name: '',
-    reasoning: false,
-    reasoningEffort: '',
-    reasoningEffortOptions: [],
-    input: ['text'],
-    output: ['text'],
-    cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        extras: {},
-    },
-    limits: {
-        dailyTokens: 0,
-        dailyImages: 0,
-        extras: {},
-    },
-    contextWindow: 1000000,
-    maxTokens: 65536,
-    extras: {},
-})
-
-const createEmptyProvider = (): ProviderForm => ({
-    uid: nextUid('provider'),
-    name: '',
-    baseUrl: '',
-    apiKey: '',
-    headers: [],
-    api: 'openai-completions',
-    models: [],
-    extras: {},
-})
-
-const providerHeadersPayload = (provider: ProviderForm) => {
-    const headers: Record<string, string> = {}
-    const seenNames = new Set<string>()
-    for (const header of provider.headers) {
-        const name = header.name.trim()
-        const value = header.value
-        if (!name && !value) {
-            continue
-        }
-        if (!name) {
-            throw new Error(`${provider.name || 'Provider'} 存在空的 Header 名称`)
-        }
-        if (name.includes('\n') || name.includes('\r') || value.includes('\n') || value.includes('\r')) {
-            throw new Error(`${provider.name || 'Provider'} 的 Header 不能包含换行符`)
-        }
-        const normalizedName = name.toLowerCase()
-        if (seenNames.has(normalizedName)) {
-            throw new Error(`${provider.name || 'Provider'} 的 Header 名称重复：${name}`)
-        }
-        seenNames.add(normalizedName)
-        headers[name] = value.trim()
-    }
-    return headers
-}
-
 const availableModelOptions = computed<ModelOption[]>(() => {
     const form = modelConfigForm.value
-    if (!form) {
-        return []
-    }
-    return form.providers.flatMap(provider =>
-        provider.models
-            .map(model => {
-                const providerName = provider.name.trim()
-                const modelId = model.id.trim()
-                if (!providerName || !modelId) {
-                    return null
-                }
-                return {
-                    uid: model.uid,
-                    key: buildModelKey(providerName, modelId),
-                    providerName,
-                    modelId,
-                    name: model.name.trim() || modelId,
-                    input: [...model.input],
-                    output: [...model.output],
-                    reasoning: Boolean(model.reasoning),
-                    reasoningEffort: model.reasoningEffort.trim(),
-                    reasoningEffortOptions: [...model.reasoningEffortOptions],
-                }
-            })
-            .filter((item): item is ModelOption => Boolean(item))
-    )
+    return form ? buildModelOptions(form) : []
 })
 
 const availableModelMap = computed<Record<string, ModelOption>>(() =>
@@ -461,14 +207,7 @@ const roleCards = computed(() =>
         const roleConfig = modelConfigForm.value?.roles[role]
         const selectedOption = roleConfig ? availableModelMap.value[roleConfig.bindingUid] : null
         const poolOptions = rolePoolOptions(role)
-        const pulledEffortOptions = selectedOption?.reasoningEffortOptions || []
-        const effortOptions = pulledEffortOptions.length
-            ? [...pulledEffortOptions]
-            : ['low', 'medium', 'high', 'xhigh', 'max']
-        const currentEffort = selectedOption?.reasoningEffort || ''
-        if (currentEffort && !effortOptions.includes(currentEffort)) {
-            effortOptions.unshift(currentEffort)
-        }
+        const effort = resolveRoleEffort(selectedOption)
         return {
             role,
             label: roleLabels[role],
@@ -478,9 +217,9 @@ const roleCards = computed(() =>
             candidateOptions: roleCandidateOptions(role),
             capabilityText: roleCapabilityText[role],
             selectionStrategy: roleConfig?.selectionStrategy || 'priority',
-            effortEnabled: Boolean(selectedOption),
-            effortValue: currentEffort,
-            effortOptions,
+            effortEnabled: effort.enabled,
+            effortValue: effort.value,
+            effortOptions: effort.options,
         }
     })
 )
@@ -498,13 +237,28 @@ const modelOverviewStats = computed(() => {
 })
 
 const providerQuickList = computed(() =>
-    (modelConfigForm.value?.providers || []).map(provider => ({
-        uid: provider.uid,
-        name: provider.name || '未命名 provider',
-        models: provider.models.map(model => model.id || model.name).filter(Boolean).slice(0, 2),
-        count: provider.models.length,
-        healthy: Boolean(provider.name && provider.baseUrl),
-    }))
+    (modelConfigForm.value?.providers || [])
+        .filter(providerMatchesSearch)
+        .map(provider => ({
+            uid: provider.uid,
+            name: provider.name || '未命名 provider',
+            models: provider.models.map(model => model.id || model.name).filter(Boolean).slice(0, 2),
+            count: provider.models.length,
+            healthy: Boolean(provider.name && provider.baseUrl),
+        }))
+)
+
+const providerMatchesSearch = (provider: ProviderForm) => {
+    const keyword = providerSearchText.value.trim().toLowerCase()
+    if (!keyword) {
+        return true
+    }
+    const haystack = `${provider.name} ${provider.models.map(model => `${model.id} ${model.name}`).join(' ')}`.toLowerCase()
+    return haystack.includes(keyword)
+}
+
+const filteredProviders = computed(() =>
+    (modelConfigForm.value?.providers || []).filter(providerMatchesSearch)
 )
 
 const selectedProvider = computed(() => {
@@ -543,28 +297,6 @@ const nowTimeLabel = () =>
         hour: '2-digit',
         minute: '2-digit',
     })
-
-const roleCompatibilityStatus = (role: RoleKey, option: ModelOption | null | undefined) => {
-    if (!option) {
-        return 'ineligible' as const
-    }
-    const requiredInputs = roleRequiredInputs[role]
-    const requiredOutputs = roleRequiredOutputs[role]
-    for (const inputType of requiredInputs) {
-        if (!option.input.includes(inputType)) {
-            return 'ineligible' as const
-        }
-    }
-    for (const outputType of requiredOutputs) {
-        if (!option.output.length) {
-            return 'legacy' as const
-        }
-        if (!option.output.includes(outputType)) {
-            return 'ineligible' as const
-        }
-    }
-    return 'eligible' as const
-}
 
 const roleCandidateOptions = (role: RoleKey) =>
     availableModelOptions.value.filter(option => roleCompatibilityStatus(role, option) === 'eligible')
@@ -660,47 +392,6 @@ const copyTextToClipboard = async (text: string, label: string) => {
     errorText.value = ''
     successText.value = `${label}已复制`
     return true
-}
-
-const serializeProviderConfig = (provider: ProviderForm) => {
-    const providerName = provider.name.trim() || 'provider'
-    return JSON.stringify(
-        {
-            [providerName]: {
-                ...provider.extras,
-                baseUrl: provider.baseUrl.trim(),
-                apiKey: provider.apiKey,
-                headers: providerHeadersPayload(provider),
-                api: provider.api.trim() || 'openai-completions',
-                models: provider.models.map(model => ({
-                    ...model.extras,
-                    id: model.id.trim(),
-                    name: model.name.trim() || model.id.trim(),
-                    reasoning: Boolean(model.reasoning),
-                    ...(model.reasoningEffort.trim() ? { reasoningEffort: model.reasoningEffort.trim() } : {}),
-                    ...(model.reasoningEffortOptions.length ? { reasoningEfforts: [...model.reasoningEffortOptions] } : {}),
-                    input: [...model.input],
-                    output: [...model.output],
-                    cost: {
-                        ...model.cost.extras,
-                        input: coerceNumber(model.cost.input, 0, 0),
-                        output: coerceNumber(model.cost.output, 0, 0),
-                        cacheRead: coerceNumber(model.cost.cacheRead, 0, 0),
-                        cacheWrite: coerceNumber(model.cost.cacheWrite, 0, 0),
-                    },
-                    limits: {
-                        ...model.limits.extras,
-                        dailyTokens: coerceInteger(model.limits.dailyTokens, 0, 0),
-                        dailyImages: coerceInteger(model.limits.dailyImages, 0, 0),
-                    },
-                    contextWindow: coerceInteger(model.contextWindow, 1000000, 1),
-                    maxTokens: coerceInteger(model.maxTokens, 65536, 1),
-                })),
-            },
-        },
-        null,
-        2
-    )
 }
 
 const setProviderConnectionStatus = (providerUid: string, status: ProviderConnectionStatus) => {
@@ -976,161 +667,12 @@ const normalizeRoleSelections = () => {
     if (!form) {
         return
     }
-    for (const role of roleOrder) {
-        const roleConfig = form.roles[role]
-        const compatibleUids = new Set(
-            availableModelOptions.value
-                .filter(option => roleCompatibilityStatus(role, option) !== 'ineligible')
-                .map(option => option.uid)
-        )
-        const filteredPoolUids = roleConfig.poolUids.filter(uid => compatibleUids.has(uid))
-        if (filteredPoolUids.length !== roleConfig.poolUids.length) {
-            roleConfig.poolUids = filteredPoolUids
-        }
-        for (const uid of Object.keys(roleConfig.poolMetaByUid)) {
-            if (!compatibleUids.has(uid)) {
-                delete roleConfig.poolMetaByUid[uid]
-            }
-        }
-        if (roleConfig.bindingUid && !compatibleUids.has(roleConfig.bindingUid)) {
-            roleConfig.bindingUid = ''
-        }
-        if (roleConfig.bindingUid && !roleConfig.poolUids.includes(roleConfig.bindingUid)) {
-            roleConfig.poolUids = [...roleConfig.poolUids, roleConfig.bindingUid]
-            roleConfig.poolMetaByUid[roleConfig.bindingUid] = roleConfig.poolMetaByUid[roleConfig.bindingUid] || {}
-        }
-    }
+    normalizeRoleSelectionsPure(form, availableModelOptions.value)
 }
 
 const hydrateModelsConfigForm = (payload: Record<string, unknown>) => {
-    uidCounter = 0
-    const rawProviders = asObject(payload.providers) || {}
-    const providers: ProviderForm[] = []
-    const modelUidByKey: Record<string, string> = {}
-
-    for (const [providerName, rawProviderValue] of Object.entries(rawProviders)) {
-        const rawProvider = asObject(rawProviderValue)
-        if (!rawProvider) {
-            continue
-        }
-        const provider: ProviderForm = {
-            uid: nextUid('provider'),
-            name: providerName,
-            baseUrl: String(rawProvider.baseUrl || '').trim(),
-            apiKey: String(rawProvider.apiKey || ''),
-            headers: Object.entries(asObject(rawProvider.headers) || {}).map(([name, value]) => ({
-                uid: nextUid('header'),
-                name,
-                value: String(value ?? ''),
-            })),
-            api: String(rawProvider.api || '').trim() || 'openai-completions',
-            models: [],
-            extras: omitKeys(rawProvider, ['baseUrl', 'apiKey', 'headers', 'api', 'models']),
-        }
-
-        const rawModels = Array.isArray(rawProvider.models) ? rawProvider.models : []
-        for (const item of rawModels) {
-            const rawModel = asObject(item)
-            if (!rawModel) {
-                continue
-            }
-            const cost = asObject(rawModel.cost) || {}
-            const limits = asObject(rawModel.limits) || {}
-            const model: ModelForm = {
-                uid: nextUid('model'),
-                id: String(rawModel.id || '').trim(),
-                name: String(rawModel.name || rawModel.id || '').trim(),
-                reasoning: Boolean(rawModel.reasoning),
-                reasoningEffort: String(rawModel.reasoningEffort || '').trim(),
-                reasoningEffortOptions: normalizeEffortOptions(rawModel.reasoningEfforts),
-                input: normalizeInputTypes(rawModel.input),
-                output: normalizeOutputTypes(rawModel.output),
-                cost: {
-                    input: coerceNumber(cost.input, 0, 0),
-                    output: coerceNumber(cost.output, 0, 0),
-                    cacheRead: coerceNumber(cost.cacheRead, 0, 0),
-                    cacheWrite: coerceNumber(cost.cacheWrite, 0, 0),
-                    extras: omitKeys(cost, ['input', 'output', 'cacheRead', 'cacheWrite']),
-                },
-                limits: {
-                    dailyTokens: coerceInteger(limits.dailyTokens, 0, 0),
-                    dailyImages: coerceInteger(limits.dailyImages, 0, 0),
-                    extras: omitKeys(limits, ['dailyTokens', 'dailyImages']),
-                },
-                contextWindow: coerceInteger(rawModel.contextWindow, 1000000, 1),
-                maxTokens: coerceInteger(rawModel.maxTokens, 65536, 1),
-                extras: omitKeys(rawModel, ['id', 'name', 'reasoning', 'reasoningEffort', 'reasoningEfforts', 'input', 'output', 'cost', 'limits', 'contextWindow', 'maxTokens']),
-            }
-            provider.models.push(model)
-            if (provider.name && model.id) {
-                modelUidByKey[buildModelKey(provider.name, model.id)] = model.uid
-            }
-        }
-
-        providers.push(provider)
-    }
-
-    const rawModelBindings = asObject(payload.model) || {}
-    const rawPools = asObject(payload.models) || {}
-    const rawSelection = asObject(payload.selection) || {}
-    const roles = {} as Record<RoleKey, RoleConfigForm>
-
-    for (const role of roleOrder) {
-        const bindingKey = primaryRoleStorageKey(role)
-        const selectedModelKey = String(rawModelBindings[bindingKey] || '').trim()
-        const poolKey = primaryRoleStorageKey(role)
-        const rawPool = rawPools[poolKey]
-        const rawSelectionValue = rawSelection[role]
-        const selectionPayload =
-            typeof rawSelectionValue === 'string'
-                ? { strategy: rawSelectionValue }
-                : asObject(rawSelectionValue) || {}
-        const poolUids: string[] = []
-        const poolMetaByUid: Record<string, Record<string, unknown>> = {}
-
-        if (Array.isArray(rawPool)) {
-            for (const item of rawPool) {
-                const modelKey = String(item || '').trim()
-                const uid = modelUidByKey[modelKey]
-                if (uid && !poolUids.includes(uid)) {
-                    poolUids.push(uid)
-                }
-            }
-        } else {
-            const poolObject = asObject(rawPool)
-            if (poolObject) {
-                for (const [modelKey, rawMeta] of Object.entries(poolObject)) {
-                    const uid = modelUidByKey[String(modelKey || '').trim()]
-                    if (!uid || poolUids.includes(uid)) {
-                        continue
-                    }
-                    poolUids.push(uid)
-                    poolMetaByUid[uid] = asObject(rawMeta) || {}
-                }
-            }
-        }
-
-        roles[role] = {
-            bindingUid: modelUidByKey[selectedModelKey] || '',
-            bindingKey,
-            poolKey,
-            poolUids,
-            poolMetaByUid,
-            selectionStrategy: normalizeSelectionStrategy(selectionPayload.strategy),
-            selectionExtras: omitKeys(selectionPayload, ['strategy']),
-        }
-    }
-
-    modelConfigForm.value = {
-        mode: String(payload.mode || '').trim() || 'merge',
-        topLevelExtras: omitKeys(payload, ['mode', 'model', 'models', 'providers', 'selection']),
-        modelExtras: {},
-        poolExtras: {},
-        selectionExtras: {},
-        providers,
-        roles,
-    }
-    normalizeRoleSelections()
+    nextUid = createUidGenerator()
+    modelConfigForm.value = hydrateModelsConfig(payload, nextUid)
     modelsConfigError.value = ''
 }
 
@@ -1214,83 +756,8 @@ const fetchProviderModels = async (provider: ProviderForm) => {
             return
         }
 
-        const existingById = new Map(
-            provider.models
-                .map(model => [model.id.trim(), model] as const)
-                .filter(([modelId]) => Boolean(modelId))
-        )
-        let added = 0
-        let inputApplied = 0
-        let reasoningApplied = 0
-        let effortApplied = 0
-        let contextApplied = 0
-        let manualKept = 0
-        for (const item of fetched) {
-            let target = existingById.get(item.id)
-            if (!target) {
-                target = createEmptyModel()
-                target.id = item.id
-                target.name = item.name || item.id
-                provider.models.push(target)
-                existingById.set(item.id, target)
-                added += 1
-            }
-            let applied = false
-            const fetchedInputs = normalizeInputTypes(item.input)
-            if (fetchedInputs.length) {
-                target.input = fetchedInputs
-                inputApplied += 1
-                applied = true
-            }
-            if (typeof item.reasoning === 'boolean') {
-                target.reasoning = item.reasoning
-                reasoningApplied += 1
-                applied = true
-            }
-            if (item.reasoningEffort && item.reasoningEffort.trim()) {
-                target.reasoningEffort = item.reasoningEffort.trim()
-                effortApplied += 1
-                applied = true
-            }
-            if (item.reasoningEfforts.length) {
-                target.reasoningEffortOptions = [...item.reasoningEfforts]
-            }
-            if (typeof item.contextWindow === 'number' && item.contextWindow > 0) {
-                target.contextWindow = item.contextWindow
-                contextApplied += 1
-                applied = true
-            }
-            if (typeof item.maxTokens === 'number' && item.maxTokens > 0) {
-                target.maxTokens = item.maxTokens
-                contextApplied += 1
-                applied = true
-            }
-            if (!applied) {
-                manualKept += 1
-            }
-        }
-
-        const appliedBits: string[] = []
-        if (inputApplied) {
-            appliedBits.push(`输入能力 ${inputApplied}`)
-        }
-        if (reasoningApplied) {
-            appliedBits.push(`Reasoning ${reasoningApplied}`)
-        }
-        if (effortApplied) {
-            appliedBits.push(`思考程度 ${effortApplied}`)
-        }
-        if (contextApplied) {
-            appliedBits.push(`上下文/输出上限 ${contextApplied}`)
-        }
-        const summary = [`拉取 ${fetched.length} 个模型：新增 ${added} 个`]
-        if (appliedBits.length) {
-            summary.push(`应用 Provider 参数：${appliedBits.join('、')}`)
-        }
-        if (manualKept) {
-            summary.push(`${manualKept} 个未返回可应用参数，保持手动配置`)
-        }
-        successText.value = `${provider.name || 'Provider'} ${summary.join('，')}。保存后生效`
+        const stats = mergeProviderFetchedModels(provider, fetched, nextUid)
+        successText.value = `${provider.name || 'Provider'} ${buildFetchSummary(stats)}。保存后生效`
     } catch (error) {
         errorText.value = parseErrorMessage(error, `${provider.name || 'Provider'} 拉取模型失败`)
     } finally {
@@ -1465,125 +932,12 @@ const buildModelsConfigSubmission = () => {
 
     modelsConfigError.value = ''
     applyQuickRolesToModelConfigForm()
-    const providersPayload: Record<string, unknown> = {}
-    const modelKeyByUid: Record<string, string> = {}
-    const seenProviderNames = new Set<string>()
-
-    for (const provider of form.providers) {
-        const providerName = provider.name.trim()
-        if (!providerName) {
-            modelsConfigError.value = 'Provider 名称不能为空'
-            return null
-        }
-        if (seenProviderNames.has(providerName)) {
-            modelsConfigError.value = `Provider 名称重复：${providerName}`
-            return null
-        }
-        seenProviderNames.add(providerName)
-
-        const seenModelIds = new Set<string>()
-        const modelsPayload = []
-        for (const model of provider.models) {
-            const modelId = model.id.trim()
-            if (!modelId) {
-                modelsConfigError.value = `${providerName} 下存在空的模型 ID`
-                return null
-            }
-            if (seenModelIds.has(modelId)) {
-                modelsConfigError.value = `${providerName} 下模型 ID 重复：${modelId}`
-                return null
-            }
-            seenModelIds.add(modelId)
-            modelKeyByUid[model.uid] = buildModelKey(providerName, modelId)
-            modelsPayload.push({
-                ...model.extras,
-                id: modelId,
-                name: model.name.trim() || modelId,
-                reasoning: Boolean(model.reasoning),
-                ...(model.reasoningEffort.trim() ? { reasoningEffort: model.reasoningEffort.trim() } : {}),
-                ...(model.reasoningEffortOptions.length ? { reasoningEfforts: [...model.reasoningEffortOptions] } : {}),
-                input: [...model.input],
-                output: [...model.output],
-                cost: {
-                    ...model.cost.extras,
-                    input: coerceNumber(model.cost.input, 0, 0),
-                    output: coerceNumber(model.cost.output, 0, 0),
-                    cacheRead: coerceNumber(model.cost.cacheRead, 0, 0),
-                    cacheWrite: coerceNumber(model.cost.cacheWrite, 0, 0),
-                },
-                limits: {
-                    ...model.limits.extras,
-                    dailyTokens: coerceInteger(model.limits.dailyTokens, 0, 0),
-                    dailyImages: coerceInteger(model.limits.dailyImages, 0, 0),
-                },
-                contextWindow: coerceInteger(model.contextWindow, 1000000, 1),
-                maxTokens: coerceInteger(model.maxTokens, 65536, 1),
-            })
-        }
-
-        let headers: Record<string, string>
-        try {
-            headers = providerHeadersPayload(provider)
-        } catch (error) {
-            modelsConfigError.value = error instanceof Error ? error.message : 'Header 配置无效'
-            return null
-        }
-
-        providersPayload[providerName] = {
-            ...provider.extras,
-            baseUrl: provider.baseUrl.trim(),
-            apiKey: provider.apiKey,
-            headers,
-            api: provider.api.trim() || 'openai-completions',
-            models: modelsPayload,
-        }
+    const result = buildModelsConfigPayload(form)
+    if (!result.ok) {
+        modelsConfigError.value = result.error
+        return null
     }
-
-    const modelPayload: Record<string, unknown> = {}
-    const poolsPayload: Record<string, unknown> = {}
-    const selectionPayload: Record<string, unknown> = {}
-
-    for (const role of roleOrder) {
-        const roleConfig = form.roles[role]
-        const bindingKey = primaryRoleStorageKey(role)
-        const poolKey = primaryRoleStorageKey(role)
-        const selectedModelKey = roleConfig.bindingUid ? modelKeyByUid[roleConfig.bindingUid] : ''
-
-        if (roleConfig.bindingUid && !selectedModelKey) {
-            modelsConfigError.value = `${roleLabels[role]} 绑定了一个未完整配置的模型`
-            return null
-        }
-        if (selectedModelKey) {
-            modelPayload[bindingKey] = selectedModelKey
-        }
-
-        const poolPayload: Record<string, Record<string, unknown>> = {}
-        for (const modelUid of roleConfig.poolUids) {
-            const modelKey = modelKeyByUid[modelUid]
-            if (!modelKey || poolPayload[modelKey]) {
-                continue
-            }
-            poolPayload[modelKey] = { ...(roleConfig.poolMetaByUid[modelUid] || {}) }
-        }
-        if (Object.keys(poolPayload).length > 0) {
-            poolsPayload[poolKey] = poolPayload
-        }
-
-        selectionPayload[role] = {
-            strategy: normalizeSelectionStrategy(roleConfig.selectionStrategy),
-        }
-    }
-
-    return {
-        modelsConfig: {
-            ...form.topLevelExtras,
-            mode: form.mode.trim() || 'merge',
-            model: modelPayload,
-            models: poolsPayload,
-            selection: selectionPayload,
-            providers: providersPayload,
-        },
-    }
+    return { modelsConfig: result.modelsConfig }
 }
 
 const save = async () => {
@@ -1795,7 +1149,7 @@ onMounted(load)
             </div>
             <label class="provider-search">
               <span>⌕</span>
-              <input type="search" placeholder="搜索 Provider 或模型...">
+              <input v-model="providerSearchText" type="search" placeholder="搜索 Provider 或模型...">
             </label>
             <div class="provider-list">
               <button v-for="provider in providerQuickList" :key="provider.uid" type="button" class="provider-item" @click="selectProvider(provider.uid)">
@@ -1822,11 +1176,11 @@ onMounted(load)
             </div>
             <label class="provider-search">
               <span>⌕</span>
-              <input type="search" placeholder="搜索提供商...">
+              <input v-model="providerSearchText" type="search" placeholder="搜索提供商...">
             </label>
             <div class="provider-card-list">
               <button
-                v-for="provider in modelConfigForm.providers"
+                v-for="provider in filteredProviders"
                 :key="provider.uid"
                 type="button"
                 class="provider-card"
@@ -1867,7 +1221,6 @@ onMounted(load)
               <h3>基本信息</h3>
               <div class="provider-form-grid">
                 <label><span>提供商名称</span><input v-model="selectedProvider.name" type="text" placeholder="proxy"></label>
-                <label><span>显示名称</span><input v-model="selectedProvider.name" type="text" placeholder="代理服务（内网）"></label>
                 <label><span>API 形式</span><input v-model="selectedProvider.api" type="text" placeholder="openai-completions"></label>
                 <div class="provider-status-box" :class="providerConnectionClass(selectedProvider)">
                   <span>状态</span>
@@ -1882,8 +1235,6 @@ onMounted(load)
               <div class="provider-form-grid interface-grid">
                 <label><span>Base URL</span><input v-model="selectedProvider.baseUrl" type="text" placeholder="https://api.example.com/v1"></label>
                 <label><span>API Key</span><input v-model="selectedProvider.apiKey" type="password" placeholder="sk-..."></label>
-                <label><span>超时（秒）</span><input type="number" value="30"></label>
-                <label><span>最大重试</span><input type="number" value="3"></label>
               </div>
               <div class="custom-headers-block">
                 <div class="custom-headers-head">
