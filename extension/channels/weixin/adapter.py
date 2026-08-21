@@ -126,6 +126,7 @@ class WeixinAdapter(BotAdapter):
         self._typing_ticket_cache: Dict[str, Tuple[str, float]] = {}
         self._typing_cancel_tasks: Dict[str, asyncio.Task] = {}
         self._binding_tasks: Dict[str, asyncio.Task] = {}
+        self._inbound_message_tasks: set[asyncio.Task] = set()
         self._inbound_merge_buffers: Dict[str, List[UnifiedContext]] = {}
         self._inbound_merge_tasks: Dict[str, asyncio.Task] = {}
         self._inbound_merge_window_sec = self._resolve_inbound_merge_window_sec()
@@ -1474,6 +1475,36 @@ class WeixinAdapter(BotAdapter):
             self._poll_task = task
         return task
 
+    async def _process_incoming_message(
+        self,
+        raw_message: dict[str, Any],
+        *,
+        account_id: str,
+    ) -> None:
+        try:
+            await self._handle_incoming_message(raw_message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error(
+                "Weixin inbound message handling failed. account_id=%s",
+                self._safe_text(account_id) or "-",
+                exc_info=True,
+            )
+
+    def _schedule_incoming_message(
+        self,
+        raw_message: dict[str, Any],
+        *,
+        account_id: str,
+    ) -> None:
+        task = asyncio.create_task(
+            self._process_incoming_message(raw_message, account_id=account_id),
+            name=f"weixin-inbound-{self._safe_text(account_id) or 'unknown'}-{token_hex(4)}",
+        )
+        self._inbound_message_tasks.add(task)
+        task.add_done_callback(self._inbound_message_tasks.discard)
+
     @staticmethod
     def _chunk_text(text: str, limit: int) -> list[str]:
         rendered = str(text or "").strip()
@@ -2069,15 +2100,13 @@ class WeixinAdapter(BotAdapter):
                 for raw_message in payload.get("msgs") or []:
                     if not isinstance(raw_message, dict):
                         continue
-                    try:
-                        raw_message.setdefault("bot_account_id", self._safe_text(account_id))
-                        await self._handle_incoming_message(raw_message)
-                    except Exception:
-                        logger.error(
-                            "Weixin inbound message handling failed. account_id=%s",
-                            self._safe_text(account_id) or "-",
-                            exc_info=True,
-                        )
+                    raw_message.setdefault(
+                        "bot_account_id", self._safe_text(account_id)
+                    )
+                    self._schedule_incoming_message(
+                        raw_message,
+                        account_id=account_id,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -2117,6 +2146,13 @@ class WeixinAdapter(BotAdapter):
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._poll_task = None
+        inbound_message_tasks = list(self._inbound_message_tasks)
+        self._inbound_message_tasks.clear()
+        for task in inbound_message_tasks:
+            task.cancel()
+        for task in inbound_message_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         binding_tasks = list(self._binding_tasks.values())
         self._binding_tasks.clear()
         for task in binding_tasks:

@@ -4,7 +4,7 @@ from threading import Lock
 from typing import Any, Dict, List, Tuple
 
 from core.channel_access import feature_for_tool_name, is_channel_feature_enabled
-from core.config import DATA_DIR
+from core.config import DATA_DIR, is_user_admin
 
 
 MEMORY_TOOL_NAMES: set[str] = set()
@@ -79,6 +79,7 @@ class ToolAccessStore:
                     "deny": [],
                 }
             },
+            "user_overrides": {},
         }
 
     def _normalize_entries(self, items: List[str] | None) -> List[str]:
@@ -103,6 +104,39 @@ class ToolAccessStore:
         allow = self._normalize_entries(tools.get("allow"))
         deny = self._normalize_entries(tools.get("deny"))
         return {"tools": {"allow": allow, "deny": deny}}
+
+    @staticmethod
+    def _override_key_from_raw(value: Any) -> str:
+        token = str(value or "").strip()
+        if not token or ":" not in token:
+            return ""
+        platform_part, _, uid_part = token.partition(":")
+        platform_part = platform_part.strip().lower()
+        uid_part = uid_part.strip()
+        if not platform_part or not uid_part:
+            return ""
+        return f"{platform_part}:{uid_part}"
+
+    def _override_key(self, *, platform: str, platform_user_id: str) -> str:
+        safe_platform = str(platform or "").strip().lower()
+        safe_uid = str(platform_user_id or "").strip()
+        if not safe_platform or not safe_uid:
+            return ""
+        return f"{safe_platform}:{safe_uid}"
+
+    def _normalize_user_overrides(self, value: Any) -> Dict[str, Any]:
+        overrides: Dict[str, Any] = {}
+        if not isinstance(value, dict):
+            return overrides
+        for raw_key, raw_policy in value.items():
+            key = self._override_key_from_raw(raw_key)
+            if not key:
+                continue
+            overrides[key] = self._normalize_policy(
+                raw_policy if isinstance(raw_policy, dict) else {},
+                {"tools": {"allow": [], "deny": []}},
+            )
+        return overrides
 
     def _read(self) -> Dict[str, Any]:
         default = self._default_payload()
@@ -177,6 +211,9 @@ class ToolAccessStore:
                         self.CORE_IKAROS_DEFAULT_ALLOW
                     )
                 merged["core_ikaros"] = core_policy
+                merged["user_overrides"] = self._normalize_user_overrides(
+                    merged.get("user_overrides")
+                )
                 return merged
         except Exception:
             pass
@@ -368,6 +405,62 @@ class ToolAccessStore:
         with self._lock:
             return dict(self._payload.get("core_ikaros") or {})
 
+    def get_user_override(
+        self,
+        *,
+        platform: str,
+        platform_user_id: str,
+    ) -> Dict[str, Any] | None:
+        key = self._override_key(platform=platform, platform_user_id=platform_user_id)
+        if not key:
+            return None
+        with self._lock:
+            overrides = self._payload.get("user_overrides") or {}
+            policy = overrides.get(key)
+            if not isinstance(policy, dict):
+                return None
+            return dict(policy)
+
+    def set_user_override(
+        self,
+        *,
+        platform: str,
+        platform_user_id: str,
+        allow: List[str] | None = None,
+        deny: List[str] | None = None,
+    ) -> Dict[str, Any]:
+        key = self._override_key(platform=platform, platform_user_id=platform_user_id)
+        if not key:
+            raise ValueError("platform and platform_user_id are required")
+        policy = self._normalize_policy(
+            {"tools": {"allow": list(allow or []), "deny": list(deny or [])}},
+            {"tools": {"allow": [], "deny": []}},
+        )
+        with self._lock:
+            overrides = dict(self._payload.get("user_overrides") or {})
+            overrides[key] = policy
+            self._payload["user_overrides"] = overrides
+            self._write_unlocked()
+        return dict(policy)
+
+    def remove_user_override(
+        self,
+        *,
+        platform: str,
+        platform_user_id: str,
+    ) -> bool:
+        key = self._override_key(platform=platform, platform_user_id=platform_user_id)
+        if not key:
+            return False
+        with self._lock:
+            overrides = dict(self._payload.get("user_overrides") or {})
+            if key not in overrides:
+                return False
+            overrides.pop(key)
+            self._payload["user_overrides"] = overrides
+            self._write_unlocked()
+        return True
+
     def resolve_runtime_policy(
         self,
         *,
@@ -390,6 +483,17 @@ class ToolAccessStore:
                 "agent_id": "core-ikaros",
                 "policy": self.get_core_policy(),
             }
+        if uid and not is_user_admin(uid):
+            override = self.get_user_override(
+                platform=platform_name,
+                platform_user_id=uid,
+            )
+            if override is not None:
+                return {
+                    "agent_kind": "channel-user",
+                    "agent_id": f"{platform_name}:{uid}" if platform_name else uid,
+                    "policy": override,
+                }
         # Regular user-facing orchestration runs in core-ikaros role.
         return {
             "agent_kind": "core-ikaros",

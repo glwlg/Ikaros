@@ -2134,7 +2134,7 @@ async def localize_video_message(
     mime_type: str,
     file_name: str = "",
 ) -> Path:
-    content = bytes(await ctx.dowikarosd_file(file_id))
+    content = bytes(await ctx.download_file(file_id))
     if not content:
         raise ValueError("empty video payload")
     digest = hashlib.sha1(

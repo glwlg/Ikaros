@@ -223,6 +223,12 @@ const router = createRouter({
             meta: { title: '用户管理', requiresOperator: true },
         },
         {
+            path: '/admin/channel-access',
+            name: 'AdminChannelAccess',
+            component: () => import('@/views/Admin/ChannelAccessView.vue'),
+            meta: { title: '渠道权限', requiresAdmin: true },
+        },
+        {
             path: '/admin/models',
             name: 'AdminModels',
             component: () => import('@/views/Admin/ModelConfigView.vue'),

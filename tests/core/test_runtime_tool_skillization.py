@@ -5,6 +5,7 @@ import pytest
 
 from core.orchestrator_runtime_tools import RuntimeToolAssembler, ToolCallDispatcher
 import core.orchestrator_runtime_tools as runtime_tools_module
+from core.tool_access_store import ToolAccessStore
 from core.tool_registry import ToolRegistry
 
 
@@ -83,6 +84,39 @@ def test_article_publisher_declares_direct_tool_export():
 
 
 @pytest.mark.asyncio
+async def test_restricted_media_user_gets_scoped_bash_without_file_tools(tmp_path):
+    store = ToolAccessStore()
+    store.path = (tmp_path / "tool_access.json").resolve()
+    store._payload = store._default_payload()
+    store._write_unlocked()
+    store.set_user_override(
+        platform="weixin",
+        platform_user_id="guest-media",
+        allow=["group:media", "group:delivery"],
+    )
+
+    def _allowed(**kwargs) -> bool:
+        allowed, _detail = store.is_tool_allowed(**kwargs)
+        return allowed
+
+    assembler = RuntimeToolAssembler(
+        runtime_user_id="guest-media",
+        platform_name="weixin",
+        runtime_tool_allowed=_allowed,
+        allowed_skill_names={"download_video", "video_to_text"},
+    )
+
+    names = {tool["name"] for tool in await assembler.assemble()}
+
+    assert "load_skill" in names
+    assert "send_message" in names
+    assert "bash" in names
+    assert "read" not in names
+    assert "write" not in names
+    assert "edit" not in names
+
+
+@pytest.mark.asyncio
 async def test_runtime_tool_assembler_injects_ikaros_skill_tools():
     assembler = RuntimeToolAssembler(
         runtime_user_id="u-1",
@@ -120,6 +154,52 @@ async def test_runtime_tool_assembler_keeps_scoped_daily_query_tool():
 
     assert "daily_query" in names
     assert "load_skill" in names
+
+
+@pytest.mark.asyncio
+async def test_runtime_tool_assembler_keeps_scoped_skill_cli_for_restricted_policy():
+    def _allowed(*, tool_name: str, **_kwargs) -> bool:
+        return tool_name in {"daily_query", "send_message"}
+
+    assembler = RuntimeToolAssembler(
+        runtime_user_id="u-guest",
+        platform_name="weixin",
+        runtime_tool_allowed=_allowed,
+        allowed_skill_names={"daily_query"},
+    )
+
+    names = {tool["name"] for tool in await assembler.assemble()}
+
+    assert "load_skill" in names
+    assert "daily_query" in names
+    assert "send_message" in names
+    assert "read" not in names
+    assert "bash" in names
+
+
+@pytest.mark.asyncio
+async def test_restricted_policy_does_not_expose_bash_for_no_shell_skill(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        runtime_tools_module.skill_loader,
+        "get_enabled_skill",
+        lambda _name: {"permissions": {"shell": False}},
+    )
+
+    assembler = RuntimeToolAssembler(
+        runtime_user_id="u-guest",
+        platform_name="weixin",
+        runtime_tool_allowed=lambda *, tool_name, **_kwargs: (
+            tool_name == "readonly_skill"
+        ),
+        allowed_skill_names={"readonly_skill"},
+    )
+
+    names = {tool["name"] for tool in await assembler.assemble()}
+
+    assert "load_skill" in names
+    assert "bash" not in names
 
 
 @pytest.mark.asyncio
@@ -449,6 +529,130 @@ async def test_load_skill_sets_bash_cwd_for_relative_entrypoint(monkeypatch):
     assert captured["name"] == "bash"
     assert captured["args"]["cwd"] == skill_dir
     assert captured["args"]["command"].startswith("export ")
+
+
+@pytest.mark.asyncio
+async def test_restricted_media_user_can_only_run_loaded_skill_entrypoint(
+    monkeypatch,
+    tmp_path,
+):
+    captured: list[dict] = []
+    skill_dir = (tmp_path / "download_video").resolve()
+    skill_info = {
+        "name": "download_video",
+        "skill_md_content": "# Download Video",
+        "skill_dir": str(skill_dir),
+        "entrypoint": "scripts/execute.py",
+        "policy_groups": ["group:media"],
+        "permissions": {"shell": True},
+    }
+    monkeypatch.setattr(
+        runtime_tools_module.skill_loader,
+        "get_skill",
+        lambda name: skill_info if name == "download_video" else {},
+    )
+    monkeypatch.setattr(
+        runtime_tools_module.skill_loader,
+        "get_enabled_skill",
+        lambda name: skill_info if name == "download_video" else {},
+    )
+
+    store = ToolAccessStore()
+    store.path = (tmp_path / "tool_access.json").resolve()
+    store._payload = store._default_payload()
+    store._write_unlocked()
+    store.set_user_override(
+        platform="weixin",
+        platform_user_id="guest-media",
+        allow=["group:media", "group:delivery"],
+    )
+
+    def _allowed(**kwargs) -> bool:
+        allowed, _detail = store.is_tool_allowed(**kwargs)
+        return allowed
+
+    class _FakeToolBroker:
+        async def execute_core_tool(self, **kwargs):
+            captured.append(dict(kwargs))
+            return {"ok": True, "summary": "ok"}
+
+    async def append_event(_event: str):
+        return None
+
+    dispatcher = ToolCallDispatcher(
+        runtime_user_id="guest-media",
+        platform_name="weixin",
+        task_id="task-media",
+        task_inbox_id="",
+        task_workspace_root="/tmp",
+        ctx=SimpleNamespace(
+            message=SimpleNamespace(
+                text="下载这个视频",
+                platform="weixin",
+                user=SimpleNamespace(id="guest-media"),
+                chat=SimpleNamespace(id="chat-media"),
+            ),
+            user_data={},
+        ),
+        runtime=object(),
+        tool_broker=_FakeToolBroker(),
+        runtime_tool_allowed=_allowed,
+        todo_mark_step=lambda *_args, **_kwargs: None,
+        append_session_event=append_event,
+        allowed_skill_names={"download_video"},
+    )
+    dispatcher.set_available_tool_names({"load_skill", "bash", "send_message"})
+
+    loaded = await dispatcher.execute(
+        name="load_skill",
+        args={"skill_name": "download_video"},
+        execution_policy=None,
+        started=time.perf_counter(),
+    )
+    assert loaded["ok"] is True
+
+    unrelated = await dispatcher.execute(
+        name="load_skill",
+        args={"skill_name": "repo_workspace"},
+        execution_policy=None,
+        started=time.perf_counter(),
+    )
+    assert unrelated["ok"] is False
+    assert unrelated["error_code"] == "skill_not_in_scope"
+
+    result = await dispatcher.execute(
+        name="bash",
+        args={
+            "command": (
+                f"cd {skill_dir} && python scripts/execute.py "
+                "'https://v.douyin.com/g46DCEDCPHY/'"
+            )
+        },
+        execution_policy=None,
+        started=time.perf_counter(),
+    )
+
+    assert result["ok"] is True
+    assert len(captured) == 1
+    assert captured[0]["name"] == "bash"
+    assert captured[0]["args"]["cwd"] == str(skill_dir)
+    assert str(skill_dir / "scripts/execute.py") in captured[0]["args"]["command"]
+
+    for command in (
+        "cat /etc/passwd",
+        "python scripts/execute.py https://example.com && cat /etc/passwd",
+        "python ../other_skill/scripts/execute.py",
+    ):
+        blocked = await dispatcher.execute(
+            name="bash",
+            args={"command": command},
+            execution_policy=None,
+            started=time.perf_counter(),
+        )
+        assert blocked["ok"] is False
+        assert blocked["error_code"] == "policy_blocked"
+
+    assert len(captured) == 1
 
 
 @pytest.mark.asyncio

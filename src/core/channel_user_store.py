@@ -41,6 +41,7 @@ class ChannelUserProfile:
     is_admin: bool
     access: Dict[str, bool]
     user_md_path: str
+    remark: str = ""
 
 
 class ChannelUserStore:
@@ -312,6 +313,7 @@ class ChannelUserStore:
                 is_admin=False,
                 access=access,
                 user_md_path=resolved_path,
+                remark=self._safe_text(entry.get("remark")),
             )
 
     def is_feature_enabled(
@@ -335,6 +337,88 @@ class ChannelUserStore:
         if profile.status != "active":
             return False
         return bool(profile.access.get(safe_feature))
+
+    def list_users(self) -> list[ChannelUserProfile]:
+        with self._lock:
+            payload = self._read_unlocked()
+            platforms = dict(payload.get("platforms") or {})
+        rows: list[ChannelUserProfile] = []
+        for platform in sorted(platforms):
+            users = dict(platforms.get(platform) or {}).get("users") or {}
+            for user_id in sorted(users):
+                rows.append(
+                    self.get_profile(
+                        platform=platform,
+                        platform_user_id=user_id,
+                        is_admin=False,
+                    )
+                )
+        return rows
+
+    def set_access(
+        self,
+        *,
+        platform: str,
+        platform_user_id: str,
+        access: Dict[str, bool],
+    ) -> ChannelUserProfile:
+        safe_platform = self._safe_text(platform).lower()
+        safe_user_id = self._safe_text(platform_user_id)
+        if not safe_platform or not safe_user_id:
+            raise ValueError("platform and platform_user_id are required")
+        normalized = {
+            key: bool(value)
+            for key, value in dict(access or {}).items()
+            if self._safe_text(key).lower() in DEFAULT_ACCESS
+        }
+
+        with self._lock:
+            payload = self._read_unlocked()
+            entry = self._user_entry(
+                payload,
+                safe_platform,
+                safe_user_id,
+                create=True,
+            )
+            assert entry is not None
+            entry["access"] = self._merge_access({}, normalized)
+            self._write_unlocked(payload)
+
+        return self.get_profile(
+            platform=safe_platform,
+            platform_user_id=safe_user_id,
+            is_admin=False,
+        )
+
+    def set_remark(
+        self,
+        *,
+        platform: str,
+        platform_user_id: str,
+        remark: str,
+    ) -> ChannelUserProfile:
+        safe_platform = self._safe_text(platform).lower()
+        safe_user_id = self._safe_text(platform_user_id)
+        if not safe_platform or not safe_user_id:
+            raise ValueError("platform and platform_user_id are required")
+
+        with self._lock:
+            payload = self._read_unlocked()
+            entry = self._user_entry(
+                payload,
+                safe_platform,
+                safe_user_id,
+                create=True,
+            )
+            assert entry is not None
+            entry["remark"] = self._safe_text(remark)
+            self._write_unlocked(payload)
+
+        return self.get_profile(
+            platform=safe_platform,
+            platform_user_id=safe_user_id,
+            is_admin=False,
+        )
 
     def load_user_md(
         self,

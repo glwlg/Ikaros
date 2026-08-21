@@ -8,6 +8,8 @@ triggers:
 - video transcript
 - 提取视频文本
 - video markdown
+policy_groups:
+- media
 platform_handlers: true
 input_schema:
   type: object

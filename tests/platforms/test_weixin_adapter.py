@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import datetime
 import json
 import logging
@@ -370,6 +371,63 @@ async def test_poll_loop_persists_sync_buf_preferentially(monkeypatch):
     await adapter._poll_loop("bot-1")
 
     assert saved == ["bot-1:cursor-next"]
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_continues_while_inbound_handler_runs(monkeypatch):
+    adapter = WeixinAdapter()
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
+    handler_finished = asyncio.Event()
+    second_poll_started = asyncio.Event()
+    get_updates_calls = 0
+
+    async def _fake_get_updates(cursor: str, *, account_id: str = ""):
+        nonlocal get_updates_calls
+        _ = cursor
+        assert account_id == "bot-1"
+        get_updates_calls += 1
+        if get_updates_calls == 1:
+            return {
+                "ret": 0,
+                "msgs": [{"client_id": "message-1"}],
+                "sync_buf": "cursor-next",
+            }
+        second_poll_started.set()
+        adapter._stop_event.set()
+        return {"ret": 0, "msgs": [], "sync_buf": "cursor-final"}
+
+    async def _fake_handle_incoming_message(raw_message):
+        assert raw_message["client_id"] == "message-1"
+        handler_started.set()
+        await release_handler.wait()
+        handler_finished.set()
+
+    monkeypatch.setattr(
+        adapter, "_load_sync_cursor_for_account", lambda account_id: "cursor-start"
+    )
+    monkeypatch.setattr(adapter, "_save_sync_cursor_for_account", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_get_updates", _fake_get_updates)
+    monkeypatch.setattr(
+        adapter, "_handle_incoming_message", _fake_handle_incoming_message
+    )
+
+    poll_task = asyncio.create_task(adapter._poll_loop("bot-1"))
+    try:
+        await asyncio.wait_for(handler_started.wait(), timeout=0.5)
+        await asyncio.wait_for(second_poll_started.wait(), timeout=0.5)
+    finally:
+        release_handler.set()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(handler_finished.wait(), timeout=0.5)
+        if not poll_task.done():
+            adapter._stop_event.set()
+            poll_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await poll_task
+        await adapter.stop()
+
+    assert get_updates_calls == 2
 
 
 @pytest.mark.asyncio

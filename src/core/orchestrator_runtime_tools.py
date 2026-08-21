@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import shlex
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Set
@@ -76,6 +77,25 @@ class RuntimeToolAssembler:
                 names.add(name)
         return names
 
+    def _allows_scoped_skill_cli_bash(self) -> bool:
+        if not self.allowed_skill_names:
+            return False
+        for skill_name in self.allowed_skill_names:
+            skill_info = skill_loader.get_enabled_skill(skill_name) or {}
+            permissions = dict(skill_info.get("permissions") or {})
+            if not bool(permissions.get("shell")):
+                continue
+            if _policy_result_allowed(
+                self.runtime_tool_allowed(
+                    runtime_user_id=self.runtime_user_id,
+                    platform=self.platform_name,
+                    tool_name=skill_name,
+                    kind="tool",
+                )
+            ):
+                return True
+        return False
+
     def _filter_by_policy(self, tools: List[Any]) -> List[Any]:
         filtered: List[Any] = []
         seen: Set[str] = set()
@@ -84,6 +104,16 @@ class RuntimeToolAssembler:
             if not name or name in seen:
                 continue
             seen.add(name)
+            # load_skill 是技能 SOP 的加载引导工具，本身不授予任何执行能力；
+            # 真正加载哪个技能在执行层按技能粒度做策略校验
+            # （skill_policy_blocked）。列表层始终保留它，否则白名单用户
+            # 无法加载已授权技能的说明，模型会报 "tool not found"。
+            if name == "load_skill":
+                filtered.append(item)
+                continue
+            if name == "bash" and self._allows_scoped_skill_cli_bash():
+                filtered.append(item)
+                continue
             if _policy_result_allowed(
                 self.runtime_tool_allowed(
                     runtime_user_id=self.runtime_user_id,
@@ -381,48 +411,106 @@ class ToolCallDispatcher:
         patched["cwd"] = skill_dir
         return patched
 
-    def _is_loaded_skill_cli_bash_command(self, command: str) -> bool:
-        raw = str(command or "").strip()
-        if not raw:
-            return False
-
+    def _loaded_skill_shell_is_allowed(self) -> bool:
         user_data = getattr(self.ctx, "user_data", None)
         if not isinstance(user_data, dict):
             return False
 
+        skill_name = str(user_data.get("last_loaded_skill_name") or "").strip()
+        if not skill_name:
+            return False
+        if (
+            self.allowed_skill_names is not None
+            and skill_name not in self.allowed_skill_names
+        ):
+            return False
+
+        skill_info = skill_loader.get_enabled_skill(skill_name) or {}
+        permissions = dict(skill_info.get("permissions") or {})
+        if not bool(permissions.get("shell")):
+            return False
+
+        canonical_tool_name = f"ext_{skill_name.replace('-', '_')}"
+        return self._policy_allows(canonical_tool_name, kind="tool")
+
+    def _normalize_loaded_skill_cli_bash_args(
+        self,
+        args: Dict[str, Any],
+    ) -> Dict[str, Any] | None:
+        if not self._loaded_skill_shell_is_allowed():
+            return None
+
+        raw = str(args.get("command") or "").strip()
+        if not raw:
+            return None
+
+        user_data = getattr(self.ctx, "user_data", None)
+        if not isinstance(user_data, dict):
+            return None
         skill_dir = str(user_data.get("last_loaded_skill_dir") or "").strip()
         entrypoint = str(
             user_data.get("last_loaded_skill_entrypoint") or "scripts/execute.py"
         ).strip()
         if not skill_dir or not entrypoint:
-            return False
+            return None
 
         try:
             parts = shlex.split(raw)
         except Exception:
-            parts = []
-        if not parts:
-            return False
+            return None
 
-        invokes_python = any(
-            str(part or "").strip().startswith("python") for part in parts
-        )
-        if not invokes_python:
-            return False
-
+        resolved_skill_dir = Path(skill_dir).resolve()
         normalized_entrypoint = entrypoint.lstrip("./")
-        relative_candidates = {normalized_entrypoint, f"./{normalized_entrypoint}"}
-        absolute_entrypoint = str((Path(skill_dir) / normalized_entrypoint).resolve())
+        resolved_entrypoint = (resolved_skill_dir / normalized_entrypoint).resolve()
+        try:
+            resolved_entrypoint.relative_to(resolved_skill_dir)
+        except ValueError:
+            return None
 
-        if absolute_entrypoint in parts:
-            return True
-        if any(str(part or "").strip() in relative_candidates for part in parts):
-            return True
-        if skill_dir in parts and any(
-            str(part or "").strip() in relative_candidates for part in parts
+        if len(parts) >= 3 and parts[0] == "cd" and parts[2] == "&&":
+            if Path(parts[1]).resolve() != resolved_skill_dir:
+                return None
+            parts = parts[3:]
+        if len(parts) < 2:
+            return None
+        if any(
+            token in {"&&", "||", ";", "|", "&", ">", ">>", "<", "<<"}
+            for token in parts
         ):
-            return True
-        return False
+            return None
+
+        python_token = str(parts[0] or "").strip().lower()
+        python_name = Path(python_token).name
+        if python_token != python_name:
+            return None
+        python_suffix = python_name.removeprefix("python")
+        if python_name != "python" and not (
+            python_name.startswith("python")
+            and python_suffix
+            and all(char.isdigit() or char == "." for char in python_suffix)
+        ):
+            return None
+
+        raw_script = Path(parts[1])
+        resolved_script = (
+            raw_script.resolve()
+            if raw_script.is_absolute()
+            else (resolved_skill_dir / raw_script).resolve()
+        )
+        if resolved_script != resolved_entrypoint:
+            return None
+
+        patched = dict(args or {})
+        patched["cwd"] = str(resolved_skill_dir)
+        patched["command"] = shlex.join(
+            [sys.executable, str(resolved_entrypoint), *parts[2:]]
+        )
+        return patched
+
+    def _is_loaded_skill_cli_bash_command(self, command: str) -> bool:
+        return (
+            self._normalize_loaded_skill_cli_bash_args({"command": command}) is not None
+        )
 
     def _resolve_skill_tool_binding(self, tool_name: str) -> Dict[str, Any] | None:
         return tool_registry.get_skill_tool_binding(
@@ -637,7 +725,11 @@ class ToolCallDispatcher:
             user_data["called_tool_names"] = called_names[-50:]
 
         if tool_name in {"read", "write", "edit", "bash"}:
-            if not self._policy_allows(tool_name, kind="tool"):
+            policy_allowed = self._policy_allows(tool_name, kind="tool")
+            scoped_skill_args = None
+            if tool_name == "bash" and not policy_allowed:
+                scoped_skill_args = self._normalize_loaded_skill_cli_bash_args(args)
+            if not policy_allowed and scoped_skill_args is None:
                 blocked = {
                     "ok": False,
                     "error_code": "policy_blocked",
@@ -645,7 +737,7 @@ class ToolCallDispatcher:
                     "failure_mode": "recoverable",
                 }
                 return blocked
-            normalized_args = dict(args or {})
+            normalized_args = scoped_skill_args or dict(args or {})
             if tool_name == "bash":
                 normalized_args = dict(normalized_args)
                 normalized_args = self._apply_loaded_skill_bash_context(normalized_args)

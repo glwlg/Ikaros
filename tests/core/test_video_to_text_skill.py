@@ -87,6 +87,33 @@ async def test_execute_video_to_text_returns_disabled_without_whisper_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_localize_video_message_downloads_via_context(monkeypatch, tmp_path: Path):
+    class _FakeCtx:
+        def __init__(self):
+            self.message = SimpleNamespace(platform="weixin")
+            self.downloaded: list[str] = []
+
+        async def download_file(self, file_id: str, **_kwargs) -> bytes:
+            self.downloaded.append(file_id)
+            return b"fake-video-bytes"
+
+    monkeypatch.setattr(service, "_downloads_root", lambda: tmp_path)
+    ctx = _FakeCtx()
+
+    output = await service.localize_video_message(
+        ctx,
+        file_id="file-123",
+        mime_type="video/mp4",
+        file_name="demo.mp4",
+    )
+
+    assert ctx.downloaded == ["file-123"]
+    assert output.parent == (tmp_path / "video_inputs").resolve()
+    assert output.suffix == ".mp4"
+    assert output.read_bytes() == b"fake-video-bytes"
+
+
+@pytest.mark.asyncio
 async def test_ensure_video_artifact_for_path_writes_markdown(monkeypatch, tmp_path: Path):
     video_path = (tmp_path / "demo.mp4").resolve()
     video_path.write_bytes(b"video-bytes")

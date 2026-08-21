@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from api.api.endpoints import (
     admin,
     cameras,
+    channel_access,
     health,
     monitor,
     rss,
@@ -22,6 +23,11 @@ api_router.include_router(watchlist.router, prefix="/watchlist", tags=["watchlis
 api_router.include_router(cameras.router, prefix="/cameras", tags=["cameras"])
 api_router.include_router(web_chat.router, prefix="/web-chat", tags=["web-chat"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
+api_router.include_router(
+    channel_access.router,
+    prefix="/admin/channel-access",
+    tags=["admin"],
+)
 api_router.include_router(skills.router, prefix="/skills", tags=["skills"])
 api_router.include_router(
     subscriptions.router,

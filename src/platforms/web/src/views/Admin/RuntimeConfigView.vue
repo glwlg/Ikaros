@@ -997,6 +997,7 @@ onMounted(load)
 }
 
 .switch {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1006,9 +1007,14 @@ onMounted(load)
 
 .switch input {
   position: absolute;
+  inset: 0;
   opacity: 0;
-  width: 0;
-  height: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  cursor: pointer;
 }
 
 .switch .slider {

@@ -20,6 +20,7 @@ import {
     Puzzle,
     Radio,
     Settings2,
+    ShieldCheck,
     ShieldUser,
     Sun,
     X,
@@ -100,6 +101,7 @@ const etherealAdminNav = computed(() => {
     if (authStore.isAdmin) {
         items.push({ label: '运行配置', to: '/admin/runtime', icon: Zap })
         items.push({ label: '模型配置', to: '/admin/models', icon: Settings2 })
+        items.push({ label: '渠道权限', to: '/admin/channel-access', icon: ShieldCheck })
     }
 
     if (authStore.isOperator) {
@@ -126,6 +128,7 @@ const routeAlias = computed(() => {
         AdminRuntime: 'Runtime',
         AdminModels: 'Models',
         AdminUsers: 'Users',
+        AdminChannelAccess: 'ChannelAccess',
         AdminDiagnostics: 'Diagnostics',
         AdminSkills: 'Skills',
     }

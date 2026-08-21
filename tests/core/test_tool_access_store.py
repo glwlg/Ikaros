@@ -168,3 +168,126 @@ def test_subagent_runtime_uses_ikaros_policy_without_management_loops(tmp_path):
     )
     assert denied_spawn is True
     assert "group:management" in detail["groups"]
+
+
+def test_user_override_restricts_tools_to_allow_list(tmp_path, monkeypatch):
+    store = ToolAccessStore()
+    store.path = (tmp_path / "tool_access.json").resolve()
+    store._payload = store._default_payload()
+    store._write_unlocked()
+
+    monkeypatch.setattr("core.tool_access_store.is_user_admin", lambda _uid: False)
+    monkeypatch.setattr(
+        "extension.skills.registry.skill_registry.get_skill",
+        lambda name: (
+            {"policy_groups": ["media"]}
+            if name in {"download_video", "video_to_text"}
+            else {}
+        ),
+    )
+
+    policy = store.set_user_override(
+        platform="weixin",
+        platform_user_id="guest-1",
+        allow=["group:media", "group:delivery"],
+    )
+    assert policy["tools"]["allow"] == ["group:media", "group:delivery"]
+
+    for allowed_tool in ("download_video", "video_to_text", "send_message"):
+        allowed, detail = store.is_tool_allowed(
+            runtime_user_id="guest-1",
+            platform="weixin",
+            tool_name=allowed_tool,
+            kind="tool",
+        )
+        assert allowed is True, allowed_tool
+        assert detail["agent_kind"] == "channel-user"
+
+    for blocked_tool in ("read", "write", "bash", "coding_backend", "git_ops"):
+        allowed, detail = store.is_tool_allowed(
+            runtime_user_id="guest-1",
+            platform="weixin",
+            tool_name=blocked_tool,
+            kind="tool",
+        )
+        assert allowed is False, blocked_tool
+        assert detail["reason"] == "not_in_allow_list"
+        assert detail["agent_kind"] == "channel-user"
+
+    reloaded = ToolAccessStore()
+    reloaded.path = store.path
+    reloaded._payload = reloaded._read()
+    allowed_after_reload, _ = reloaded.is_tool_allowed(
+        runtime_user_id="guest-1",
+        platform="weixin",
+        tool_name="bash",
+        kind="tool",
+    )
+    assert allowed_after_reload is False
+
+    other_allowed, other_detail = store.is_tool_allowed(
+        runtime_user_id="someone-else",
+        platform="weixin",
+        tool_name="read",
+        kind="tool",
+    )
+    assert other_allowed is True
+    assert other_detail["agent_kind"] == "core-ikaros"
+
+
+def test_user_override_does_not_apply_to_admin(tmp_path, monkeypatch):
+    store = ToolAccessStore()
+    store.path = (tmp_path / "tool_access.json").resolve()
+    store._payload = store._default_payload()
+    store._write_unlocked()
+
+    monkeypatch.setattr(
+        "core.tool_access_store.is_user_admin",
+        lambda uid: str(uid) == "boss-1",
+    )
+    store.set_user_override(
+        platform="weixin",
+        platform_user_id="boss-1",
+        allow=["group:media"],
+    )
+
+    allowed, detail = store.is_tool_allowed(
+        runtime_user_id="boss-1",
+        platform="weixin",
+        tool_name="read",
+        kind="tool",
+    )
+    assert allowed is True
+    assert detail["agent_kind"] == "core-ikaros"
+
+
+def test_remove_user_override_restores_core_policy(tmp_path, monkeypatch):
+    store = ToolAccessStore()
+    store.path = (tmp_path / "tool_access.json").resolve()
+    store._payload = store._default_payload()
+    store._write_unlocked()
+
+    monkeypatch.setattr("core.tool_access_store.is_user_admin", lambda _uid: False)
+    store.set_user_override(
+        platform="weixin",
+        platform_user_id="guest-1",
+        allow=["group:media"],
+    )
+
+    assert (
+        store.remove_user_override(platform="weixin", platform_user_id="guest-1")
+        is True
+    )
+    assert (
+        store.remove_user_override(platform="weixin", platform_user_id="guest-1")
+        is False
+    )
+
+    allowed, detail = store.is_tool_allowed(
+        runtime_user_id="guest-1",
+        platform="weixin",
+        tool_name="read",
+        kind="tool",
+    )
+    assert allowed is True
+    assert detail["agent_kind"] == "core-ikaros"
