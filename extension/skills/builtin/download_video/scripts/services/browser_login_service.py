@@ -39,7 +39,7 @@ LOGIN_PROVIDERS = {
         domains=("douyin.com", "iesdouyin.com", "bytedance.com"),
         success_cookies=frozenset({"sessionid", "sessionid_ss", "sid_guard", "uid_tt"}),
         qr_selectors=(
-            "img[src^='data:image']",
+            "img[aria-label*='二维码']",
             "img[src*='qrcode']",
         ),
         open_login_dialog=True,
@@ -126,11 +126,11 @@ def _upscale_qr_png(payload: bytes) -> bytes:
         return payload
 
 
-async def _open_login_page(page: Any, provider: LoginProvider) -> None:
+async def _open_login_page(page: Any, provider: LoginProvider) -> Any | None:
     await page.goto(provider.login_url, wait_until="domcontentloaded", timeout=30_000)
     await page.wait_for_timeout(5_000 if provider.open_login_dialog else 1_500)
     if not provider.open_login_dialog:
-        return
+        return await _wait_for_qr_image(page, provider)
 
     for attempt in range(2):
         deadline = asyncio.get_running_loop().time() + 10
@@ -141,8 +141,9 @@ async def _open_login_page(page: Any, provider: LoginProvider) -> None:
                 try:
                     if await button.is_visible():
                         await button.click(timeout=3_000)
-                        await page.wait_for_timeout(2_500)
-                        return
+                        qr_image = await _wait_for_qr_image(page, provider)
+                        if qr_image is not None:
+                            return qr_image
                 except Exception:
                     continue
             await page.wait_for_timeout(500)
@@ -153,7 +154,7 @@ async def _open_login_page(page: Any, provider: LoginProvider) -> None:
                 wait_until="domcontentloaded",
                 timeout=30_000,
             )
-    raise RuntimeError("未找到登录入口")
+    raise RuntimeError("未能打开登录二维码")
 
 
 async def _find_qr_image(page: Any, provider: LoginProvider) -> Any | None:
@@ -174,34 +175,24 @@ async def _find_qr_image(page: Any, provider: LoginProvider) -> Any | None:
                     return candidate
             except Exception:
                 continue
+    return None
 
-    candidates: list[tuple[float, Any]] = []
-    images = page.locator("img")
-    for index in range(await images.count()):
-        candidate = images.nth(index)
-        try:
-            if not await candidate.is_visible():
-                continue
-            box = await candidate.bounding_box()
-            if not box:
-                continue
-            width = float(box["width"])
-            height = float(box["height"])
-            if min(width, height) < 100 or max(width, height) > 320:
-                continue
-            if max(width, height) / min(width, height) > 1.2:
-                continue
-            source = str(await candidate.get_attribute("src") or "").lower()
-            alt = str(await candidate.get_attribute("alt") or "").lower()
-            score = min(width, height)
-            if "qr" in source or "scan" in alt:
-                score += 1_000
-            elif source.startswith("data:image"):
-                score += 500
-            candidates.append((score, candidate))
-        except Exception:
-            continue
-    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+async def _wait_for_qr_image(
+    page: Any,
+    provider: LoginProvider,
+    *,
+    timeout_seconds: float = 20,
+) -> Any | None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0, float(timeout_seconds))
+    while True:
+        qr_image = await _find_qr_image(page, provider)
+        if qr_image is not None:
+            return qr_image
+        if loop.time() >= deadline:
+            return None
+        await page.wait_for_timeout(500)
 
 
 async def run_browser_login(
@@ -239,8 +230,7 @@ async def run_browser_login(
                 locale="zh-CN",
             )
             page = await context.new_page()
-            await _open_login_page(page, provider)
-            qr_image = await _find_qr_image(page, provider)
+            qr_image = await _open_login_page(page, provider)
             if qr_image is None:
                 return BrowserLoginResult(
                     success=False,

@@ -1,9 +1,46 @@
 from pathlib import Path
 
+import pytest
+
 from extension.skills.builtin.download_video.scripts.services import (
     browser_login_service,
     browser_session_store,
 )
+
+
+class _FakeImage:
+    def __init__(self, *, visible=True, width=178, height=178):
+        self.visible = visible
+        self.box = {"width": width, "height": height}
+
+    async def is_visible(self):
+        return self.visible
+
+    async def bounding_box(self):
+        return self.box
+
+
+class _FakeLocator:
+    def __init__(self, items):
+        self.items = items
+
+    async def count(self):
+        return len(self.items)
+
+    def nth(self, index):
+        return self.items[index]
+
+
+class _FakePage:
+    def __init__(self, matches):
+        self.matches = matches
+        self.waits = []
+
+    def locator(self, selector):
+        return _FakeLocator(self.matches.get(selector, []))
+
+    async def wait_for_timeout(self, milliseconds):
+        self.waits.append(milliseconds)
 
 
 def test_login_platform_aliases_and_url_detection():
@@ -27,6 +64,51 @@ def test_login_platform_aliases_and_url_detection():
         == "bilibili"
     )
     assert browser_login_service.detect_login_platform("https://example.com") is None
+
+
+@pytest.mark.asyncio
+async def test_douyin_qr_detection_rejects_generic_square_image():
+    promo = _FakeImage(width=128, height=123)
+    page = _FakePage({"img": [promo]})
+
+    result = await browser_login_service._find_qr_image(
+        page, browser_login_service.LOGIN_PROVIDERS["douyin"]
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_douyin_qr_detection_accepts_semantic_qr_image():
+    qr_image = _FakeImage()
+    page = _FakePage({"img[aria-label*='二维码']": [qr_image]})
+
+    result = await browser_login_service._find_qr_image(
+        page, browser_login_service.LOGIN_PROVIDERS["douyin"]
+    )
+
+    assert result is qr_image
+
+
+@pytest.mark.asyncio
+async def test_wait_for_qr_image_retries_until_qr_is_visible(monkeypatch):
+    qr_image = _FakeImage()
+    results = iter((None, None, qr_image))
+
+    async def find_qr_image(_page, _provider):
+        return next(results)
+
+    monkeypatch.setattr(browser_login_service, "_find_qr_image", find_qr_image)
+    page = _FakePage({})
+
+    result = await browser_login_service._wait_for_qr_image(
+        page,
+        browser_login_service.LOGIN_PROVIDERS["douyin"],
+        timeout_seconds=1,
+    )
+
+    assert result is qr_image
+    assert page.waits == [500, 500]
 
 
 def test_browser_cookies_are_encrypted_and_materialized_temporarily(
