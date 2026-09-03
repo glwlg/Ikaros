@@ -1,24 +1,26 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import {
     Activity,
-    BellRing,
     Cable,
     Cctv,
+    ChevronRight,
     ChevronsLeft,
+    Cloud,
     Gauge,
     HeartPulse,
-    Home,
     KeyRound,
-    LayoutGrid,
+    LayoutDashboard,
     Link2,
     LogOut,
     Menu,
     MessageSquareText,
     Moon,
+    Plus,
     Puzzle,
     Radio,
+    Search,
     Settings2,
     ShieldCheck,
     ShieldUser,
@@ -27,826 +29,323 @@ import {
     Zap,
 } from 'lucide-vue-next'
 
+import AuroraBackdrop from '@/components/layout/AuroraBackdrop.vue'
+import IkarosMark from '@/components/layout/IkarosMark.vue'
+import { LiquidGlass } from '@/components/liquid-glass'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 
+interface NavigationItem {
+    label: string
+    description: string
+    to: string
+    icon: Component
+}
+
 const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
 const themeStore = useThemeStore()
-
-const isSidebarOpen = ref(false)
+const searchInput = ref<HTMLInputElement | null>(null)
 const isMobile = ref(false)
-const isSidebarCollapsed = ref(false)
+const sidebarOpen = ref(false)
+const sidebarCollapsed = ref(false)
+const commandOpen = ref(false)
+const commandQuery = ref('')
 
-const checkMobile = () => {
-    isMobile.value = window.innerWidth <= 1024
-    isSidebarOpen.value = !isMobile.value
-    if (isMobile.value) {
-        isSidebarCollapsed.value = false
-    }
-}
-
-const toggleSidebar = () => {
-    isSidebarOpen.value = !isSidebarOpen.value
-}
-
-const closeSidebar = () => {
-    if (isMobile.value) {
-        isSidebarOpen.value = false
-    }
-}
-
-const toggleSidebarCollapsed = () => {
-    if (!isMobile.value) {
-        isSidebarCollapsed.value = !isSidebarCollapsed.value
-    }
-}
-
-onMounted(() => {
-    checkMobile()
-    window.addEventListener('resize', checkMobile)
-})
-
-onUnmounted(() => {
-    window.removeEventListener('resize', checkMobile)
-})
-
-const identityPrimary = computed(() =>
-    authStore.user?.display_name || authStore.user?.username || authStore.user?.email || '管理员'
-)
-
-const identityEmail = computed(() => authStore.user?.email || 'admin@example.com')
-
-const identityInitial = computed(() => {
-    const source = String(identityPrimary.value).trim()
-    return source ? source.charAt(0).toUpperCase() : 'A'
-})
-
-const etherealPrimaryNav = computed(() => [
-    { label: '控制面板', to: '/home', icon: LayoutGrid },
-    { label: '聊天对话', to: '/chat', icon: MessageSquareText },
-    { label: '模块绑定', to: '/bindings', icon: Link2 },
-    { label: '凭据管理', to: '/credentials', icon: KeyRound },
-    { label: '订阅源', to: '/modules/rss', icon: Radio },
-    { label: '任务调度', to: '/modules/scheduler', icon: Cable },
-    { label: '心跳监控', to: '/modules/monitor', icon: HeartPulse },
-    { label: '实时监控', to: '/modules/cameras', icon: Cctv },
-    { label: '市场追踪', to: '/modules/watchlist', icon: Activity },
-    { label: '订阅管理', to: '/modules/subscriptions', icon: BellRing },
+const workspaceNav = computed<NavigationItem[]>(() => [
+    { label: '系统概览', description: '运行状态与待办', to: '/home', icon: LayoutDashboard },
+    { label: '对话工作台', description: '会话与任务协作', to: '/chat', icon: MessageSquareText },
+    { label: '定时任务', description: '调度与推送', to: '/modules/scheduler', icon: Cable },
+    { label: '心跳监控', description: '周期巡检清单', to: '/modules/monitor', icon: HeartPulse },
+    { label: '实时监控', description: '摄像头与实时画面', to: '/modules/cameras', icon: Cctv },
+    { label: '市场追踪', description: '自选行情', to: '/modules/watchlist', icon: Activity },
+    { label: 'RSS 订阅', description: '信息源同步', to: '/modules/rss', icon: Radio },
+    { label: '续费订阅', description: '到期与续费提醒', to: '/modules/subscriptions', icon: Zap },
 ])
 
-const etherealAdminNav = computed(() => {
-    const items = []
-
+const managementNav = computed<NavigationItem[]>(() => {
+    const items: NavigationItem[] = [
+        { label: '渠道绑定', description: '用户渠道账号', to: '/bindings', icon: Link2 },
+        { label: '凭据管理', description: '密钥与授权', to: '/credentials', icon: KeyRound },
+    ]
     if (authStore.isAdmin) {
-        items.push({ label: '运行配置', to: '/admin/runtime', icon: Zap })
-        items.push({ label: '模型配置', to: '/admin/models', icon: Settings2 })
-        items.push({ label: '渠道权限', to: '/admin/channel-access', icon: ShieldCheck })
+        items.push(
+            { label: '模型路由', description: '供应商与模型策略', to: '/admin/models', icon: Settings2 },
+            { label: '渠道权限', description: '渠道用户能力', to: '/admin/channel-access', icon: ShieldCheck },
+            { label: '运行配置', description: '运行时与渠道开关', to: '/admin/runtime', icon: Zap },
+            { label: '阿里云流量', description: 'CDT 免费额度', to: '/admin/aliyun-traffic', icon: Cloud },
+        )
     }
-
     if (authStore.isOperator) {
-        items.push({ label: '用户管理', to: '/admin/users', icon: ShieldUser })
-        items.push({ label: '技能管理', to: '/admin/skills', icon: Puzzle })
-        items.push({ label: '系统诊断', to: '/admin/diagnostics', icon: Gauge })
+        items.push(
+            { label: '用户与权限', description: '后台账号角色', to: '/admin/users', icon: ShieldUser },
+            { label: '技能管理', description: '技能安装与开关', to: '/admin/skills', icon: Puzzle },
+            { label: '诊断中心', description: '运行质量与故障', to: '/admin/diagnostics', icon: Gauge },
+        )
     }
-
     return items
 })
 
-const routeAlias = computed(() => {
-    const aliasByName: Record<string, string> = {
-        Home: 'Dashboard',
-        Chat: 'Chat',
-        Bindings: 'Bind',
-        Credentials: 'Keys',
-        ModuleRss: 'RSS',
-        ModuleScheduler: 'Scheduling',
-        ModuleMonitor: 'Heartbeat',
-        ModuleCameras: 'Cameras',
-        ModuleWatchlist: 'Stocks',
-        ModuleSubscriptions: 'Subscriptions',
-        AdminRuntime: 'Runtime',
-        AdminModels: 'Models',
-        AdminUsers: 'Users',
-        AdminChannelAccess: 'ChannelAccess',
-        AdminDiagnostics: 'Diagnostics',
-        AdminSkills: 'Skills',
-    }
-
-    return aliasByName[String(route.name || '')] || 'Console'
+const allNavigation = computed(() => [...workspaceNav.value, ...managementNav.value])
+const commandResults = computed(() => {
+    const query = commandQuery.value.trim().toLocaleLowerCase('zh-CN')
+    if (!query) return allNavigation.value
+    return allNavigation.value.filter((item) => (
+        `${item.label} ${item.description} ${item.to}`.toLocaleLowerCase('zh-CN').includes(query)
+    ))
 })
 
-const currentTitle = computed(() => String(route.meta.title || '控制面板'))
+const identityName = computed(() => (
+    authStore.user?.display_name
+    || authStore.user?.username
+    || authStore.user?.email
+    || '管理员'
+))
+const identityEmail = computed(() => authStore.user?.email || '')
+const identityInitial = computed(() => identityName.value.trim().charAt(0).toUpperCase() || 'I')
+const identityRole = computed(() => (
+    authStore.isAdmin ? '系统管理员' : authStore.isOperator ? '运营人员' : '观察者'
+))
+const currentTitle = computed(() => String(route.meta.title || '系统概览'))
+const currentSection = computed(() => route.path.startsWith('/admin') ? '管理中心' : '核心')
 
-const shellRoot = computed(() =>
-    route.path.startsWith('/admin') ? '管理中心' : '控制面板'
-)
+const isNavActive = (to: string) => route.path === to || route.path.startsWith(`${to}/`)
 
-const isNavActive = (to: string) =>
-    route.path === to || route.path.startsWith(`${to}/`)
+const checkViewport = () => {
+    isMobile.value = window.innerWidth <= 1024
+    if (!isMobile.value) sidebarOpen.value = true
+    if (isMobile.value) sidebarCollapsed.value = false
+}
 
-const handleNavClick = () => {
-    if (isMobile.value) {
-        isSidebarOpen.value = false
+const toggleSidebar = () => {
+    if (isMobile.value) sidebarOpen.value = !sidebarOpen.value
+    else sidebarCollapsed.value = !sidebarCollapsed.value
+}
+
+const openCommand = async () => {
+    commandOpen.value = true
+    commandQuery.value = ''
+    await nextTick()
+    searchInput.value?.focus()
+}
+
+const closeCommand = () => {
+    commandOpen.value = false
+    commandQuery.value = ''
+}
+
+const selectCommand = async (item: NavigationItem) => {
+    closeCommand()
+    await router.push(item.to)
+}
+
+const onGlobalKeydown = (event: KeyboardEvent) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        if (commandOpen.value) closeCommand()
+        else openCommand()
+        return
+    }
+    if (event.key === 'Escape') {
+        closeCommand()
+        if (isMobile.value) sidebarOpen.value = false
     }
 }
 
 const handleLogout = async () => {
     await authStore.logout()
-    window.location.href = '/login'
+    await router.push('/login')
 }
+
+watch(() => route.fullPath, () => {
+    closeCommand()
+    if (isMobile.value) sidebarOpen.value = false
+})
+
+onMounted(() => {
+    checkViewport()
+    window.addEventListener('resize', checkViewport)
+    window.addEventListener('keydown', onGlobalKeydown)
+})
+
+onUnmounted(() => {
+    window.removeEventListener('resize', checkViewport)
+    window.removeEventListener('keydown', onGlobalKeydown)
+})
 </script>
 
 <template>
-  <div class="ethereal-shell">
-    <header class="mobile-header">
-      <button type="button" class="mobile-menu-btn" @click="toggleSidebar" aria-label="切换菜单">
-        <Menu v-if="!isSidebarOpen" class="h-5 w-5" />
-        <X v-else class="h-5 w-5" />
-      </button>
-      <div class="mobile-brand">
-        <span class="brand-cube">◆</span>
-        IKAROS
-      </div>
-      <button type="button" class="ethereal-icon-button compact" aria-label="切换主题" @click="themeStore.toggleTheme()">
-        <Sun v-if="themeStore.isDark" class="h-4 w-4" />
-        <Moon v-else class="h-4 w-4" />
-      </button>
-    </header>
+  <div class="ikaros-shell" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
+    <AuroraBackdrop />
 
-    <div
-      v-if="isMobile && isSidebarOpen"
-      class="sidebar-overlay"
-      @click="closeSidebar"
+    <button
+      v-if="isMobile && sidebarOpen"
+      type="button"
+      class="ikaros-sidebar-scrim"
+      aria-label="关闭导航"
+      @click="sidebarOpen = false"
     />
 
-    <aside class="ethereal-sidebar" :class="{ 'is-open': isSidebarOpen, 'is-collapsed': isSidebarCollapsed }">
-      <div class="ethereal-brand">
-        <div class="ethereal-logo">
-          <div class="ethereal-logo-mark">
-            <span>◆</span>
-          </div>
-          <div>
-            <div class="ethereal-brand-mark">IKAROS</div>
-            <div class="ethereal-brand-subtitle">ETHEREAL SENTINEL</div>
-          </div>
-        </div>
+    <aside class="ikaros-sidebar" :class="{ 'is-open': sidebarOpen, 'is-collapsed': sidebarCollapsed }">
+      <div class="ikaros-brand-row">
+        <RouterLink to="/home" class="ikaros-brand" aria-label="返回系统概览">
+          <IkarosMark :size="36" />
+          <span class="ikaros-brand-copy">
+            <strong>IKAROS</strong>
+            <small>AGENT OPERATIONS</small>
+          </span>
+        </RouterLink>
         <button
           type="button"
-          class="sidebar-collapse"
-          :class="{ 'is-collapsed': isSidebarCollapsed }"
-          :aria-label="isSidebarCollapsed ? '展开菜单' : '收起菜单'"
-          :title="isSidebarCollapsed ? '展开菜单' : '收起菜单'"
-          @click="toggleSidebarCollapsed"
+          class="ikaros-sidebar-toggle"
+          :aria-label="sidebarCollapsed ? '展开导航' : '收起导航'"
+          :title="sidebarCollapsed ? '展开导航' : '收起导航'"
+          @click="toggleSidebar"
         >
-          <ChevronsLeft class="h-4 w-4" />
+          <ChevronsLeft />
         </button>
       </div>
 
-      <nav class="ethereal-nav">
-        <div class="ethereal-nav-block">
-          <div class="ethereal-nav-label">工作空间</div>
+      <nav class="ikaros-navigation" aria-label="主导航">
+        <section class="ikaros-nav-group">
+          <h2>工作空间</h2>
           <RouterLink
-            v-for="item in etherealPrimaryNav"
+            v-for="item in workspaceNav"
             :key="item.to"
             :to="item.to"
-            class="ethereal-nav-item"
+            class="ikaros-nav-item"
             :class="{ 'is-active': isNavActive(item.to) }"
-            @click="handleNavClick"
+            :title="sidebarCollapsed ? item.label : undefined"
           >
-            <component :is="item.icon" class="ethereal-nav-icon" />
+            <component :is="item.icon" />
             <span>{{ item.label }}</span>
           </RouterLink>
-        </div>
+        </section>
 
-        <div v-if="etherealAdminNav.length" class="ethereal-nav-block">
-          <div class="ethereal-nav-label">管理员</div>
+        <section class="ikaros-nav-group">
+          <h2>管理中心</h2>
           <RouterLink
-            v-for="item in etherealAdminNav"
+            v-for="item in managementNav"
             :key="item.to"
             :to="item.to"
-            class="ethereal-nav-item"
+            class="ikaros-nav-item"
             :class="{ 'is-active': isNavActive(item.to) }"
-            @click="handleNavClick"
+            :title="sidebarCollapsed ? item.label : undefined"
           >
-            <component :is="item.icon" class="ethereal-nav-icon" />
+            <component :is="item.icon" />
             <span>{{ item.label }}</span>
           </RouterLink>
-        </div>
+        </section>
       </nav>
 
-      <div class="ethereal-sidebar-footer">
-        <div class="ethereal-identity">
-          <div class="ethereal-avatar">{{ identityInitial }}</div>
-          <div class="ethereal-identity-copy">
-            <div class="ethereal-identity-name">{{ identityPrimary }}</div>
-            <div class="ethereal-identity-email">{{ identityEmail }}</div>
-            <div class="ethereal-identity-role">
-              <span />
-              在线
-            </div>
-          </div>
+      <div class="ikaros-sidebar-footer">
+        <div class="ikaros-user-card">
+          <span class="ikaros-user-avatar">{{ identityInitial }}</span>
+          <span class="ikaros-user-copy">
+            <strong>{{ identityName }}</strong>
+            <small>{{ identityRole }}</small>
+          </span>
+          <button type="button" title="退出登录" aria-label="退出登录" @click="handleLogout">
+            <LogOut />
+          </button>
         </div>
-
-        <button type="button" class="ethereal-logout" @click="handleLogout">
-          <LogOut class="h-4 w-4" />
-          退出登录
-        </button>
       </div>
     </aside>
 
-    <section class="ethereal-main-shell">
-      <header class="ethereal-topbar">
-        <div class="ethereal-trail">
-          <Home class="ethereal-trail-home h-4 w-4" />
-          <span>{{ shellRoot }}</span>
-          <span class="ethereal-trail-divider">/</span>
-          <strong>{{ currentTitle }}</strong>
-          <span class="ethereal-trail-divider">/</span>
-          <span>{{ routeAlias }}</span>
+    <section class="ikaros-main-shell">
+      <header class="ikaros-topbar">
+        <div class="ikaros-topbar-left">
+          <button type="button" class="ikaros-mobile-menu" aria-label="打开导航" @click="toggleSidebar">
+            <X v-if="sidebarOpen" />
+            <Menu v-else />
+          </button>
+          <div class="ikaros-breadcrumb" aria-label="当前位置">
+            <span>{{ currentSection }}</span>
+            <ChevronRight />
+            <strong>{{ currentTitle }}</strong>
+          </div>
+          <button type="button" class="ikaros-command-trigger" @click="openCommand">
+            <Search />
+            <span>搜索页面或命令</span>
+            <kbd>⌘K</kbd>
+          </button>
         </div>
 
-        <div class="ethereal-topbar-actions">
+        <div class="ikaros-topbar-actions">
+          <RouterLink to="/chat" class="ikaros-create-button">
+            <Plus />
+            <span>新建会话</span>
+          </RouterLink>
           <button
             type="button"
-            class="ethereal-icon-button"
+            class="ikaros-topbar-button"
             :aria-label="themeStore.isDark ? '切换浅色模式' : '切换深色模式'"
             :title="themeStore.isDark ? '切换浅色模式' : '切换深色模式'"
             @click="themeStore.toggleTheme()"
           >
-            <Sun v-if="themeStore.isDark" class="h-4 w-4" />
-            <Moon v-else class="h-4 w-4" />
+            <Sun v-if="themeStore.isDark" />
+            <Moon v-else />
           </button>
-          <div class="ethereal-top-avatar">{{ identityInitial }}</div>
+          <div class="ikaros-topbar-profile" :title="identityEmail || identityName">
+            {{ identityInitial }}
+          </div>
         </div>
       </header>
 
-      <main class="ethereal-main-scroll">
-        <div class="ethereal-view-slot">
+      <main class="ikaros-main-scroll">
+        <div class="ikaros-view-slot">
           <RouterView />
         </div>
       </main>
-
-      <footer class="ethereal-footer">
-        <span>© 2025 IKAROS Ethereal Sentinel. 保留所有权利。</span>
-      </footer>
     </section>
+
+    <div v-if="commandOpen" class="ikaros-command-layer" @click.self="closeCommand">
+      <LiquidGlass
+        class="ikaros-command-panel"
+        :radius="18"
+        :optics="{
+          strength: 0.1,
+          depth: 0.8,
+          dispersion: 0.5,
+          frost: 3.5,
+          specular: 1.2,
+          glow: 0.26,
+          sheen: 0.9,
+          curvature: 0.44,
+          bend: 0.68,
+          brightness: 0.1,
+        }"
+      >
+        <div class="ikaros-command-search">
+          <Search />
+          <input
+            ref="searchInput"
+            v-model="commandQuery"
+            type="search"
+            placeholder="输入页面名称，例如“心跳监控”"
+            aria-label="搜索页面"
+          >
+          <button type="button" aria-label="关闭搜索" @click="closeCommand"><X /></button>
+        </div>
+        <div class="ikaros-command-results">
+          <button
+            v-for="item in commandResults"
+            :key="item.to"
+            type="button"
+            class="ikaros-command-result"
+            @click="selectCommand(item)"
+          >
+            <span class="ikaros-command-icon"><component :is="item.icon" /></span>
+            <span>
+              <strong>{{ item.label }}</strong>
+              <small>{{ item.description }}</small>
+            </span>
+            <ChevronRight />
+          </button>
+          <p v-if="!commandResults.length" class="ikaros-command-empty">没有匹配的页面</p>
+        </div>
+      </LiquidGlass>
+    </div>
   </div>
 </template>
-
-<style scoped>
-.ethereal-shell {
-  display: flex;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-}
-
-.ethereal-sidebar {
-  position: relative;
-  width: 296px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 24px 16px 22px;
-  background: color-mix(in srgb, var(--color-bg-elevated) 94%, transparent);
-  border-right: 1px solid var(--color-border-secondary);
-  box-shadow: 8px 0 32px rgba(15, 23, 42, 0.03);
-  overflow-y: auto;
-  transition: width 0.22s ease, padding 0.22s ease;
-}
-
-.ethereal-sidebar.is-collapsed {
-  width: 86px;
-  padding-inline: 12px;
-  overflow-x: hidden;
-}
-
-.ethereal-brand {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 72px;
-  padding: 0 8px;
-}
-
-.ethereal-sidebar.is-collapsed .ethereal-brand {
-  display: grid;
-  justify-items: center;
-  gap: 10px;
-  min-height: 90px;
-  padding: 0;
-}
-
-.ethereal-logo {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.ethereal-sidebar.is-collapsed .ethereal-logo {
-  justify-content: center;
-}
-
-.ethereal-logo-mark {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, var(--color-primary-600), var(--color-primary-500));
-  color: white;
-  box-shadow: 0 14px 28px rgba(38, 113, 255, 0.22);
-}
-
-.ethereal-logo-mark span,
-.brand-cube {
-  font-size: 14px;
-  line-height: 1;
-}
-
-.ethereal-brand-mark {
-  font-size: 27px;
-  line-height: 1;
-  font-weight: 800;
-  letter-spacing: 0;
-  color: var(--color-text-primary);
-}
-
-.ethereal-brand-subtitle {
-  margin-top: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 1.2px;
-  color: var(--color-text-muted);
-}
-
-.ethereal-sidebar.is-collapsed .ethereal-logo > div:last-child,
-.ethereal-sidebar.is-collapsed .ethereal-nav-label,
-.ethereal-sidebar.is-collapsed .ethereal-nav-item span,
-.ethereal-sidebar.is-collapsed .ethereal-identity-copy,
-.ethereal-sidebar.is-collapsed .ethereal-logout {
-  display: none;
-}
-
-.sidebar-collapse {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-}
-
-.sidebar-collapse.is-collapsed {
-  position: static;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--color-border-primary);
-  border-radius: 8px;
-  background: var(--color-bg-elevated);
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
-}
-
-.sidebar-collapse.is-collapsed svg {
-  transform: rotate(180deg);
-}
-
-.ethereal-nav {
-  display: grid;
-  gap: 34px;
-  padding-top: 18px;
-}
-
-.ethereal-sidebar.is-collapsed .ethereal-nav {
-  gap: 20px;
-  padding-top: 16px;
-}
-
-.ethereal-nav-block {
-  display: grid;
-  gap: 9px;
-}
-
-.ethereal-nav-label {
-  padding: 0 14px 4px;
-  font-size: 13px;
-  color: var(--color-text-muted);
-}
-
-.ethereal-nav-item {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-height: 48px;
-  padding: 0 16px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  color: var(--color-text-secondary);
-  font-size: 15px;
-  font-weight: 600;
-  text-decoration: none;
-  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
-}
-
-.ethereal-sidebar.is-collapsed .ethereal-nav-item {
-  justify-content: center;
-  gap: 0;
-  min-height: 44px;
-  padding: 0;
-}
-
-.ethereal-nav-item:hover {
-  background: color-mix(in srgb, var(--color-primary-500) 8%, var(--color-bg-elevated));
-  color: var(--color-primary-700);
-}
-
-.ethereal-nav-item.is-active {
-  border-color: var(--color-primary-500);
-  background: color-mix(in srgb, var(--color-primary-500) 10%, var(--color-bg-elevated));
-  color: var(--color-primary-700);
-  box-shadow: 0 8px 18px rgba(40, 119, 255, 0.09);
-}
-
-.ethereal-nav-icon {
-  width: 17px;
-  height: 17px;
-}
-
-.ethereal-sidebar.is-collapsed .ethereal-nav-icon {
-  width: 18px;
-  height: 18px;
-}
-
-.ethereal-sidebar-footer {
-  margin-top: auto;
-  display: grid;
-  gap: 18px;
-  padding: 22px 4px 0;
-}
-
-.ethereal-sidebar.is-collapsed .ethereal-sidebar-footer {
-  justify-items: center;
-  padding-inline: 0;
-}
-
-.ethereal-identity {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--color-border-primary);
-  border-radius: 14px;
-  background: var(--color-bg-elevated);
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.04);
-}
-
-.ethereal-sidebar.is-collapsed .ethereal-identity {
-  grid-template-columns: 42px;
-  padding: 8px;
-}
-
-.ethereal-avatar,
-.ethereal-top-avatar {
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  background: var(--color-info-bg);
-  color: var(--color-info);
-  font-weight: 800;
-}
-
-.ethereal-avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-}
-
-.ethereal-top-avatar {
-  width: 40px;
-  height: 40px;
-}
-
-.ethereal-identity-copy {
-  min-width: 0;
-}
-
-.ethereal-identity-name {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--color-text-primary);
-}
-
-.ethereal-identity-email {
-  margin-top: 2px;
-  overflow: hidden;
-  color: var(--color-text-tertiary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ethereal-identity-role {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  color: var(--color-success);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.ethereal-identity-role span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--color-success);
-}
-
-.ethereal-logout {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  width: max-content;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.ethereal-main-shell {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex: 1;
-  flex-direction: column;
-  background: var(--color-bg-primary);
-}
-
-.ethereal-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 22px;
-  min-height: 78px;
-  padding: 0 32px;
-  border-bottom: 1px solid var(--color-border-secondary);
-  background: color-mix(in srgb, var(--color-bg-elevated) 88%, transparent);
-  backdrop-filter: blur(18px);
-}
-
-.ethereal-trail {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-  color: var(--color-text-secondary);
-  font-size: 17px;
-  white-space: nowrap;
-}
-
-.ethereal-trail-home {
-  color: var(--color-text-tertiary);
-}
-
-.ethereal-trail strong {
-  color: var(--color-text-primary);
-  font-size: 18px;
-}
-
-.ethereal-trail-divider {
-  color: var(--color-text-muted);
-}
-
-.ethereal-topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.ethereal-icon-button {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-
-.ethereal-icon-button.compact {
-  width: 34px;
-  height: 34px;
-}
-
-.ethereal-icon-button:hover {
-  background: color-mix(in srgb, var(--color-primary-500) 9%, var(--color-bg-elevated));
-  color: var(--color-primary-700);
-}
-
-.ethereal-main-scroll {
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
-  padding: 24px 28px;
-}
-
-.ethereal-view-slot {
-  min-height: 100%;
-}
-
-.ethereal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  min-height: 52px;
-  padding: 0 32px;
-  border-top: 1px solid var(--color-border-secondary);
-  background: var(--color-bg-elevated);
-  color: var(--color-text-muted);
-  font-size: 13px;
-}
-
-.mobile-header,
-.sidebar-overlay {
-  display: none;
-}
-
-@media (max-width: 1280px) {
-  .ethereal-sidebar {
-    width: 270px;
-  }
-
-  .ethereal-sidebar.is-collapsed {
-    width: 86px;
-  }
-}
-
-@media (max-width: 1024px) {
-  .mobile-header {
-    position: fixed;
-    z-index: 70;
-    inset: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 58px;
-    padding: 0 14px;
-    border-bottom: 1px solid var(--color-border-secondary);
-    background: color-mix(in srgb, var(--color-bg-elevated) 94%, transparent);
-    backdrop-filter: blur(18px);
-  }
-
-  .mobile-brand {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-weight: 800;
-    letter-spacing: 0;
-  }
-
-  .brand-cube {
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
-    background: var(--color-primary-600);
-    color: #fff;
-  }
-
-  .mobile-menu-btn {
-    display: grid;
-    place-items: center;
-    width: 36px;
-    height: 36px;
-    border: 1px solid var(--color-border-primary);
-    border-radius: 10px;
-    background: var(--color-bg-elevated);
-    color: var(--color-text-secondary);
-  }
-
-  .sidebar-overlay {
-    position: fixed;
-    z-index: 50;
-    inset: 58px 0 0;
-    display: block;
-    background: var(--color-bg-overlay);
-    backdrop-filter: blur(4px);
-  }
-
-  .ethereal-shell {
-    padding-top: 58px;
-  }
-
-  .ethereal-sidebar {
-    position: fixed;
-    z-index: 60;
-    top: 58px;
-    bottom: 0;
-    left: 0;
-    width: 284px;
-    transform: translateX(-100%);
-    transition: transform 0.24s ease;
-  }
-
-  .ethereal-sidebar.is-collapsed {
-    width: 284px;
-    padding: 24px 16px 22px;
-  }
-
-  .ethereal-sidebar.is-collapsed .ethereal-brand {
-    justify-content: space-between;
-    padding: 0 8px;
-  }
-
-  .ethereal-sidebar.is-collapsed .ethereal-logo > div:last-child,
-  .ethereal-sidebar.is-collapsed .ethereal-nav-label,
-  .ethereal-sidebar.is-collapsed .ethereal-nav-item span,
-  .ethereal-sidebar.is-collapsed .ethereal-identity-copy,
-  .ethereal-sidebar.is-collapsed .ethereal-logout {
-    display: block;
-  }
-
-  .ethereal-sidebar.is-collapsed .ethereal-nav-item {
-    justify-content: flex-start;
-    gap: 14px;
-    min-height: 48px;
-    padding: 0 16px;
-  }
-
-  .ethereal-sidebar.is-collapsed .ethereal-identity {
-    grid-template-columns: 42px minmax(0, 1fr);
-    padding: 14px;
-  }
-
-  .ethereal-sidebar.is-collapsed .sidebar-collapse {
-    position: static;
-  }
-
-  .ethereal-sidebar.is-collapsed .sidebar-collapse svg {
-    transform: none;
-  }
-
-  .ethereal-sidebar.is-open {
-    transform: translateX(0);
-  }
-
-  .ethereal-topbar {
-    min-height: 64px;
-    padding: 0 18px;
-  }
-
-  .ethereal-topbar-actions {
-    gap: 8px;
-  }
-
-  .ethereal-trail {
-    font-size: 14px;
-  }
-
-  .ethereal-trail strong {
-    font-size: 15px;
-  }
-
-  .ethereal-main-scroll {
-    padding: 16px;
-  }
-
-  .ethereal-footer {
-    display: none;
-  }
-}
-
-@media (max-width: 640px) {
-  .ethereal-top-avatar {
-    display: none;
-  }
-
-  .ethereal-topbar {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
-    padding: 12px 16px;
-  }
-
-  .ethereal-trail {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .ethereal-main-scroll {
-    padding: 12px;
-  }
-}
-</style>

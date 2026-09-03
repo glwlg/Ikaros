@@ -32,6 +32,14 @@ from api.services.admin_config_service import (
     run_models_latency_check,
     update_memory_provider,
 )
+from api.services.aliyun_traffic import (
+    AliyunApiError,
+    AliyunCliCommandError,
+    AliyunCliTimeout,
+    AliyunCliUnavailable,
+    AliyunTrafficDataError,
+    query_current_cdt_traffic,
+)
 from api.services.env_config import read_managed_env
 from core.app_paths import env_path, memory_config_path
 from core.memory_config import get_memory_provider_name, load_memory_config
@@ -325,6 +333,20 @@ async def models_fetch_provider_models(
         }
     )
     return result
+
+
+@router.get("/aliyun-traffic")
+async def get_aliyun_traffic(
+    _: User = Depends(require_admin),
+):
+    try:
+        return await query_current_cdt_traffic()
+    except AliyunCliUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AliyunCliTimeout as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except (AliyunCliCommandError, AliyunApiError, AliyunTrafficDataError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/diagnostics")

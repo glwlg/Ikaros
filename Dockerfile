@@ -87,6 +87,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM api-python AS api-runtime
 
+ARG ALIYUN_CLI_VERSION=3.0.170
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    archive="aliyun-cli-linux-${ALIYUN_CLI_VERSION}-${arch}.tgz"; \
+    release_url="https://github.com/aliyun/aliyun-cli/releases/download/v${ALIYUN_CLI_VERSION}"; \
+    curl -fsSL "${release_url}/SHASUMS256.txt" -o /tmp/aliyun-cli-sha256.txt; \
+    curl -fsSL "${release_url}/${archive}" -o "/tmp/${archive}"; \
+    cd /tmp; \
+    grep "  ${archive}$" aliyun-cli-sha256.txt | sha256sum -c -; \
+    tar -xzf "${archive}"; \
+    install -m 0755 aliyun /usr/local/bin/aliyun; \
+    rm -f "${archive}" aliyun aliyun-cli-sha256.txt
+
 COPY src/ .
 COPY --from=frontend-builder /app/src/api/static/dist /app/api/static/dist
 

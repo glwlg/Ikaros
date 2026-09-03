@@ -8,6 +8,7 @@ import './style.css'
 import './styles/theme.css'
 import './styles/accounting-warm.css'
 import './styles/console-editorial.css'
+import './styles/ikaros-cockpit.css'
 
 // 导入并初始化主题系统（在应用挂载前初始化）
 import { useThemeStore } from './stores/theme'

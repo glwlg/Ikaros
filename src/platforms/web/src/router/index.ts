@@ -12,7 +12,7 @@ const router = createRouter({
             path: '/home',
             name: 'Home',
             component: () => import('@/views/Home/HomeView.vue'),
-            meta: { title: '首页' },
+            meta: { title: '系统概览' },
         },
         {
             path: '/chat',
@@ -54,19 +54,19 @@ const router = createRouter({
             path: '/modules/cameras',
             name: 'ModuleCameras',
             component: () => import('@/views/Modules/CameraView.vue'),
-            meta: { title: '实时监控', requiresAdmin: true, fullscreen: true },
+            meta: { title: '实时监控', requiresAdmin: true },
         },
         {
             path: '/modules/watchlist',
             name: 'ModuleWatchlist',
             component: () => import('@/views/Modules/WatchlistView.vue'),
-            meta: { title: '自选股管理' },
+            meta: { title: '市场追踪' },
         },
         {
             path: '/modules/subscriptions',
             name: 'ModuleSubscriptions',
             component: () => import('@/views/Modules/SubscriptionView.vue'),
-            meta: { title: '订阅管理' },
+            meta: { title: '续费订阅' },
         },
         {
             path: '/accounting',
@@ -217,10 +217,16 @@ const router = createRouter({
             meta: { title: '运行配置', requiresAdmin: true },
         },
         {
+            path: '/admin/aliyun-traffic',
+            name: 'AdminAliyunTraffic',
+            component: () => import('@/views/Admin/AliyunTrafficView.vue'),
+            meta: { title: '阿里云流量', requiresAdmin: true },
+        },
+        {
             path: '/admin/users',
             name: 'AdminUsers',
             component: () => import('@/views/Admin/UsersView.vue'),
-            meta: { title: '用户管理', requiresOperator: true },
+            meta: { title: '用户与权限', requiresOperator: true },
         },
         {
             path: '/admin/channel-access',
@@ -232,7 +238,7 @@ const router = createRouter({
             path: '/admin/models',
             name: 'AdminModels',
             component: () => import('@/views/Admin/ModelConfigView.vue'),
-            meta: { title: '模型配置', requiresAdmin: true },
+            meta: { title: '模型路由', requiresAdmin: true },
         },
         {
             path: '/admin/diagnostics',
