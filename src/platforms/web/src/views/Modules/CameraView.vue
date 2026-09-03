@@ -11,12 +11,14 @@ import {
     ArrowUpRight,
     Cctv,
     CircleStop,
+    Gamepad2,
     Loader2,
     Pencil,
     PictureInPicture2,
     Play,
     Plus,
     RefreshCw,
+    Signal,
     Trash2,
     Video,
     ZoomIn,
@@ -36,8 +38,23 @@ import {
     type PtzAction,
     type StreamToken,
 } from '@/api/cameras'
+import LiquidGlass from '@/components/liquid-glass/LiquidGlass.vue'
 
 type PlayerMode = 'webrtc' | 'hls'
+
+const panelOptics = {
+    mapSize: 256,
+    strength: 0.06,
+    depth: 0.72,
+    dispersion: 0.46,
+    frost: 4,
+    saturate: 1.22,
+    specular: 1.15,
+    glow: 0.22,
+    sheen: 0.78,
+    curvature: 0.38,
+    bend: 0.62,
+}
 
 interface MediaMTXWebRTCReaderConfig {
     url: string
@@ -154,6 +171,17 @@ const canControlPtz = computed(() =>
 const canUseDirectWebRtc = computed(() =>
     playerMode.value === 'webrtc' && !!stream.value?.webrtc_whep_url
 )
+const liveState = computed(() => {
+    if (!selectedCamera.value) return { text: '未选择', tone: 'muted' }
+    if (streamLoading.value) return { text: '连接中', tone: 'muted' }
+    if (streamError.value) return { text: '连接异常', tone: 'danger' }
+    if (playerMode.value === 'webrtc') {
+        if (directStreamReady.value) return { text: 'LIVE', tone: 'live' }
+        if (directStreamError.value) return { text: '播放异常', tone: 'danger' }
+        return { text: '连接中', tone: 'muted' }
+    }
+    return { text: 'HLS', tone: 'live' }
+})
 const canUseDigitalZoom = computed(() =>
     !!selectedCamera.value &&
     (
@@ -964,51 +992,62 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="camera-page flex min-h-screen flex-col gap-4 bg-slate-50 p-3 md:gap-6 md:p-8">
-    <section class="camera-summary order-2 rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm md:order-1">
-      <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Module</div>
-          <h2 class="mt-1 text-2xl font-semibold text-slate-900">实时监控</h2>
+  <div class="camera-page flex flex-col gap-4 p-3 md:gap-6 md:p-8">
+    <LiquidGlass as="section" :radius="24" :optics="panelOptics" class="camera-summary order-2 md:order-1">
+      <div class="camera-summary-inner">
+        <div class="camera-summary-head">
+          <div class="camera-summary-title">
+            <p class="ikaros-page-kicker">Realtime</p>
+            <h1>实时监控</h1>
+          </div>
+          <div class="camera-summary-actions">
+            <button type="button" class="camera-ghost-btn" @click="loadData(true)">
+              <RefreshCw :class="{ 'is-spinning': refreshing }" />
+              刷新
+            </button>
+            <button type="button" class="ikaros-primary-action camera-add-btn" @click="openCreate">
+              <Plus />
+              添加摄像头
+            </button>
+          </div>
         </div>
-        <div class="flex items-center gap-2">
-          <button @click="loadData(true)" class="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-100">
-            <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': refreshing }" />
-            刷新
-          </button>
-          <button @click="openCreate" class="inline-flex items-center gap-2 rounded-2xl bg-blue-500 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-blue-500/20 transition hover:bg-blue-600">
-            <Plus class="h-4 w-4" />
-            添加摄像头
-          </button>
+        <div class="camera-summary-stats">
+          <div class="camera-stat">
+            <span class="camera-stat-icon"><Cctv /></span>
+            <div class="camera-stat-copy">
+              <span>摄像头总数</span>
+              <strong>{{ cameras.length }}</strong>
+            </div>
+          </div>
+          <div class="camera-stat">
+            <span class="camera-stat-icon is-online"><Signal /></span>
+            <div class="camera-stat-copy">
+              <span>在线设备</span>
+              <strong>{{ enabledCount }}</strong>
+            </div>
+          </div>
+          <div class="camera-stat">
+            <span class="camera-stat-icon"><Gamepad2 /></span>
+            <div class="camera-stat-copy">
+              <span>PTZ 支持</span>
+              <strong>{{ ptzCount }}</strong>
+            </div>
+          </div>
         </div>
       </div>
-
-      <div class="mt-6 grid gap-4 md:grid-cols-3">
-        <div class="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Cameras</div>
-          <div class="mt-3 text-3xl font-semibold text-slate-950">{{ cameras.length }}</div>
-        </div>
-        <div class="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Online</div>
-          <div class="mt-3 text-3xl font-semibold text-slate-950">{{ enabledCount }}</div>
-        </div>
-        <div class="rounded-[24px] border border-slate-200 bg-slate-950 p-4 text-slate-100">
-          <div class="text-xs uppercase tracking-[0.24em] text-slate-500">PTZ</div>
-          <div class="mt-3 text-2xl font-semibold">{{ ptzCount }}</div>
-        </div>
-      </div>
-    </section>
+    </LiquidGlass>
 
     <div class="camera-main-grid order-1 grid gap-4 md:order-2 md:gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
-      <section class="camera-live-card overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
-        <div class="camera-live-header flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4">
-          <div class="min-w-0">
-            <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Live</div>
-            <h3 class="mt-1 truncate text-xl font-semibold text-slate-950">{{ selectedCamera?.name || '未选择摄像头' }}</h3>
+      <LiquidGlass as="section" :radius="24" :optics="panelOptics" class="camera-live-card">
+        <div class="camera-live-header">
+          <div class="camera-live-title">
+            <span class="camera-live-dot" :class="`is-${liveState.tone}`" />
+            <h3>{{ selectedCamera?.name || '未选择摄像头' }}</h3>
+            <span class="camera-live-chip" :class="`is-${liveState.tone}`">{{ liveState.text }}</span>
           </div>
-          <div class="camera-live-controls flex flex-wrap items-center justify-end gap-2">
-            <div class="camera-zoom-control flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2" :class="{ 'opacity-50': !canUseDigitalZoom }">
-              <ZoomOut class="h-4 w-4 text-slate-400" />
+          <div class="camera-live-controls">
+            <div class="camera-zoom-control" :class="{ 'is-disabled': !canUseDigitalZoom }">
+              <ZoomOut />
               <input
                 :value="digitalZoom"
                 class="camera-zoom-slider"
@@ -1020,27 +1059,48 @@ onBeforeUnmount(() => {
                 :disabled="!canUseDigitalZoom"
                 @input="setDigitalZoom(($event.target as HTMLInputElement).valueAsNumber)"
               >
-              <ZoomIn class="h-4 w-4 text-slate-400" />
-              <span class="w-9 text-right text-xs font-semibold text-slate-600">{{ zoomLabel }}</span>
+              <ZoomIn />
+              <span class="camera-zoom-value">{{ zoomLabel }}</span>
             </div>
             <button
-              class="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition"
-              :class="pipActive ? 'border-blue-200 bg-blue-50 text-blue-600' : 'border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:text-blue-600'"
+              type="button"
+              class="camera-pip-btn"
+              :class="{ 'is-active': pipActive }"
               :disabled="!canOpenZoomPip"
               @click="toggleZoomedPictureInPicture"
             >
-              <PictureInPicture2 class="h-4 w-4" />
+              <PictureInPicture2 />
               画中画
             </button>
-            <button class="rounded-xl border px-3 py-2 text-sm" :class="playerMode === 'webrtc' ? 'border-blue-200 bg-blue-50 text-blue-600' : 'border-slate-200 bg-white text-slate-600'" @click="playerMode = 'webrtc'">WebRTC</button>
-            <button class="rounded-xl border px-3 py-2 text-sm" :class="playerMode === 'hls' ? 'border-blue-200 bg-blue-50 text-blue-600' : 'border-slate-200 bg-white text-slate-600'" @click="playerMode = 'hls'">HLS</button>
-            <button class="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:border-blue-200 hover:text-blue-600" @click="loadStream" :disabled="streamLoading || !selectedCamera">
-              <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': streamLoading }" />
+            <div class="camera-mode-switch">
+              <button
+                type="button"
+                :class="{ 'is-active': playerMode === 'webrtc' }"
+                @click="playerMode = 'webrtc'"
+              >
+                WebRTC
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': playerMode === 'hls' }"
+                @click="playerMode = 'hls'"
+              >
+                HLS
+              </button>
+            </div>
+            <button
+              type="button"
+              class="camera-icon-btn"
+              title="重新拉流"
+              :disabled="streamLoading || !selectedCamera"
+              @click="loadStream"
+            >
+              <RefreshCw :class="{ 'is-spinning': streamLoading }" />
             </button>
           </div>
         </div>
 
-        <div class="camera-player relative bg-slate-950">
+        <div class="camera-player relative">
           <div v-if="streamLoading" class="absolute inset-0 flex items-center justify-center text-slate-100">
             <Loader2 class="h-8 w-8 animate-spin" />
           </div>
@@ -1129,166 +1189,536 @@ onBeforeUnmount(() => {
           />
           <canvas ref="pipCanvasRef" class="camera-pip-canvas" />
         </div>
-      </section>
+      </LiquidGlass>
 
       <aside class="camera-side space-y-4 md:space-y-6">
-        <section class="camera-device-panel rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Devices</div>
-              <h3 class="mt-1 text-lg font-semibold text-slate-950">摄像头列表</h3>
+        <LiquidGlass as="section" :radius="24" :optics="panelOptics" class="camera-device-panel">
+          <div class="camera-panel-inner">
+            <div class="camera-panel-head">
+              <div class="camera-panel-title">
+                <h3>设备列表</h3>
+                <p>选择一路摄像头查看实时画面</p>
+              </div>
+              <span class="camera-count-chip">{{ cameras.length }} 路</span>
             </div>
-            <span class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm text-slate-600">{{ cameras.length }} 路</span>
-          </div>
 
-          <div class="mt-4">
-            <div v-if="loading" class="flex justify-center py-10">
-              <Loader2 class="h-7 w-7 animate-spin text-blue-500" />
+            <div v-if="loading" class="camera-list-state">
+              <Loader2 class="is-spinning" />
+              正在加载摄像头
             </div>
-            <div v-else-if="cameras.length === 0" class="flex flex-col items-center justify-center py-12 text-slate-400">
-              <Cctv class="mb-3 h-12 w-12 text-slate-300" />
+            <div v-else-if="cameras.length === 0" class="camera-list-empty">
+              <Cctv />
               <p>暂无摄像头</p>
             </div>
-            <div v-else class="space-y-3">
+            <div v-else class="camera-device-list">
               <button
                 v-for="camera in cameras"
                 :key="camera.id"
                 type="button"
-                class="w-full rounded-[24px] border p-4 text-left transition"
-                :class="selectedId === camera.id ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'"
+                class="camera-device-item"
+                :class="{ 'is-selected': selectedId === camera.id, 'is-disabled': !camera.enabled }"
                 @click="selectCamera(camera)"
               >
-                <div class="flex items-start justify-between gap-3">
-                  <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                      <span class="h-2 w-2 rounded-full" :class="camera.enabled ? 'bg-emerald-500' : 'bg-slate-300'" />
-                      <h4 class="truncate font-semibold text-slate-950">{{ camera.name }}</h4>
+                <div class="camera-device-row">
+                  <div class="camera-device-copy">
+                    <div class="camera-device-name">
+                      <span class="camera-device-dot" :class="camera.enabled ? 'is-online' : 'is-offline'" />
+                      <h4>{{ camera.name }}</h4>
                     </div>
-                    <p class="mt-2 truncate font-mono text-xs text-slate-500">{{ camera.mediamtx_path }}</p>
-                    <p class="mt-1 text-xs text-slate-400">{{ camera.onvif_enabled ? 'ONVIF' : 'RTSP' }}</p>
+                    <p class="camera-device-path">{{ camera.mediamtx_path }}</p>
+                    <span class="camera-device-proto">{{ camera.onvif_enabled ? 'ONVIF' : 'RTSP' }}</span>
                   </div>
-                  <div class="flex shrink-0 items-center gap-1">
-                    <button type="button" class="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:text-blue-600" @click.stop="handleTest(camera)">
-                      <Loader2 v-if="testingId === camera.id" class="h-4 w-4 animate-spin" />
-                      <Play v-else class="h-4 w-4" />
+                  <div class="camera-device-actions">
+                    <button type="button" title="测试连接" @click.stop="handleTest(camera)">
+                      <Loader2 v-if="testingId === camera.id" class="is-spinning" />
+                      <Play v-else />
                     </button>
-                    <button type="button" class="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:text-blue-600" @click.stop="openEdit(camera)">
-                      <Pencil class="h-4 w-4" />
+                    <button type="button" title="编辑" @click.stop="openEdit(camera)">
+                      <Pencil />
                     </button>
-                    <button type="button" class="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:text-rose-600" @click.stop="handleDelete(camera)">
-                      <Trash2 class="h-4 w-4" />
+                    <button type="button" class="is-danger" title="删除" @click.stop="handleDelete(camera)">
+                      <Trash2 />
                     </button>
                   </div>
                 </div>
               </button>
             </div>
           </div>
-        </section>
+        </LiquidGlass>
 
-        <section class="camera-ptz-panel rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm" :class="{ 'opacity-60': !canControlPtz }">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Control</div>
-              <h3 class="mt-1 text-lg font-semibold text-slate-950">云台控制</h3>
+        <LiquidGlass as="section" :radius="24" :optics="panelOptics" class="camera-ptz-panel" :class="{ 'is-disabled': !canControlPtz }">
+          <div class="camera-panel-inner">
+            <div class="camera-panel-head">
+              <div class="camera-panel-title">
+                <h3>云台控制</h3>
+                <p>{{ canControlPtz ? '按住方向键转动云台' : '当前摄像头未启用 ONVIF 云台' }}</p>
+              </div>
+              <span class="camera-count-chip">{{ ptzSpeedPercent }}%</span>
             </div>
-            <span class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-medium text-slate-600">{{ ptzSpeedPercent }}%</span>
-          </div>
 
-          <label class="mt-4 flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-            <span class="shrink-0 text-sm font-medium text-slate-600">速度</span>
-            <input
-              v-model.number="ptzSpeed"
-              class="camera-speed-slider min-w-0 flex-1"
-              type="range"
-              min="0.05"
-              max="1"
-              step="0.05"
-              aria-label="云台速度"
-            >
-          </label>
+            <label class="camera-speed-row">
+              <span>速度</span>
+              <input
+                v-model.number="ptzSpeed"
+                class="camera-speed-slider"
+                type="range"
+                min="0.05"
+                max="1"
+                step="0.05"
+                aria-label="云台速度"
+              >
+            </label>
 
-          <div class="mt-3 grid grid-cols-3 gap-2">
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUpLeft class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUp class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUpRight class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowLeft class="h-5 w-5" /></button>
-            <button class="ptz-btn bg-slate-950 text-white" :disabled="!canControlPtz" @click="stopPtz(true)"><CircleStop class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowRight class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDownLeft class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDown class="h-5 w-5" /></button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDownRight class="h-5 w-5" /></button>
-          </div>
+            <div class="camera-ptz-dpad">
+              <div class="camera-ptz-grid">
+                <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUpLeft class="h-5 w-5" /></button>
+                <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUp class="h-5 w-5" /></button>
+                <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('up_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowUpRight class="h-5 w-5" /></button>
+                <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowLeft class="h-5 w-5" /></button>
+                <button class="ptz-btn camera-ptz-stop" :disabled="!canControlPtz" @click="stopPtz(true)"><CircleStop class="h-5 w-5" /></button>
+                <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowRight class="h-5 w-5" /></button>
+                <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down_left')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDownLeft class="h-5 w-5" /></button>
+                <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDown class="h-5 w-5" /></button>
+                <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('down_right')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz"><ArrowDownRight class="h-5 w-5" /></button>
+              </div>
+            </div>
 
-          <div class="mt-3 grid grid-cols-2 gap-2">
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('zoom_in')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz">
-              <ZoomIn class="h-5 w-5" />
-            </button>
-            <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('zoom_out')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz">
-              <ZoomOut class="h-5 w-5" />
-            </button>
+            <div class="camera-ptz-zoom-row">
+              <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('zoom_in')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz">
+                <ZoomIn class="h-5 w-5" />
+              </button>
+              <button class="ptz-btn" :disabled="!canControlPtz" @pointerdown.prevent="startPtz('zoom_out')" @pointerup.prevent="stopPtz" @pointerleave.prevent="stopPtz" @pointercancel.prevent="stopPtz" @lostpointercapture.prevent="stopPtz">
+                <ZoomOut class="h-5 w-5" />
+              </button>
+            </div>
           </div>
-        </section>
+        </LiquidGlass>
       </aside>
     </div>
 
-    <div v-if="showDialog" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
-      <div class="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[28px] border border-slate-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.2)]">
-        <div class="border-b border-slate-200 px-6 py-5">
-          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Form</div>
-          <h2 class="mt-1 text-xl font-semibold text-slate-950">{{ editingId ? '编辑摄像头' : '添加摄像头' }}</h2>
+    <div v-if="showDialog" class="camera-dialog-layer">
+      <div class="ikaros-surface ikaros-surface-strong camera-dialog">
+        <header class="camera-dialog-head">
+          <h2>{{ editingId ? '编辑摄像头' : '添加摄像头' }}</h2>
+        </header>
+        <div class="camera-dialog-body">
+          <label class="camera-field">
+            <span>名称</span>
+            <input v-model="formData.name" type="text" placeholder="客厅摄像头">
+          </label>
+          <label class="camera-field">
+            <span>MediaMTX 路径</span>
+            <input v-model="formData.mediamtx_path" type="text" placeholder="自动生成">
+          </label>
+          <label class="camera-field is-wide">
+            <span>RTSP 地址</span>
+            <input v-model="formData.rtsp_url" type="text" placeholder="rtsp://user:pass@host:554/stream1">
+          </label>
+          <label class="camera-check">
+            <input v-model="formData.enabled" type="checkbox">
+            <span>启用摄像头</span>
+          </label>
+          <label class="camera-check">
+            <input v-model="formData.onvif_enabled" type="checkbox">
+            <span>启用 ONVIF PTZ</span>
+          </label>
+          <label class="camera-field">
+            <span>ONVIF Host</span>
+            <input v-model="formData.onvif_host" type="text" placeholder="192.168.1.179">
+          </label>
+          <label class="camera-field">
+            <span>ONVIF Port</span>
+            <input v-model.number="formData.onvif_port" type="number" min="1" max="65535">
+          </label>
+          <label class="camera-field">
+            <span>ONVIF 用户名</span>
+            <input v-model="formData.onvif_username" type="text" placeholder="admin">
+          </label>
+          <label class="camera-field">
+            <span>ONVIF 密码</span>
+            <input v-model="formData.onvif_password" type="text">
+          </label>
         </div>
-        <div class="grid gap-4 p-6 md:grid-cols-2">
-          <label class="block">
-            <span class="mb-1 block text-sm text-slate-500">名称</span>
-            <input v-model="formData.name" class="w-full rounded-2xl border border-slate-200 px-4 py-3" type="text" placeholder="客厅摄像头">
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-sm text-slate-500">MediaMTX 路径</span>
-            <input v-model="formData.mediamtx_path" class="w-full rounded-2xl border border-slate-200 px-4 py-3" type="text" placeholder="自动生成">
-          </label>
-          <label class="block md:col-span-2">
-            <span class="mb-1 block text-sm text-slate-500">RTSP 地址</span>
-            <input v-model="formData.rtsp_url" class="w-full rounded-2xl border border-slate-200 px-4 py-3" type="text" placeholder="rtsp://user:pass@host:554/stream1">
-          </label>
-          <label class="inline-flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-3">
-            <input v-model="formData.enabled" type="checkbox" class="h-4 w-4">
-            <span class="text-sm text-slate-600">启用摄像头</span>
-          </label>
-          <label class="inline-flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-3">
-            <input v-model="formData.onvif_enabled" type="checkbox" class="h-4 w-4">
-            <span class="text-sm text-slate-600">启用 ONVIF PTZ</span>
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-sm text-slate-500">ONVIF Host</span>
-            <input v-model="formData.onvif_host" class="w-full rounded-2xl border border-slate-200 px-4 py-3" type="text" placeholder="192.168.1.179">
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-sm text-slate-500">ONVIF Port</span>
-            <input v-model.number="formData.onvif_port" class="w-full rounded-2xl border border-slate-200 px-4 py-3" type="number" min="1" max="65535">
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-sm text-slate-500">ONVIF 用户名</span>
-            <input v-model="formData.onvif_username" class="w-full rounded-2xl border border-slate-200 px-4 py-3" type="text" placeholder="admin">
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-sm text-slate-500">ONVIF 密码</span>
-            <input v-model="formData.onvif_password" class="w-full rounded-2xl border border-slate-200 px-4 py-3" type="text">
-          </label>
-        </div>
-        <div class="flex gap-3 border-t border-slate-200 p-6">
-          <button @click="closeDialog" class="flex-1 rounded-2xl border border-slate-200 bg-white py-3 font-medium text-slate-600">取消</button>
-          <button @click="handleSave" class="flex-1 rounded-2xl bg-blue-500 py-3 font-medium text-white shadow-lg shadow-blue-500/25" :disabled="saving">
+        <footer class="camera-dialog-foot">
+          <button type="button" class="camera-dialog-cancel" @click="closeDialog">取消</button>
+          <button type="button" class="ikaros-primary-action camera-dialog-save" :disabled="saving" @click="handleSave">
             {{ saving ? '保存中' : '保存' }}
           </button>
-        </div>
+        </footer>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.camera-page {
+  color: var(--ikaros-ink);
+}
+
+/* ---- Summary ---- */
+.camera-summary {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.84);
+}
+
+:global(.dark) .camera-summary {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.86);
+}
+
+.camera-summary-inner {
+  display: grid;
+  gap: 16px;
+  padding: 20px 22px;
+}
+
+.camera-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.camera-summary-title h1 {
+  margin: 2px 0 0;
+  color: var(--ikaros-ink);
+  font-size: clamp(20px, 2vw, 26px);
+  font-weight: 780;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+.camera-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.camera-summary-actions svg {
+  width: 15px;
+  height: 15px;
+}
+
+.camera-ghost-btn {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  font-weight: 750;
+  transition: border-color 160ms ease, color 160ms ease;
+}
+
+:global(.dark) .camera-ghost-btn {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.camera-ghost-btn:hover {
+  border-color: rgba(232, 93, 142, 0.32);
+  color: var(--ikaros-pink);
+}
+
+.camera-add-btn {
+  border: 0;
+  cursor: pointer;
+}
+
+.camera-summary-stats {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.camera-stat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+:global(.dark) .camera-stat {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.camera-stat-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  border: 1px solid rgba(232, 93, 142, 0.2);
+  border-radius: 12px;
+  background: rgba(232, 93, 142, 0.09);
+  color: var(--ikaros-pink);
+}
+
+.camera-stat-icon.is-online {
+  border-color: rgba(42, 140, 138, 0.22);
+  background: rgba(42, 140, 138, 0.1);
+  color: var(--ikaros-eye);
+}
+
+.camera-stat-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.camera-stat-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.camera-stat-copy span {
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.camera-stat-copy strong {
+  color: var(--ikaros-ink);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+/* ---- Live card ---- */
+.camera-live-card {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.84);
+}
+
+:global(.dark) .camera-live-card {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.86);
+}
+
+.camera-page .camera-live-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.camera-live-card :deep(.liquid-glass__content) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.camera-live-header {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ikaros-line);
+}
+
+.camera-live-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.camera-live-title h3 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ikaros-ink);
+  font-size: 15px;
+  font-weight: 780;
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.camera-live-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ikaros-muted);
+}
+
+.camera-live-dot.is-live {
+  background: var(--ikaros-eye);
+  box-shadow: 0 0 8px rgba(42, 140, 138, 0.55);
+  animation: camera-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.camera-live-dot.is-danger {
+  background: #c63741;
+}
+
+.camera-live-chip {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 7px;
+  background: var(--panel-muted);
+  color: var(--ikaros-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.camera-live-chip.is-live {
+  border-color: rgba(42, 140, 138, 0.24);
+  background: rgba(42, 140, 138, 0.1);
+  color: var(--ikaros-eye);
+}
+
+.camera-live-chip.is-danger {
+  border-color: rgba(198, 55, 65, 0.22);
+  background: rgba(198, 55, 65, 0.08);
+  color: #c63741;
+}
+
+.camera-live-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.camera-zoom-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+:global(.dark) .camera-zoom-control {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.camera-zoom-control.is-disabled {
+  opacity: 0.5;
+}
+
+.camera-zoom-control > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--ikaros-muted);
+}
+
+.camera-zoom-value {
+  width: 34px;
+  flex: none;
+  color: var(--ikaros-copy);
+  font-size: 11px;
+  font-weight: 750;
+  text-align: right;
+}
+
+.camera-zoom-slider {
+  width: clamp(96px, 12vw, 150px);
+  accent-color: var(--ikaros-pink);
+}
+
+.camera-pip-btn,
+.camera-icon-btn,
+.camera-mode-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ikaros-line);
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 700;
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+}
+
+:global(.dark) :is(.camera-pip-btn, .camera-icon-btn, .camera-mode-switch button) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.camera-pip-btn {
+  padding: 7px 12px;
+  border-radius: 11px;
+}
+
+.camera-pip-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.camera-pip-btn:hover,
+.camera-icon-btn:hover,
+.camera-mode-switch button:hover {
+  border-color: rgba(232, 93, 142, 0.32);
+  color: var(--ikaros-pink);
+}
+
+.camera-pip-btn.is-active {
+  border-color: rgba(42, 140, 138, 0.3);
+  background: rgba(42, 140, 138, 0.1);
+  color: var(--ikaros-eye);
+}
+
+.camera-live-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.camera-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+:global(.dark) .camera-mode-switch {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.camera-mode-switch button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+}
+
+.camera-mode-switch button.is-active {
+  background: var(--ikaros-pink);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(232, 93, 142, 0.24);
+}
+
+.camera-icon-btn {
+  width: 32px;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+  border-radius: 10px;
+}
+
+.camera-icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
 .camera-player {
+  position: relative;
   aspect-ratio: 16 / 9;
+  background: #17131a;
 }
 
 .camera-player iframe {
@@ -1307,7 +1737,7 @@ onBeforeUnmount(() => {
 .camera-preview-canvas {
   display: block;
   object-fit: contain;
-  background: #020617;
+  background: #17131a;
 }
 
 .camera-source-video {
@@ -1319,12 +1749,6 @@ onBeforeUnmount(() => {
   opacity: 0;
   pointer-events: none;
   z-index: -1;
-}
-
-.camera-live-video {
-  transform-origin: center;
-  object-fit: contain;
-  background: #020617;
 }
 
 .camera-hls-frame {
@@ -1343,9 +1767,10 @@ onBeforeUnmount(() => {
   width: min(220px, 28vw);
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border: 1px solid rgba(74, 222, 128, 0.9);
-  background: rgba(2, 6, 23, 0.78);
-  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.35);
+  border: 1px solid rgba(63, 182, 179, 0.85);
+  border-radius: 10px;
+  background: rgba(23, 19, 26, 0.78);
+  box-shadow: 0 12px 28px rgba(23, 19, 26, 0.35);
 }
 
 .camera-overview canvas {
@@ -1355,19 +1780,14 @@ onBeforeUnmount(() => {
 
 .camera-overview--placeholder {
   background:
-    linear-gradient(135deg, rgba(148, 163, 184, 0.25), rgba(15, 23, 42, 0.86)),
-    rgba(2, 6, 23, 0.82);
+    linear-gradient(135deg, rgba(63, 182, 179, 0.14), rgba(23, 19, 26, 0.86)),
+    rgba(23, 19, 26, 0.82);
 }
 
 .camera-overview-rect {
   position: absolute;
-  border: 2px solid #22c55e;
-  box-shadow: 0 0 0 999px rgba(2, 6, 23, 0.32);
-}
-
-.camera-zoom-slider {
-  width: clamp(96px, 12vw, 150px);
-  accent-color: #2f7cf6;
+  border: 2px solid #3fb6b3;
+  box-shadow: 0 0 0 999px rgba(23, 19, 26, 0.32);
 }
 
 .camera-pip-video,
@@ -1382,19 +1802,499 @@ onBeforeUnmount(() => {
   z-index: -1;
 }
 
-.camera-live-controls button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+/* ---- Side panels ---- */
+.camera-device-panel,
+.camera-ptz-panel {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.84);
+}
+
+:global(.dark) :is(.camera-device-panel, .camera-ptz-panel) {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.86);
+}
+
+.camera-ptz-panel.is-disabled {
+  opacity: 0.6;
+}
+
+.camera-panel-inner {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.camera-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.camera-panel-title h3 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.camera-panel-title p {
+  margin: 3px 0 0;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+}
+
+.camera-count-chip {
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 999px;
+  background: var(--panel-muted);
+  color: var(--ikaros-copy);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.camera-list-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+  color: var(--ikaros-muted);
+  font-size: 13px;
+}
+
+.camera-list-state svg {
+  width: 16px;
+  height: 16px;
+}
+
+.camera-list-empty {
+  display: flex;
+  min-height: 140px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px dashed var(--ikaros-line);
+  border-radius: 16px;
+  color: var(--ikaros-muted);
+  font-size: 13px;
+}
+
+.camera-list-empty svg {
+  width: 26px;
+  height: 26px;
+}
+
+.camera-list-empty p {
+  margin: 0;
+}
+
+.camera-device-list {
+  display: grid;
+  gap: 9px;
+}
+
+.camera-device-item {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.35);
+  color: var(--ikaros-ink);
+  font: inherit;
+  text-align: left;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+:global(.dark) .camera-device-item {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.camera-device-item:hover {
+  border-color: rgba(232, 93, 142, 0.28);
+}
+
+.camera-device-item.is-selected {
+  border-color: rgba(232, 93, 142, 0.42);
+  background: rgba(232, 93, 142, 0.06);
+  box-shadow: inset 3px 0 0 var(--ikaros-pink);
+}
+
+.camera-device-item.is-disabled .camera-device-copy {
+  opacity: 0.62;
+}
+
+.camera-device-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.camera-device-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.camera-device-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.camera-device-name h4 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.camera-device-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.camera-device-dot.is-online {
+  background: var(--ikaros-eye);
+  box-shadow: 0 0 6px rgba(42, 140, 138, 0.5);
+}
+
+.camera-device-dot.is-offline {
+  background: var(--ikaros-pink);
+}
+
+.camera-device-path {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ikaros-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.camera-device-proto {
+  width: fit-content;
+  padding: 2px 7px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 6px;
+  background: var(--panel-muted);
+  color: var(--ikaros-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.camera-device-actions {
+  display: flex;
+  flex: none;
+  gap: 5px;
+}
+
+.camera-device-actions button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-copy);
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+}
+
+:global(.dark) .camera-device-actions button {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.camera-device-actions button:hover {
+  border-color: rgba(232, 93, 142, 0.32);
+  color: var(--ikaros-pink);
+}
+
+.camera-device-actions button.is-danger:hover {
+  border-color: rgba(198, 55, 65, 0.3);
+  background: rgba(198, 55, 65, 0.07);
+  color: #c63741;
+}
+
+.camera-device-actions svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---- PTZ ---- */
+.camera-speed-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+:global(.dark) .camera-speed-row {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.camera-speed-row > span {
+  flex: none;
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .camera-speed-slider {
-  accent-color: #2f7cf6;
+  min-width: 0;
+  flex: 1;
+  accent-color: var(--ikaros-eye);
+}
+
+.camera-ptz-dpad {
+  width: min(200px, 100%);
+  margin: 0 auto;
+  padding: 8px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  box-shadow: inset 0 2px 10px rgba(23, 19, 26, 0.05);
+}
+
+:global(.dark) .camera-ptz-dpad {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.camera-ptz-grid {
+  display: grid;
+  aspect-ratio: 1;
+  gap: 4px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.camera-ptz-zoom-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ptz-btn {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ikaros-copy);
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+  touch-action: none;
+}
+
+:global(.dark) .ptz-btn {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.camera-ptz-grid .ptz-btn {
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+}
+
+.camera-ptz-grid .ptz-btn:not(:disabled):hover {
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
+}
+
+.ptz-btn:disabled {
+  opacity: 0.45;
+}
+
+.ptz-btn:not(:disabled):hover {
+  border-color: rgba(232, 93, 142, 0.34);
+  color: var(--ikaros-pink);
+}
+
+.ptz-btn:not(:disabled):active {
+  background: rgba(232, 93, 142, 0.14);
+  color: var(--ikaros-pink);
+}
+
+.camera-ptz-stop {
+  background: rgba(232, 93, 142, 0.12) !important;
+  color: var(--ikaros-pink) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* ---- Dialog ---- */
+.camera-dialog-layer {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(23, 19, 26, 0.32);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.camera-dialog {
+  width: min(640px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+}
+
+.camera-dialog-head {
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--ikaros-line);
+}
+
+.camera-dialog-head h2 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.camera-dialog-body {
+  display: grid;
+  gap: 14px;
+  padding: 20px 22px;
+}
+
+.camera-field {
+  display: grid;
+  gap: 7px;
+}
+
+.camera-field span {
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.camera-field input {
+  width: 100%;
+  padding: 10px 13px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+:global(.dark) .camera-field input {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.camera-field input:focus {
+  border-color: rgba(232, 93, 142, 0.45);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.12);
+}
+
+:global(.dark) .camera-field input:focus {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.camera-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.35);
+  color: var(--ikaros-copy);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+:global(.dark) .camera-check {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.camera-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ikaros-pink);
+}
+
+.camera-dialog-foot {
+  display: flex;
+  gap: 10px;
+  padding: 16px 22px;
+  border-top: 1px solid var(--ikaros-line);
+}
+
+.camera-dialog-cancel {
+  flex: 1;
+  min-height: 40px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.45);
+  color: var(--ikaros-copy);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+:global(.dark) .camera-dialog-cancel {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.camera-dialog-cancel:hover {
+  border-color: rgba(232, 93, 142, 0.3);
+  color: var(--ikaros-pink);
+}
+
+.camera-dialog-save {
+  flex: 1;
+  border: 0;
+  cursor: pointer;
+}
+
+.camera-dialog-save:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.is-spinning {
+  animation: camera-spin 850ms linear infinite;
+}
+
+@keyframes camera-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes camera-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 @media (min-width: 769px) {
   .camera-page {
-    height: 100vh;
-    height: 100dvh;
+    height: calc(100vh - 132px);
+    height: calc(100dvh - 132px);
     min-height: 0;
     gap: 12px;
     overflow: hidden;
@@ -1403,30 +2303,28 @@ onBeforeUnmount(() => {
 
   .camera-summary {
     flex: 0 0 auto;
-    padding: 14px 20px !important;
   }
 
-  .camera-summary h2 {
-    margin-top: 2px !important;
+  .camera-summary-inner {
+    gap: 12px;
+    padding: 14px 20px;
+  }
+
+  .camera-summary-title h1 {
+    margin-top: 2px;
     font-size: 1.25rem;
     line-height: 1.3;
   }
 
-  .camera-summary > div:first-child {
-    align-items: center;
-  }
-
-  .camera-summary > div:first-child + div {
-    margin-top: 12px !important;
+  .camera-summary-stats {
     gap: 10px;
   }
 
-  .camera-summary > div:first-child + div > div {
-    padding: 10px 14px !important;
+  .camera-stat {
+    padding: 10px 14px;
   }
 
-  .camera-summary > div:first-child + div > div > div:last-child {
-    margin-top: 6px !important;
+  .camera-stat-copy strong {
     font-size: 1.45rem;
     line-height: 1.1;
   }
@@ -1438,23 +2336,15 @@ onBeforeUnmount(() => {
     grid-template-columns: minmax(0, 1fr) 352px;
   }
 
-  .camera-live-card {
-    display: flex;
+  .camera-page .camera-live-card {
     min-height: 0;
-    flex-direction: column;
   }
 
   .camera-live-header {
-    flex: 0 0 auto;
-    padding: 10px 14px !important;
+    padding: 10px 14px;
   }
 
-  .camera-live-controls {
-    gap: 8px;
-  }
-
-  .camera-live-header h3 {
-    margin-top: 2px !important;
+  .camera-live-title h3 {
     font-size: 1.05rem;
     line-height: 1.25;
   }
@@ -1470,54 +2360,39 @@ onBeforeUnmount(() => {
     overflow-y: auto;
   }
 
-  .camera-side > section {
-    padding: 14px !important;
+  .camera-panel-inner {
+    padding: 14px;
   }
 
   .ptz-btn {
     min-height: 38px !important;
   }
-}
 
-.ptz-btn {
-  display: inline-flex;
-  min-height: 44px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-  border: 1px solid #e5ebf3;
-  background: #ffffff;
-  color: #475569;
-  transition: all 0.16s ease;
-}
+  .camera-dialog-body {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 
-.ptz-btn:disabled {
-  opacity: 0.45;
-}
-
-.ptz-btn:not(:disabled):hover {
-  border-color: #9ec5ff;
-  color: #2f7cf6;
+  .camera-dialog-body .is-wide {
+    grid-column: span 2;
+  }
 }
 
 @media (max-width: 768px) {
   .camera-page {
-    height: 100vh;
-    height: 100dvh;
-    min-height: 0;
+    height: auto;
+    min-height: 100%;
     gap: 12px;
-    overflow-y: auto;
+    overflow: visible;
     overscroll-behavior-y: contain;
     -webkit-overflow-scrolling: touch;
     padding: 0 0 max(20px, env(safe-area-inset-bottom)) !important;
-    background: #f7f9fc;
   }
 
   .camera-live-card {
-    border-radius: 0 !important;
-    border-left: 0;
-    border-right: 0;
     border-top: 0;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0 !important;
   }
 
   .camera-live-header {
@@ -1539,7 +2414,7 @@ onBeforeUnmount(() => {
     flex: 1;
   }
 
-  .camera-live-header h3 {
+  .camera-live-title h3 {
     max-width: 52vw;
     font-size: 1rem;
   }
@@ -1559,8 +2434,8 @@ onBeforeUnmount(() => {
 
   .camera-summary,
   .camera-side {
-    margin-left: 12px;
     margin-right: 12px;
+    margin-left: 12px;
   }
 
   .camera-side {
@@ -1583,6 +2458,13 @@ onBeforeUnmount(() => {
     height: 36vh;
     height: min(36svh, 300px);
     min-height: 170px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning,
+  .camera-live-dot.is-live {
+    animation: none;
   }
 }
 </style>

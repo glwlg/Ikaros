@@ -1,13 +1,29 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Bot, Loader2, ShieldUser } from 'lucide-vue-next'
+import { ArrowRight, CalendarClock, HeartPulse, Info, Loader2, Waypoints } from 'lucide-vue-next'
 
+import IkarosMark from '@/components/layout/IkarosMark.vue'
+import LiquidGlass from '@/components/liquid-glass/LiquidGlass.vue'
 import { bootstrapAdmin, getBootstrapStatus, getCurrentUser, login, type BootstrapStatus } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
 const authStore = useAuthStore()
+
+const panelOptics = {
+    mapSize: 256,
+    strength: 0.06,
+    depth: 0.72,
+    dispersion: 0.46,
+    frost: 4,
+    saturate: 1.22,
+    specular: 1.15,
+    glow: 0.22,
+    sheen: 0.78,
+    curvature: 0.38,
+    bend: 0.62,
+}
 
 const loading = ref(false)
 const checking = ref(true)
@@ -75,407 +91,497 @@ const handleSubmit = async () => {
 
 <template>
   <div class="login-page">
-    <div class="login-container">
-      <section class="login-hero">
-        <div class="login-badge">
-          <Bot class="h-4 w-4" />
-          Web Channel Console
+    <div class="login-ambient" aria-hidden="true">
+      <i class="ambient-ribbon ribbon-a" />
+      <i class="ambient-ribbon ribbon-b" />
+      <i class="ambient-dot dot-a" />
+      <i class="ambient-dot dot-b" />
+      <i class="ambient-dot dot-c" />
+    </div>
+
+    <div class="login-layout">
+      <section class="login-brand">
+        <div class="brand-head">
+          <IkarosMark :size="46" />
+          <div class="brand-copy">
+            <strong>IKAROS</strong>
+            <span>Agent Operations</span>
+          </div>
         </div>
-        <h1 class="login-title">
-          Ikaros
-        </h1>
+        <ul class="brand-features">
+          <li>
+            <span class="feature-icon is-pink"><Waypoints /></span>
+            多渠道协作
+          </li>
+          <li>
+            <span class="feature-icon is-teal"><CalendarClock /></span>
+            自动任务
+          </li>
+          <li>
+            <span class="feature-icon is-green"><HeartPulse /></span>
+            运行可观测性
+          </li>
+        </ul>
       </section>
 
-      <section class="login-form-section">
-        <div v-if="checking" class="login-loading">
-          <Loader2 class="h-8 w-8 animate-spin text-cyan-600" />
+      <LiquidGlass :radius="20" :optics="panelOptics" class="login-card">
+        <div class="login-card-shell">
+          <div v-if="checking" class="login-loading">
+            <Loader2 class="is-spinning" />
+          </div>
+
+          <template v-else>
+            <header class="login-card-head">
+              <p class="login-kicker">{{ bootstrapMode ? 'Bootstrap' : 'Sign In' }}</p>
+              <h1>{{ bootstrapMode ? '初始化首个管理员' : '登录 Ikaros' }}</h1>
+              <p class="login-sub">
+                {{ bootstrapMode
+                  ? '当前系统还没有管理员，完成初始化后将自动进入登录流。'
+                  : '欢迎回来，请验证您的凭据。' }}
+              </p>
+            </header>
+
+            <div v-if="error" class="login-error">
+              {{ error }}
+            </div>
+
+            <form class="login-form" @submit.prevent="handleSubmit">
+              <label v-if="bootstrapMode">
+                <span>显示名称</span>
+                <input
+                  v-model="displayName"
+                  type="text"
+                  placeholder="例如：系统管理员"
+                >
+              </label>
+
+              <label>
+                <span>邮箱地址</span>
+                <input
+                  v-model="email"
+                  type="email"
+                  placeholder="admin@example.com"
+                  required
+                >
+              </label>
+
+              <label>
+                <span>密码</span>
+                <input
+                  v-model="password"
+                  type="password"
+                  minlength="8"
+                  placeholder="至少 8 位"
+                  required
+                >
+              </label>
+
+              <p v-if="bootstrapMode" class="login-init-hint">
+                <Info />
+                尚未创建管理员时，将在此完成首次初始化
+              </p>
+
+              <button
+                type="submit"
+                :disabled="loading"
+                class="login-submit"
+              >
+                <Loader2 v-if="loading" class="is-spinning" />
+                <span>{{ bootstrapMode ? '初始化并登录' : '登录' }}</span>
+                <ArrowRight v-if="!loading" />
+              </button>
+            </form>
+          </template>
         </div>
-
-        <template v-else>
-          <div class="login-form-header">
-            <div>
-              <div class="login-form-label">
-                {{ bootstrapMode ? 'Bootstrap' : 'Sign In' }}
-              </div>
-              <h2 class="login-form-title">
-                {{ bootstrapMode ? '初始化首个管理员' : '登录 Ikaros' }}
-              </h2>
-            </div>
-            <div class="login-form-icon">
-              <ShieldUser class="h-6 w-6" />
-            </div>
-          </div>
-
-          <p class="login-form-hint">
-            {{ bootstrapMode
-              ? '当前系统还没有管理员。完成一次初始化后，将自动进入普通登录流。'
-              : '请输入管理员创建的账号。Web 端不再提供开放注册。' }}
-          </p>
-
-          <div v-if="error" class="login-error">
-            {{ error }}
-          </div>
-
-          <form class="login-form" @submit.prevent="handleSubmit">
-            <div v-if="bootstrapMode">
-              <label class="login-label">显示名称</label>
-              <input
-                v-model="displayName"
-                type="text"
-                class="login-input"
-                placeholder="例如：系统管理员"
-              >
-            </div>
-
-            <div>
-              <label class="login-label">邮箱</label>
-              <input
-                v-model="email"
-                type="email"
-                class="login-input"
-                placeholder="admin@example.com"
-                required
-              >
-            </div>
-
-            <div>
-              <label class="login-label">密码</label>
-              <input
-                v-model="password"
-                type="password"
-                minlength="8"
-                class="login-input"
-                placeholder="至少 8 位"
-                required
-              >
-            </div>
-
-            <button
-              type="submit"
-              :disabled="loading"
-              class="login-submit"
-            >
-              <Loader2 v-if="loading" class="h-4 w-4 animate-spin" />
-              <span>{{ bootstrapMode ? '初始化并登录' : '登录' }}</span>
-            </button>
-          </form>
-        </template>
-      </section>
+      </LiquidGlass>
     </div>
   </div>
 </template>
 
 <style scoped>
 .login-page {
+  --ikaros-pink: #e85d8e;
+  --ikaros-pink-dark: #c64d79;
+  --ikaros-collar: #17131a;
+  --ikaros-wing: #fff9fc;
+  --ikaros-eye: #2a8c8a;
+  --ikaros-rind: #2f7d4a;
+  --ikaros-ink: #17131a;
+  --ikaros-copy: #665b64;
+  --ikaros-muted: #8b7f88;
+  --ikaros-line: rgba(23, 19, 26, 0.12);
+  --ikaros-glass-behind: #f0edf2;
+  --ikaros-glass-wallpaper-image:
+    radial-gradient(circle at 15% 50%, rgba(232, 93, 142, 0.06) 0%, transparent 50%),
+    radial-gradient(circle at 85% 30%, rgba(42, 140, 138, 0.05) 0%, transparent 50%),
+    linear-gradient(135deg, #fff9fc 0%, #f0edf2 100%);
+  --ikaros-glass-wallpaper-position: center;
+  --ikaros-glass-wallpaper-repeat: no-repeat;
+  --ikaros-glass-wallpaper-size: cover;
+  position: relative;
+  display: flex;
   width: 100%;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top, rgba(8, 145, 178, 0.24), transparent 26%),
-    linear-gradient(180deg, #020617 0%, #0f172a 50%, #082f49 100%);
-  color: #f1f5f9;
-  padding: 1rem;
-  padding-bottom: 2rem;
+  align-items: center;
+  justify-content: center;
+  overflow-x: hidden;
   overflow-y: auto;
+  background-color: var(--ikaros-glass-behind);
+  background-image: var(--ikaros-glass-wallpaper-image);
+  background-position: var(--ikaros-glass-wallpaper-position);
+  background-repeat: var(--ikaros-glass-wallpaper-repeat);
+  background-size: var(--ikaros-glass-wallpaper-size);
+  background-attachment: fixed;
+  color: var(--ikaros-ink);
+  padding: 24px;
   -webkit-overflow-scrolling: touch;
 }
 
-@media (max-width: 640px) {
-  .login-page {
-    padding: 0.75rem;
-    padding-bottom: 1.5rem;
-  }
+:global(.dark) .login-page {
+  --ikaros-ink: #f8f2f6;
+  --ikaros-copy: #d8ced5;
+  --ikaros-muted: #b8abb4;
+  --ikaros-line: rgba(255, 255, 255, 0.12);
+  --ikaros-glass-behind: #17131a;
+  --ikaros-glass-wallpaper-image:
+    radial-gradient(circle at 15% 50%, rgba(232, 93, 142, 0.09) 0%, transparent 50%),
+    radial-gradient(circle at 85% 30%, rgba(42, 140, 138, 0.06) 0%, transparent 50%),
+    linear-gradient(135deg, #17131a 0%, #221a21 100%);
 }
 
-.login-container {
-  display: grid;
-  gap: 1.5rem;
-  max-width: 72rem;
-  margin: 0 auto;
-  min-height: 0;
-}
-
-@media (max-width: 1023px) {
-  .login-container {
-    gap: 1rem;
-  }
-}
-
-@media (min-width: 1024px) {
-  .login-container {
-    grid-template-columns: 1.1fr 0.9fr;
-    align-items: start;
-  }
-}
-
-.login-hero {
+.login-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
   overflow: hidden;
-  border-radius: 1.5rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.06);
-  padding: 1.25rem;
-  backdrop-filter: blur(12px);
-  box-shadow: 0 36px 90px rgba(2, 6, 23, 0.42);
+  pointer-events: none;
 }
 
-@media (min-width: 640px) {
-  .login-hero {
-    padding: 2rem;
-    border-radius: 2rem;
-  }
+.ambient-ribbon {
+  position: absolute;
+  left: -50vw;
+  width: 200vw;
+  height: 100vh;
+  background: linear-gradient(90deg, transparent, rgba(232, 93, 142, 0.08), transparent);
+  transform: rotate(var(--ribbon-rotate, -15deg));
+  animation: ribbon-drift 34s ease-in-out infinite alternate;
 }
 
-@media (max-width: 480px) {
-  .login-hero {
-    padding: 1rem;
-    border-radius: 1.25rem;
-  }
+.ribbon-a {
+  top: -20%;
 }
 
-.login-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  border-radius: 999px;
-  border: 1px solid rgba(103, 232, 249, 0.2);
-  background: rgba(103, 232, 249, 0.1);
-  padding: 0.25rem 0.75rem;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.24em;
-  color: #a5f3fc;
+.ribbon-b {
+  top: 40%;
+  opacity: 0.55;
+  animation-duration: 46s;
+  --ribbon-rotate: 15deg;
 }
 
-.login-title {
-  margin-top: 1.25rem;
-  max-width: 48rem;
-  font-size: 1.5rem;
-  font-weight: 600;
-  line-height: 1.25;
-  color: #fff;
+.ambient-dot {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ikaros-eye);
+  box-shadow: 0 0 10px rgba(42, 140, 138, 0.75);
+  opacity: 0.4;
+  animation: dot-float 8s ease-in-out infinite;
 }
 
-@media (min-width: 768px) {
-  .login-title {
-    font-size: 2.25rem;
-    margin-top: 1.5rem;
-  }
-}
+.dot-a { top: 20%; left: 15%; }
+.dot-b { top: 60%; left: 80%; animation-delay: -2s; }
+.dot-c { top: 85%; left: 35%; animation-delay: -5s; }
 
-@media (max-width: 480px) {
-  .login-title {
-    font-size: 1.25rem;
-    margin-top: 1rem;
-  }
-}
-
-.login-desc {
-  margin-top: 1rem;
-  max-width: 40rem;
-  font-size: 0.875rem;
-  line-height: 1.75;
-  color: #cbd5e1;
-}
-
-.login-features {
-  margin-top: 1.5rem;
+.login-layout {
+  position: relative;
+  z-index: 1;
   display: grid;
-  gap: 1rem;
+  width: min(1120px, 100%);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: 72px;
 }
 
-@media (min-width: 640px) {
-  .login-features {
-    grid-template-columns: 1fr 1fr;
-  }
+@keyframes ribbon-drift {
+  from { transform: rotate(var(--ribbon-rotate, -15deg)) translateX(-16%); }
+  to { transform: rotate(var(--ribbon-rotate, -15deg)) translateX(16%); }
 }
 
-.login-feature-card {
-  border-radius: 1.25rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(2, 6, 23, 0.4);
-  padding: 1rem;
+@keyframes dot-float {
+  0%, 100% { transform: translateY(0); opacity: 0.28; }
+  50% { transform: translateY(-16px); opacity: 0.5; }
 }
 
-.login-feature-card.alt {
-  background: rgba(255, 255, 255, 0.05);
+.login-brand {
+  display: grid;
+  gap: 46px;
 }
 
-@media (min-width: 640px) {
-  .login-feature-card {
-    border-radius: 1.75rem;
-    padding: 1.25rem;
-  }
+.brand-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
-@media (max-width: 480px) {
-  .login-feature-card {
-    padding: 0.875rem;
-  }
+.brand-copy {
+  display: grid;
+  gap: 5px;
 }
 
-.login-form-section {
-  border-radius: 1.5rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: #fff;
-  padding: 1.25rem;
-  color: #0f172a;
-  box-shadow: 0 36px 90px rgba(2, 6, 23, 0.3);
-  min-height: auto;
+.brand-copy strong {
+  color: var(--ikaros-ink);
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
 }
 
-@media (min-width: 640px) {
-  .login-form-section {
-    padding: 2rem;
-    border-radius: 2rem;
-  }
+.brand-copy span {
+  color: var(--ikaros-copy);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
 }
 
-@media (max-width: 480px) {
-  .login-form-section {
-    padding: 1rem;
-    border-radius: 1.25rem;
-  }
+.brand-features {
+  display: grid;
+  gap: 20px;
+  margin: 0;
+  border-top: 1px solid var(--ikaros-line);
+  padding: 28px 0 0;
+  list-style: none;
+}
+
+.brand-features li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--ikaros-ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.feature-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.feature-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.feature-icon.is-pink { background: rgba(232, 93, 142, 0.1); color: var(--ikaros-pink); }
+.feature-icon.is-teal { background: rgba(42, 140, 138, 0.1); color: var(--ikaros-eye); }
+.feature-icon.is-green { background: rgba(47, 125, 74, 0.1); color: var(--ikaros-rind); }
+
+.login-card {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.74);
+  width: min(430px, 100%);
+  justify-self: center;
+  animation: card-float 7s ease-in-out infinite;
+}
+
+:global(.dark) .login-card {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.82);
+}
+
+.login-card-shell {
+  padding: 30px;
 }
 
 .login-loading {
   display: flex;
+  min-height: 280px;
   align-items: center;
   justify-content: center;
-  min-height: 20rem;
+  color: var(--ikaros-pink);
 }
 
-.login-form-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
+.login-loading svg {
+  width: 26px;
+  height: 26px;
 }
 
-.login-form-label {
-  font-size: 0.75rem;
+.login-card-head {
+  display: grid;
+  gap: 8px;
+}
+
+.login-kicker {
+  margin: 0;
+  color: var(--ikaros-pink);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  letter-spacing: 0.24em;
-  color: #94a3b8;
 }
 
-.login-form-title {
-  margin-top: 0.5rem;
-  font-size: 1.375rem;
-  font-weight: 600;
+.login-card-head h1 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
 }
 
-@media (max-width: 480px) {
-  .login-form-title {
-    font-size: 1.25rem;
-  }
-}
-
-.login-form-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.75rem;
-  height: 2.75rem;
-  border-radius: 0.875rem;
-  background: #cffafe;
-  color: #0e7490;
-  flex-shrink: 0;
-}
-
-@media (min-width: 640px) {
-  .login-form-icon {
-    width: 3rem;
-    height: 3rem;
-    border-radius: 1rem;
-  }
-}
-
-.login-form-hint {
-  margin-top: 1rem;
-  font-size: 0.875rem;
-  line-height: 1.75;
-  color: #64748b;
+.login-sub {
+  margin: 0;
+  color: var(--ikaros-muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .login-error {
-  margin-top: 1.25rem;
-  border-radius: 1rem;
-  border: 1px solid #fecdd3;
-  background: #fff1f2;
-  padding: 0.75rem 1rem;
-  font-size: 0.875rem;
-  color: #e11d48;
+  margin-top: 18px;
+  border: 1px solid rgba(198, 55, 65, 0.22);
+  border-radius: 12px;
+  background: rgba(198, 55, 65, 0.07);
+  padding: 10px 13px;
+  color: #c63741;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+@keyframes card-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
 }
 
 .login-form {
-  margin-top: 1.5rem;
   display: grid;
-  gap: 1.25rem;
+  gap: 15px;
+  margin-top: 22px;
 }
 
-.login-label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: #334155;
+.login-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--ikaros-ink);
+  font-size: 12px;
+  font-weight: 750;
 }
 
-.login-input {
+.login-form input {
   width: 100%;
-  border-radius: 0.875rem;
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
-  padding: 0.875rem 1rem;
-  outline: none;
-  transition: border-color 0.15s, background-color 0.15s;
-  font-size: 1rem;
   min-height: 44px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 10px 13px;
+  color: var(--ikaros-ink);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
-@media (min-width: 640px) {
-  .login-input {
-    border-radius: 1rem;
-  }
+:global(.dark) .login-form input { background: rgba(255, 255, 255, 0.06); }
+
+.login-form input:focus {
+  border-color: rgba(232, 93, 142, 0.5);
+  box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.12);
 }
 
-.login-input:focus {
-  border-color: #22d3ee;
-  background: #fff;
+.login-init-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  border-radius: 10px;
+  background: rgba(42, 140, 138, 0.08);
+  padding: 9px 11px;
+  color: var(--ikaros-eye);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.login-init-hint svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 1px;
 }
 
 .login-submit {
   display: inline-flex;
+  width: 100%;
+  min-height: 46px;
   align-items: center;
   justify-content: center;
-  gap: 0.75rem;
-  width: 100%;
-  border-radius: 0.875rem;
-  background: #020617;
-  padding: 1rem 1.25rem;
-  font-size: 0.9375rem;
-  font-weight: 500;
-  color: #fff;
+  gap: 8px;
+  margin-top: 4px;
   border: none;
+  border-radius: 12px;
+  background: var(--ikaros-collar);
+  box-shadow:
+    0 12px 26px rgba(23, 19, 26, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  color: #fff9fc;
   cursor: pointer;
-  transition: background-color 0.15s;
-  min-height: 48px;
+  font-size: 14px;
+  font-weight: 700;
+  transition: transform 160ms ease, box-shadow 160ms ease;
   -webkit-tap-highlight-color: transparent;
 }
 
-@media (min-width: 640px) {
-  .login-submit {
-    border-radius: 1rem;
-    padding: 0.875rem 1.25rem;
-    font-size: 0.875rem;
-  }
-}
-
 .login-submit:hover:not(:disabled) {
-  background: #1e293b;
+  transform: translateY(-1px);
+  box-shadow:
+    0 16px 30px rgba(23, 19, 26, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .login-submit:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.login-submit svg {
+  width: 15px;
+  height: 15px;
+}
+
+.is-spinning { animation: login-spin 850ms linear infinite; }
+
+@keyframes login-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1023px) {
+  .login-layout {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .login-brand {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .login-page {
+    padding: 16px;
+  }
+
+  .login-card-shell {
+    padding: 24px 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-ribbon,
+  .ambient-dot,
+  .login-card {
+    animation: none !important;
+  }
+
+  .is-spinning { animation: none; }
 }
 </style>

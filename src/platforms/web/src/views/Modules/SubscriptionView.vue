@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import {
     BellRing,
     CalendarClock,
@@ -22,9 +23,11 @@ import {
     listSubscriptions,
     updateSubscription,
 } from '@/api/subscriptions'
+import LiquidGlass from '@/components/liquid-glass/LiquidGlass.vue'
 import type { SubscriptionPayload, SubscriptionRecord } from '@/types/subscription'
 
 type SubscriptionForm = SubscriptionPayload
+type StatusFilter = 'all' | 'due' | 'month' | 'expired'
 
 const categoryOptions = ['AI 会员', 'VPS / 云服务', '视频会员', '软件服务', '域名 / 证书', '其他']
 const cycleOptions = [
@@ -91,6 +94,21 @@ const showDialog = ref(false)
 const editingId = ref<number | null>(null)
 const errorText = ref('')
 const form = ref<SubscriptionForm>(emptyForm())
+const activeFilter = ref<StatusFilter>('all')
+
+const panelOptics = {
+    mapSize: 256,
+    strength: 0.06,
+    depth: 0.72,
+    dispersion: 0.46,
+    frost: 4,
+    saturate: 1.22,
+    specular: 1.15,
+    glow: 0.22,
+    sheen: 0.78,
+    curvature: 0.38,
+    bend: 0.62,
+}
 
 const preferredPlatform = computed(() => {
     for (const platform of ['telegram', 'weixin', 'dingtalk', 'discord']) {
@@ -109,6 +127,26 @@ const expiringThirtyCount = computed(() =>
 const expiredCount = computed(() =>
     subscriptions.value.filter(item => item.status === 'expired').length
 )
+
+const filterTabs = computed(() => [
+    { key: 'all' as StatusFilter, label: '全部', count: totalCount.value },
+    { key: 'due' as StatusFilter, label: '到提醒日', count: renewalDueCount.value },
+    { key: 'month' as StatusFilter, label: '30 天内', count: expiringThirtyCount.value },
+    { key: 'expired' as StatusFilter, label: '已过期', count: expiredCount.value },
+])
+
+const filteredSubscriptions = computed(() => {
+    if (activeFilter.value === 'due') {
+        return subscriptions.value.filter(item => item.status === 'renewal_due')
+    }
+    if (activeFilter.value === 'month') {
+        return subscriptions.value.filter(item => item.days_remaining >= 0 && item.days_remaining <= 30)
+    }
+    if (activeFilter.value === 'expired') {
+        return subscriptions.value.filter(item => item.status === 'expired')
+    }
+    return subscriptions.value
+})
 
 const parseError = (error: unknown, fallback: string) => {
     if (axios.isAxiosError(error)) {
@@ -267,319 +305,1078 @@ const statusLabel = (item: SubscriptionRecord) => {
     return `${item.days_remaining} 天后到期`
 }
 
-const statusClass = (item: SubscriptionRecord) => {
-    if (item.status === 'expired') return 'border-rose-200 bg-rose-50 text-rose-700'
-    if (item.status === 'renewal_due') return 'border-amber-200 bg-amber-50 text-amber-700'
-    return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+const statusTone = (item: SubscriptionRecord) => {
+    if (item.status === 'expired') return 'is-expired'
+    if (item.status === 'renewal_due') return 'is-due'
+    return 'is-normal'
 }
 
 onMounted(load)
 </script>
 
 <template>
-  <div class="space-y-6 p-6 md:p-8">
-    <section class="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
-      <div class="grid grid-cols-2 gap-px bg-slate-200 xl:grid-cols-4">
-        <div class="bg-white p-2.5 sm:p-4">
-          <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 sm:text-xs sm:tracking-[0.22em]">全部订阅</div>
-          <div class="mt-0.5 text-lg font-semibold text-slate-950 sm:mt-1 sm:text-2xl">{{ totalCount }}</div>
-        </div>
-        <div class="bg-white p-2.5 sm:p-4">
-          <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 sm:text-xs sm:tracking-[0.22em]">已到提醒日</div>
-          <div class="mt-0.5 text-lg font-semibold text-amber-600 sm:mt-1 sm:text-2xl">{{ renewalDueCount }}</div>
-        </div>
-        <div class="bg-white p-2.5 sm:p-4">
-          <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 sm:text-xs sm:tracking-[0.22em]">30 天内到期</div>
-          <div class="mt-0.5 text-lg font-semibold text-indigo-600 sm:mt-1 sm:text-2xl">{{ expiringThirtyCount }}</div>
-        </div>
-        <div class="bg-white p-2.5 sm:p-4">
-          <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 sm:text-xs sm:tracking-[0.22em]">已过期</div>
-          <div class="mt-0.5 text-lg font-semibold text-rose-600 sm:mt-1 sm:text-2xl">{{ expiredCount }}</div>
-        </div>
+  <div class="ikaros-page subscription-page">
+    <header class="ikaros-page-header">
+      <div class="ikaros-page-heading">
+        <p class="ikaros-page-kicker">Renewals</p>
+        <h1 class="ikaros-page-title">续费订阅</h1>
+        <p class="ikaros-page-description">记录周期性费用与服务，到期前通过消息渠道提醒你。</p>
       </div>
-    </section>
+      <div class="header-actions">
+        <button
+          type="button"
+          class="ikaros-secondary-action refresh-button"
+          :disabled="refreshing"
+          title="刷新"
+          @click="load(true)"
+        >
+          <RefreshCw :class="{ 'is-spinning': refreshing }" />
+          刷新
+        </button>
+        <button type="button" class="ikaros-primary-action create-button" @click="openCreate">
+          <Plus />
+          添加订阅
+        </button>
+      </div>
+    </header>
 
-    <div
-      v-if="!bindings.length && !loading"
-      class="flex items-start gap-3 rounded-[22px] border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800"
-    >
-      <CircleAlert class="mt-0.5 h-5 w-5 shrink-0" />
-      <div>
-        <div class="font-medium">尚未绑定消息渠道</div>
-        <div class="mt-1 text-amber-700">订阅可以正常保存，但到期提醒暂时无法送达。请先到“模块绑定”中绑定 Telegram、微信、钉钉或 Discord。</div>
+    <div v-if="!bindings.length && !loading" class="notice-banner">
+      <CircleAlert />
+      <div class="notice-copy">
+        <strong>当前未绑定通知渠道，无法接收续费提醒</strong>
+        <p>订阅可以正常保存，但到期提醒暂时无法送达。</p>
       </div>
+      <RouterLink to="/bindings" class="notice-link">去绑定</RouterLink>
     </div>
 
-    <div
-      v-if="errorText && !showDialog"
-      class="rounded-[22px] border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700"
-    >
+    <div v-if="errorText && !showDialog" class="error-banner">
       {{ errorText }}
     </div>
 
-    <section class="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
-      <div class="flex flex-wrap items-center justify-between gap-3 p-3.5 sm:p-5 md:px-6">
-        <div>
-          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Subscriptions</div>
-          <h3 class="mt-0.5 text-lg font-semibold text-slate-950 sm:mt-1 sm:text-xl">续期时间线</h3>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="mr-1 hidden rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm text-slate-600 sm:inline-flex">{{ totalCount }} 项</span>
-          <button
-            type="button"
-            class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:opacity-60 sm:px-3"
-            :disabled="refreshing"
-            @click="load(true)"
-          >
-            <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': refreshing }" />
-            <span class="hidden sm:inline">刷新</span>
-          </button>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 sm:gap-2"
-            @click="openCreate"
-          >
-            <Plus class="h-4 w-4" />
-            添加订阅
-          </button>
-        </div>
-      </div>
+    <div class="filter-tabs" role="tablist">
+      <button
+        v-for="tab in filterTabs"
+        :key="tab.key"
+        type="button"
+        role="tab"
+        class="filter-tab"
+        :class="{ 'is-active': activeFilter === tab.key }"
+        :aria-selected="activeFilter === tab.key"
+        @click="activeFilter = tab.key"
+      >
+        {{ tab.label }} ({{ tab.count }})
+      </button>
+    </div>
 
-      <div v-if="loading" class="flex min-h-[240px] items-center justify-center border-t border-slate-200 text-slate-400">
-        <Loader2 class="h-8 w-8 animate-spin text-indigo-500" />
-      </div>
+    <LiquidGlass :radius="24" :optics="panelOptics" class="subscription-panel">
+      <div class="panel-shell">
+        <header class="panel-header">
+          <h2>订阅列表</h2>
+          <span class="panel-count">{{ filteredSubscriptions.length }} 项</span>
+        </header>
 
-      <div v-else-if="!subscriptions.length" class="flex min-h-[280px] flex-col items-center justify-center border-t border-slate-200 text-center text-slate-400">
-        <div class="flex h-20 w-20 items-center justify-center rounded-[28px] bg-slate-100">
-          <CalendarClock class="h-9 w-9 text-slate-300" />
-        </div>
-        <div class="mt-5 text-lg font-medium text-slate-600">还没有订阅记录</div>
-        <div class="mt-2 max-w-sm text-sm">添加第一个周期服务，Ikaros 会根据到期日主动提醒你。</div>
-      </div>
-
-      <div v-else class="border-t border-slate-200">
-        <div class="hidden grid-cols-[minmax(180px,1.6fr)_100px_145px_80px_130px_120px_76px] gap-4 border-b border-slate-200 bg-slate-50 px-5 py-2.5 text-xs font-medium uppercase tracking-[0.12em] text-slate-400 xl:grid md:px-6">
-          <span>订阅</span>
-          <span>费用</span>
-          <span>到期日</span>
-          <span>周期</span>
-          <span>提醒</span>
-          <span>状态</span>
-          <span class="text-right">操作</span>
+        <div v-if="loading" class="panel-loading">
+          <Loader2 class="is-spinning" />
         </div>
 
-        <article
-          v-for="item in subscriptions"
-          :key="item.id"
-          class="border-b border-slate-100 px-4 py-2.5 transition last:border-b-0 hover:bg-slate-50 md:px-5 xl:px-5 xl:py-3.5"
-        >
-          <div class="xl:hidden">
-            <div class="flex min-w-0 items-center gap-1.5">
-              <h4 class="min-w-0 truncate text-sm font-semibold text-slate-950">{{ item.name }}</h4>
-              <span class="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-1.5 py-px text-[10px] leading-4 text-slate-500">{{ item.category }}</span>
-              <div class="ml-auto flex shrink-0 items-center gap-1">
-                <button type="button" class="rounded-md border border-slate-200 bg-white p-1 text-slate-500 transition hover:border-indigo-200 hover:text-indigo-600" title="编辑" @click="openEdit(item)">
-                  <Pencil class="h-3 w-3" />
-                </button>
-                <button type="button" class="rounded-md border border-slate-200 bg-white p-1 text-slate-500 transition hover:border-rose-200 hover:text-rose-600 disabled:opacity-50" title="删除" :disabled="deletingId === item.id" @click="remove(item)">
-                  <Loader2 v-if="deletingId === item.id" class="h-3 w-3 animate-spin" />
-                  <Trash2 v-else class="h-3 w-3" />
-                </button>
-              </div>
-            </div>
-            <div class="mt-1 flex min-w-0 items-center gap-1.5 text-xs">
-              <span class="inline-flex shrink-0 rounded-full border px-1.5 py-px text-[10px] leading-4 font-medium" :class="statusClass(item)">{{ statusLabel(item) }}</span>
-              <span class="shrink-0 font-medium text-slate-900">{{ formatDate(item.expiry_date) }}</span>
-              <span class="shrink-0 text-slate-500">{{ item.cost || '—' }}</span>
-              <span class="shrink-0 text-slate-400">{{ cycleLabel(item.cycle_months) }}</span>
-            </div>
-            <div class="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-slate-400">
-              <span class="min-w-0 truncate">{{ item.provider || '未填写服务商' }}<template v-if="item.notes"> · {{ item.notes }}</template></span>
-              <span class="shrink-0">·</span>
-              <span class="shrink-0">{{ item.reminder_enabled ? `提前 ${item.reminder_days_before} 天` : '提醒已关' }}</span>
-              <span class="shrink-0">·</span>
-              <span class="shrink-0">{{ item.delivery_configured ? (platformLabels[item.delivery_platform] || item.delivery_platform) : '未配置渠道' }}</span>
-              <span v-if="item.last_reminded_at" class="ml-auto inline-flex shrink-0 items-center gap-0.5 text-emerald-600"><CheckCircle2 class="h-3 w-3" />已提醒</span>
-              <span v-else-if="item.reminder_enabled" class="ml-auto shrink-0">提醒日 {{ item.reminder_date }}</span>
-            </div>
-          </div>
-
-          <div class="hidden gap-4 xl:grid xl:grid-cols-[minmax(180px,1.6fr)_100px_145px_80px_130px_120px_76px] xl:items-center">
-            <div class="min-w-0">
-              <div class="flex min-w-0 items-center gap-2">
-                <h4 class="truncate font-semibold text-slate-950">{{ item.name }}</h4>
-                <span class="shrink-0 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-500">{{ item.category }}</span>
-              </div>
-              <div class="mt-1 truncate text-xs text-slate-400">
-                {{ item.provider || '未填写服务商' }}<template v-if="item.notes"> · {{ item.notes }}</template>
-              </div>
-            </div>
-
-            <div>
-              <div class="text-sm font-medium text-slate-700">{{ item.cost || '—' }}</div>
-            </div>
-
-            <div>
-              <div class="font-medium text-slate-900">{{ formatDate(item.expiry_date) }}</div>
-              <div class="mt-0.5 text-xs text-slate-400">始于 {{ item.start_date }}</div>
-            </div>
-
-            <div>
-              <div class="text-sm font-medium text-slate-700">{{ cycleLabel(item.cycle_months) }}</div>
-            </div>
-
-            <div>
-              <div class="text-sm font-medium text-slate-700">
-                {{ item.reminder_enabled ? `提前 ${item.reminder_days_before} 天` : '已关闭' }}
-              </div>
-              <div class="mt-0.5 text-xs text-slate-400">
-                {{ item.delivery_configured ? (platformLabels[item.delivery_platform] || item.delivery_platform) : '未配置消息渠道' }}
-              </div>
-            </div>
-
-            <div>
-              <span class="inline-flex rounded-full border px-2.5 py-1 text-xs font-medium" :class="statusClass(item)">
-                {{ statusLabel(item) }}
-              </span>
-              <div class="mt-1 text-xs text-slate-400">
-                <span v-if="item.last_reminded_at" class="inline-flex items-center gap-1 text-emerald-600"><CheckCircle2 class="h-3.5 w-3.5" /> 本期已提醒</span>
-                <span v-else>提醒日 {{ item.reminder_date }}</span>
-              </div>
-            </div>
-
-            <div class="flex items-center justify-end gap-2 self-center">
-              <button type="button" class="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:border-indigo-200 hover:text-indigo-600" title="编辑" @click="openEdit(item)">
-                <Pencil class="h-4 w-4" />
-              </button>
-              <button type="button" class="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:border-rose-200 hover:text-rose-600 disabled:opacity-50" title="删除" :disabled="deletingId === item.id" @click="remove(item)">
-                <Loader2 v-if="deletingId === item.id" class="h-4 w-4 animate-spin" />
-                <Trash2 v-else class="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <div v-if="showDialog" class="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-      <div class="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[28px] border border-slate-200 bg-white shadow-[0_28px_80px_rgba(15,23,42,0.3)]">
-        <div class="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white/95 px-6 py-5 backdrop-blur">
+        <div v-else-if="!subscriptions.length" class="panel-empty">
+          <CalendarClock />
           <div>
-            <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Subscription form</div>
-            <h3 class="mt-1 text-xl font-semibold text-slate-950">{{ editingId ? '编辑订阅' : '添加订阅' }}</h3>
+            <strong>还没有订阅记录</strong>
+            <p>添加第一个周期服务，Ikaros 会根据到期日主动提醒你。</p>
           </div>
-          <button type="button" class="rounded-xl border border-slate-200 p-2 text-slate-500 hover:bg-slate-50" @click="closeDialog"><X class="h-4 w-4" /></button>
         </div>
 
-        <form class="space-y-5 p-6" @submit.prevent="save">
-          <div class="grid gap-4 sm:grid-cols-2">
-            <label class="sm:col-span-2">
-              <span class="mb-1.5 block text-sm text-slate-600">订阅名称 <b class="text-rose-500">*</b></span>
-              <input v-model="form.name" type="text" maxlength="120" class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 outline-none transition focus:border-indigo-400 focus:bg-white focus:ring-2 focus:ring-indigo-100" placeholder="例如：ChatGPT Plus、搬瓦工 VPS" autofocus>
+        <div v-else-if="!filteredSubscriptions.length" class="panel-empty is-compact">
+          <span>该分组暂无订阅</span>
+        </div>
+
+        <template v-else>
+          <div class="sub-head">
+            <span>订阅</span>
+            <span>费用</span>
+            <span>到期日</span>
+            <span>周期</span>
+            <span>提醒</span>
+            <span>状态</span>
+            <span class="is-right">操作</span>
+          </div>
+
+          <div class="sub-list">
+            <article v-for="item in filteredSubscriptions" :key="item.id" class="sub-row">
+              <div class="sub-cell sub-name">
+                <div class="sub-name-head">
+                  <h4>{{ item.name }}</h4>
+                  <span class="sub-category">{{ item.category }}</span>
+                </div>
+                <p class="sub-provider">
+                  {{ item.provider || '未填写服务商' }}<template v-if="item.notes"> · {{ item.notes }}</template>
+                </p>
+              </div>
+
+              <div class="sub-cell sub-cost">
+                <span class="cell-strong">{{ item.cost || '—' }}</span>
+              </div>
+
+              <div class="sub-cell sub-expiry">
+                <span class="cell-strong">{{ formatDate(item.expiry_date) }}</span>
+                <span class="cell-sub">始于 {{ item.start_date }}</span>
+              </div>
+
+              <div class="sub-cell sub-cycle">
+                <span class="cell-strong">{{ cycleLabel(item.cycle_months) }}</span>
+              </div>
+
+              <div class="sub-cell sub-reminder">
+                <span class="cell-strong">
+                  {{ item.reminder_enabled ? `提前 ${item.reminder_days_before} 天` : '已关闭' }}
+                </span>
+                <span class="cell-sub">
+                  {{ item.delivery_configured ? (platformLabels[item.delivery_platform] || item.delivery_platform) : '未配置消息渠道' }}
+                </span>
+              </div>
+
+              <div class="sub-cell sub-status">
+                <span class="status-chip" :class="statusTone(item)">
+                  <span class="status-dot" />
+                  {{ statusLabel(item) }}
+                </span>
+                <span class="cell-sub">
+                  <span v-if="item.last_reminded_at" class="reminded-flag">
+                    <CheckCircle2 />
+                    本期已提醒
+                  </span>
+                  <span v-else>提醒日 {{ item.reminder_date }}</span>
+                </span>
+              </div>
+
+              <div class="sub-cell row-actions">
+                <button type="button" title="编辑" @click="openEdit(item)">
+                  <Pencil />
+                </button>
+                <button
+                  type="button"
+                  title="删除"
+                  class="is-danger"
+                  :disabled="deletingId === item.id"
+                  @click="remove(item)"
+                >
+                  <Loader2 v-if="deletingId === item.id" class="is-spinning" />
+                  <Trash2 v-else />
+                </button>
+              </div>
+            </article>
+          </div>
+        </template>
+      </div>
+    </LiquidGlass>
+
+    <div v-if="showDialog" class="modal-layer" @click.self="closeDialog">
+      <LiquidGlass :radius="24" :optics="panelOptics" class="modal-panel">
+        <header class="modal-header">
+          <h2>{{ editingId ? '编辑订阅' : '添加订阅' }}</h2>
+          <button type="button" class="modal-close" title="关闭" @click="closeDialog">
+            <X />
+          </button>
+        </header>
+
+        <form class="modal-body" @submit.prevent="save">
+          <div class="form-grid">
+            <label class="field-group is-full">
+              <span class="field-label">订阅名称 <b class="field-required">*</b></span>
+              <input
+                v-model="form.name"
+                type="text"
+                maxlength="120"
+                class="field-input"
+                placeholder="例如：ChatGPT Plus、搬瓦工 VPS"
+                autofocus
+              >
             </label>
 
-            <label>
-              <span class="mb-1.5 block text-sm text-slate-600">分类</span>
-              <input v-model="form.category" type="text" maxlength="60" list="subscription-categories" class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400 focus:bg-white">
+            <label class="field-group">
+              <span class="field-label">分类</span>
+              <input
+                v-model="form.category"
+                type="text"
+                maxlength="60"
+                list="subscription-categories"
+                class="field-input"
+              >
               <datalist id="subscription-categories">
                 <option v-for="category in categoryOptions" :key="category" :value="category" />
               </datalist>
             </label>
 
-            <label>
-              <span class="mb-1.5 block text-sm text-slate-600">服务商</span>
-              <input v-model="form.provider" type="text" maxlength="120" class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400 focus:bg-white" placeholder="可选">
+            <label class="field-group">
+              <span class="field-label">服务商</span>
+              <input
+                v-model="form.provider"
+                type="text"
+                maxlength="120"
+                class="field-input"
+                placeholder="可选"
+              >
             </label>
 
-            <label class="sm:col-span-2">
-              <span class="mb-1.5 block text-sm text-slate-600">费用</span>
-              <input v-model="form.cost" type="text" maxlength="64" class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400 focus:bg-white" placeholder="例如：¥98 / 月、20 USD / 月（可选）">
+            <label class="field-group is-full">
+              <span class="field-label">费用</span>
+              <input
+                v-model="form.cost"
+                type="text"
+                maxlength="64"
+                class="field-input"
+                placeholder="例如：¥98 / 月、20 USD / 月（可选）"
+              >
             </label>
           </div>
 
-          <div class="rounded-[22px] border border-slate-200 bg-slate-50 p-4">
-            <div class="flex items-center gap-2 font-medium text-slate-800"><RefreshCw class="h-4 w-4 text-indigo-500" /> 订阅周期</div>
-            <div class="mt-4 flex flex-wrap gap-2">
+          <div class="form-section">
+            <div class="section-title">
+              <RefreshCw />
+              订阅周期
+            </div>
+            <div class="cycle-row">
               <button
                 v-for="option in cycleOptions"
                 :key="option.months"
                 type="button"
-                class="rounded-xl border px-3 py-2 text-sm transition"
-                :class="form.cycle_months === option.months ? 'border-indigo-500 bg-indigo-500 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200'"
+                class="cycle-option"
+                :class="{ 'is-active': form.cycle_months === option.months }"
                 @click="setCycle(option.months)"
               >
                 {{ option.label }}
               </button>
-              <label class="ml-auto flex items-center gap-2 text-sm text-slate-500">
+              <label class="cycle-custom">
                 每
-                <input v-model.number="form.cycle_months" type="number" min="1" max="1200" step="1" class="w-24 rounded-xl border border-slate-200 bg-white px-3 py-2 text-center text-slate-900 outline-none focus:border-indigo-400" @change="recalculateExpiry">
+                <input
+                  v-model.number="form.cycle_months"
+                  type="number"
+                  min="1"
+                  max="1200"
+                  step="1"
+                  class="field-input cycle-input"
+                  @change="recalculateExpiry"
+                >
                 个月
               </label>
             </div>
           </div>
 
-          <div class="grid gap-4 sm:grid-cols-2">
-            <label>
-              <span class="mb-1.5 block text-sm text-slate-600">开始日期</span>
-              <input v-model="form.start_date" type="date" class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400 focus:bg-white" @change="recalculateExpiry">
+          <div class="form-grid">
+            <label class="field-group">
+              <span class="field-label">开始日期</span>
+              <input
+                v-model="form.start_date"
+                type="date"
+                class="field-input"
+                @change="recalculateExpiry"
+              >
             </label>
-            <label>
-              <span class="mb-1.5 flex items-center justify-between text-sm text-slate-600">
+            <label class="field-group">
+              <span class="field-label is-split">
                 <span>到期日期</span>
-                <button type="button" class="text-xs text-indigo-600 hover:text-indigo-500" @click="recalculateExpiry">按周期重算</button>
+                <button type="button" class="inline-action" @click="recalculateExpiry">按周期重算</button>
               </span>
-              <input v-model="form.expiry_date" type="date" class="w-full rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-3 font-medium text-slate-900 outline-none focus:border-indigo-400 focus:bg-white">
-              <span class="mt-1.5 block text-xs text-slate-400">可直接修改，以服务商给出的实际日期为准。</span>
+              <input v-model="form.expiry_date" type="date" class="field-input is-expiry">
+              <span class="field-hint">可直接修改，以服务商给出的实际日期为准。</span>
             </label>
           </div>
 
-          <div class="rounded-[22px] border border-slate-200 p-4">
-            <label class="flex cursor-pointer items-center justify-between gap-4">
+          <div class="form-section">
+            <label class="reminder-toggle">
               <div>
-                <div class="flex items-center gap-2 font-medium text-slate-800"><BellRing class="h-4 w-4 text-indigo-500" /> 到期提醒</div>
-                <div class="mt-1 text-xs text-slate-400">同一个到期日只会成功推送一次。</div>
+                <div class="section-title">
+                  <BellRing />
+                  到期提醒
+                </div>
+                <p class="field-hint">同一个到期日只会成功推送一次。</p>
               </div>
-              <input v-model="form.reminder_enabled" type="checkbox" class="h-5 w-5 accent-indigo-600">
+              <input v-model="form.reminder_enabled" type="checkbox" class="reminder-checkbox">
             </label>
 
-            <div v-if="form.reminder_enabled" class="mt-4 grid gap-4 border-t border-slate-100 pt-4 sm:grid-cols-2">
-              <label>
-                <span class="mb-1.5 block text-sm text-slate-600">提前多少天</span>
-                <div class="relative">
-                  <input v-model.number="form.reminder_days_before" type="number" min="0" max="3650" step="1" class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-12 outline-none focus:border-indigo-400 focus:bg-white">
-                  <span class="absolute right-4 top-3 text-sm text-slate-400">天</span>
-                </div>
+            <div v-if="form.reminder_enabled" class="form-grid reminder-fields">
+              <label class="field-group">
+                <span class="field-label">提前多少天</span>
+                <span class="days-input">
+                  <input
+                    v-model.number="form.reminder_days_before"
+                    type="number"
+                    min="0"
+                    max="3650"
+                    step="1"
+                    class="field-input"
+                  >
+                  <span class="days-suffix">天</span>
+                </span>
               </label>
-              <label>
-                <span class="mb-1.5 block text-sm text-slate-600">消息渠道</span>
-                <select v-model="form.delivery_platform" :disabled="!bindings.length" class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400 focus:bg-white disabled:opacity-60">
+              <label class="field-group">
+                <span class="field-label">消息渠道</span>
+                <select v-model="form.delivery_platform" :disabled="!bindings.length" class="field-input">
                   <option v-if="!bindings.length" :value="undefined">尚未绑定渠道</option>
-                  <option v-for="binding in bindings" :key="binding.id" :value="binding.platform">{{ platformLabels[binding.platform] || binding.platform }}</option>
+                  <option v-for="binding in bindings" :key="binding.id" :value="binding.platform">
+                    {{ platformLabels[binding.platform] || binding.platform }}
+                  </option>
                 </select>
               </label>
             </div>
           </div>
 
-          <label>
-            <span class="mb-1.5 block text-sm text-slate-600">备注</span>
-            <textarea v-model="form.notes" rows="3" maxlength="1000" class="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400 focus:bg-white" placeholder="套餐、账号、续费注意事项等（可选）" />
+          <label class="field-group">
+            <span class="field-label">备注</span>
+            <textarea
+              v-model="form.notes"
+              rows="3"
+              maxlength="1000"
+              class="field-textarea"
+              placeholder="套餐、账号、续费注意事项等（可选）"
+            />
           </label>
 
-          <div v-if="errorText" class="flex items-start gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            <CircleAlert class="mt-0.5 h-4 w-4 shrink-0" />
+          <div v-if="errorText" class="form-error">
+            <CircleAlert />
             {{ errorText }}
           </div>
 
-          <div class="flex gap-3 border-t border-slate-100 pt-5">
-            <button type="button" class="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 font-medium text-slate-600 transition hover:bg-slate-50" @click="closeDialog">取消</button>
-            <button type="submit" class="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-4 py-3 font-medium text-white shadow-lg shadow-indigo-600/20 transition hover:bg-indigo-500 disabled:opacity-60" :disabled="saving">
-              <Loader2 v-if="saving" class="h-4 w-4 animate-spin" />
-              <Clock3 v-else class="h-4 w-4" />
+          <footer class="modal-footer">
+            <button type="button" class="ikaros-secondary-action" @click="closeDialog">取消</button>
+            <button type="submit" class="ikaros-primary-action submit-button" :disabled="saving">
+              <Loader2 v-if="saving" class="is-spinning" />
+              <Clock3 v-else />
               {{ saving ? '保存中' : '保存订阅' }}
             </button>
-          </div>
+          </footer>
         </form>
-      </div>
+      </LiquidGlass>
     </div>
   </div>
 </template>
+
+<style scoped>
+.subscription-page {
+  width: min(1440px, 100%);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-actions svg,
+.submit-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.refresh-button .is-spinning,
+.submit-button .is-spinning,
+.row-actions .is-spinning {
+  animation: subscription-spin 850ms linear infinite;
+}
+
+.notice-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border: 1px solid rgba(200, 120, 32, 0.2);
+  border-radius: 16px;
+  background: rgba(200, 120, 32, 0.08);
+  color: #b86717;
+}
+
+.notice-banner > svg {
+  width: 19px;
+  height: 19px;
+  flex: none;
+}
+
+.notice-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.notice-copy strong {
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.notice-copy p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.notice-link {
+  flex: none;
+  color: var(--ikaros-pink);
+  font-size: 13px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.notice-link:hover {
+  text-decoration: underline;
+}
+
+.error-banner {
+  padding: 13px 16px;
+  border: 1px solid rgba(198, 55, 65, 0.18);
+  border-radius: 16px;
+  background: rgba(198, 55, 65, 0.08);
+  color: #c63741;
+  font-size: 13px;
+}
+
+.filter-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: fit-content;
+  padding: 4px;
+  border: 0.5px solid var(--ikaros-glass-hairline);
+  border-radius: 13px;
+  background: var(--ikaros-glass-fill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+.filter-tab {
+  min-height: 32px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.filter-tab:hover {
+  color: var(--ikaros-ink);
+}
+
+.filter-tab.is-active {
+  background: #fff;
+  color: var(--ikaros-ink);
+  box-shadow: 0 2px 8px rgba(23, 19, 26, 0.08);
+  font-weight: 750;
+}
+
+:global(.dark) .filter-tab.is-active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.subscription-panel {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.84);
+}
+
+:global(.dark) .subscription-panel {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.86);
+}
+
+.panel-shell {
+  padding: 20px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.panel-count {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 999px;
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.panel-loading {
+  display: flex;
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
+  color: var(--ikaros-pink);
+}
+
+.panel-loading svg {
+  width: 26px;
+  height: 26px;
+}
+
+.panel-loading .is-spinning {
+  animation: subscription-spin 850ms linear infinite;
+}
+
+.panel-empty {
+  display: flex;
+  min-height: 200px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 18px;
+  border: 1px dashed var(--ikaros-line);
+  border-radius: 16px;
+  color: var(--ikaros-copy);
+}
+
+.panel-empty > svg {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  color: var(--ikaros-muted);
+}
+
+.panel-empty strong {
+  color: var(--ikaros-ink);
+  font-size: 13px;
+}
+
+.panel-empty p {
+  margin: 4px 0 0;
+  color: var(--ikaros-muted);
+  font-size: 12px;
+}
+
+.panel-empty.is-compact {
+  min-height: 120px;
+  font-size: 12px;
+}
+
+.sub-head,
+.sub-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.6fr) 100px 145px 80px 130px 120px 76px;
+  align-items: center;
+  gap: 14px;
+}
+
+.sub-head {
+  margin-top: 18px;
+  padding: 0 14px 9px;
+  border-bottom: 1px solid var(--ikaros-line);
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sub-head .is-right {
+  text-align: right;
+}
+
+.sub-list {
+  display: grid;
+}
+
+.sub-row {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--ikaros-line);
+}
+
+.sub-row:last-child {
+  border-bottom: 0;
+}
+
+.sub-cell {
+  min-width: 0;
+}
+
+.sub-name-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.sub-name-head h4 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sub-category {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 999px;
+  color: var(--ikaros-copy);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.sub-provider {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-strong {
+  display: block;
+  overflow: hidden;
+  color: var(--ikaros-ink);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-sub {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--ikaros-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-chip.is-normal {
+  color: var(--ikaros-rind);
+}
+
+.status-chip.is-due {
+  color: #b86717;
+}
+
+.status-chip.is-expired {
+  color: #c63741;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-chip.is-normal .status-dot {
+  box-shadow: 0 0 0 3px rgba(47, 125, 74, 0.12);
+}
+
+.reminded-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ikaros-rind);
+}
+
+.reminded-flag svg {
+  width: 12px;
+  height: 12px;
+}
+
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.row-actions button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ikaros-muted);
+}
+
+.row-actions button:hover {
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
+}
+
+.row-actions button.is-danger:hover {
+  background: rgba(198, 55, 65, 0.1);
+  color: #c63741;
+}
+
+.row-actions button:disabled {
+  opacity: 0.55;
+}
+
+.row-actions svg {
+  width: 15px;
+  height: 15px;
+}
+
+.modal-layer {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(23, 19, 26, 0.24);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+}
+
+.modal-panel {
+  width: min(640px, 100%);
+  max-height: calc(100vh - 40px);
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.93);
+}
+
+:global(.dark) .modal-panel {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.95);
+}
+
+.modal-panel :global(.liquid-glass__content) {
+  display: flex;
+  max-height: calc(100vh - 40px);
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--ikaros-line);
+}
+
+.modal-header h2 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.modal-close {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ikaros-muted);
+}
+
+.modal-close:hover {
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
+}
+
+.modal-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+.modal-body {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.form-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field-group {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.field-group.is-full {
+  grid-column: 1 / -1;
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.field-required {
+  color: #c63741;
+}
+
+.field-input,
+.field-textarea {
+  width: 100%;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 10px 13px;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+:global(.dark) .field-input,
+:global(.dark) .field-textarea {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.field-textarea {
+  resize: none;
+}
+
+.field-input:focus,
+.field-textarea:focus {
+  border-color: rgba(232, 93, 142, 0.45);
+  box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.12);
+}
+
+.field-input.is-expiry {
+  border-color: rgba(232, 93, 142, 0.3);
+  background: rgba(232, 93, 142, 0.05);
+  font-weight: 650;
+}
+
+.field-hint {
+  margin: 0;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.inline-action {
+  border: 0;
+  background: transparent;
+  color: var(--ikaros-pink);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0;
+}
+
+.inline-action:hover {
+  color: var(--ikaros-pink-dark);
+}
+
+.form-section {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.32);
+}
+
+:global(.dark) .form-section {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.section-title svg {
+  width: 15px;
+  height: 15px;
+  color: var(--ikaros-pink);
+}
+
+.cycle-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.cycle-option {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+:global(.dark) .cycle-option {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cycle-option:hover {
+  border-color: rgba(232, 93, 142, 0.32);
+  color: var(--ikaros-pink);
+}
+
+.cycle-option.is-active {
+  border-color: var(--ikaros-pink);
+  background: var(--ikaros-pink);
+  color: #fff;
+}
+
+.cycle-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  color: var(--ikaros-copy);
+  font-size: 12px;
+}
+
+.cycle-input {
+  width: 84px;
+  text-align: center;
+}
+
+.reminder-toggle {
+  display: flex;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.reminder-checkbox {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  accent-color: var(--ikaros-pink);
+}
+
+.reminder-fields {
+  padding-top: 14px;
+  border-top: 1px solid var(--ikaros-line);
+}
+
+.days-input {
+  position: relative;
+  display: block;
+}
+
+.days-suffix {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  color: var(--ikaros-muted);
+  font-size: 12px;
+  transform: translateY(-50%);
+}
+
+.form-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 11px 13px;
+  border: 1px solid rgba(198, 55, 65, 0.18);
+  border-radius: 13px;
+  background: rgba(198, 55, 65, 0.08);
+  color: #c63741;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.form-error svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-top: 1px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+@keyframes subscription-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1180px) {
+  .sub-head {
+    display: none;
+  }
+
+  .sub-row {
+    grid-template-columns: minmax(0, 1fr) 145px 120px 76px;
+  }
+
+  .sub-cost,
+  .sub-cycle,
+  .sub-reminder {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sub-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .sub-expiry,
+  .sub-status {
+    display: none;
+  }
+
+  .cycle-custom {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refresh-button .is-spinning,
+  .submit-button .is-spinning,
+  .row-actions .is-spinning,
+  .panel-loading .is-spinning {
+    animation: none;
+  }
+
+  .field-input,
+  .field-textarea {
+    transition: none;
+  }
+}
+</style>

@@ -2,18 +2,18 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
     AudioLines,
+    Bot,
     CircleStop,
-    FilePlus2,
     Loader2,
     MessageSquareText,
     Mic,
     PanelLeftClose,
     PanelLeftOpen,
+    Paperclip,
     Plus,
     RefreshCw,
     Search,
     SendHorizonal,
-    SquarePen,
     Volume2,
     X
 } from 'lucide-vue-next'
@@ -31,11 +31,13 @@ import {
     type ChatSession,
     uploadChatFile,
 } from '@/api/web-chat'
+import LiquidGlass from '@/components/liquid-glass/LiquidGlass.vue'
 
 const sessions = ref<ChatSession[]>([])
 const messages = ref<ChatMessage[]>([])
 const currentSessionId = ref('')
 const composer = ref('')
+const sessionQuery = ref('')
 const loadingSessions = ref(false)
 const sending = ref(false)
 const streamStatus = ref<'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'>('idle')
@@ -51,6 +53,20 @@ const statusTimer = ref<number | null>(null)
 const waitingAssistant = ref(false)
 const showSessions = ref(false)
 const showCommandPicker = ref(false)
+
+const panelOptics = {
+    mapSize: 256,
+    strength: 0.06,
+    depth: 0.72,
+    dispersion: 0.46,
+    frost: 4,
+    saturate: 1.22,
+    specular: 1.15,
+    glow: 0.22,
+    sheen: 0.78,
+    curvature: 0.38,
+    bend: 0.62,
+}
 
 const filteredCommands = computed(() => {
     const query = composer.value.trim().toLowerCase()
@@ -73,14 +89,14 @@ const selectCommand = (cmd: { label: string; text: string }) => {
 }
 
 const commandEntries = [
-    { label: '/start', text: '/start' },
-    { label: '/help', text: '/help' },
-    { label: '/model', text: '/model' },
-    { label: '/usage', text: '/usage' },
-    { label: '/task', text: '/task recent' },
-    { label: '/heartbeat', text: '/heartbeat list' },
-    { label: '/skills', text: '/skills' },
-    { label: '/wxbind', text: '/wxbind' },
+    { label: '/start', text: '/start', desc: '初始化会话' },
+    { label: '/help', text: '/help', desc: '查看可用命令' },
+    { label: '/model', text: '/model', desc: '切换推理模型' },
+    { label: '/usage', text: '/usage', desc: '查看配额统计' },
+    { label: '/task', text: '/task recent', desc: '转为后台任务' },
+    { label: '/heartbeat', text: '/heartbeat list', desc: '查看巡检清单' },
+    { label: '/skills', text: '/skills', desc: '查看技能列表' },
+    { label: '/wxbind', text: '/wxbind', desc: '绑定微信账号' },
 ]
 
 const attachmentKind = (attachment: ChatAttachment) =>
@@ -205,6 +221,8 @@ const openAttachment = async (attachment: ChatAttachment) => {
     document.body.removeChild(link)
 }
 
+const normalizedQuery = computed(() => sessionQuery.value.trim().toLowerCase())
+
 const visibleSessions = computed(() => {
     const ordered = [...sessions.value].sort((a, b) => {
         const left = String(a.updated_at || a.last_message_at || a.created_at || '')
@@ -213,6 +231,10 @@ const visibleSessions = computed(() => {
     })
 
     return ordered.filter(session => {
+        if (normalizedQuery.value) {
+            const haystack = `${session.title || ''} ${session.preview || ''}`.toLowerCase()
+            if (!haystack.includes(normalizedQuery.value)) return false
+        }
         const isEmpty = !session.message_count && !String(session.preview || '').trim()
         if (!isEmpty) return true
         return session.id === currentSessionId.value
@@ -385,6 +407,7 @@ const openSession = async (sessionId: string) => {
     currentSessionId.value = sessionId
     lastEventId.value = 0
     waitingAssistant.value = false
+    showSessions.value = false
     const response = await getSessionMessages(sessionId)
     messages.value = response.items || []
     primeMessagesAttachments(messages.value)
@@ -536,6 +559,49 @@ const onDrop = async (event: DragEvent) => {
     }
 }
 
+const insertCommandPrefix = () => {
+    composer.value = '/'
+}
+
+const parseTime = (value: unknown) => {
+    const raw = String(value || '').trim()
+    if (!raw) return null
+    const date = new Date(raw)
+    if (Number.isNaN(date.getTime())) return null
+    return date
+}
+
+const formatTime = (value: unknown) => {
+    const date = parseTime(value)
+    if (!date) return ''
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+const formatSessionTime = (value: unknown) => {
+    const date = parseTime(value)
+    if (!date) return ''
+    const now = new Date()
+    const sameDay = date.toDateString() === now.toDateString()
+    if (sameDay) return formatTime(date)
+    const yesterday = new Date(now)
+    yesterday.setDate(now.getDate() - 1)
+    if (date.toDateString() === yesterday.toDateString()) return '昨天'
+    return `${date.getMonth() + 1}月${date.getDate()}日`
+}
+
+const formatDateTime = (value: unknown) => {
+    const date = parseTime(value)
+    if (!date) return '-'
+    return date.toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    })
+}
+
 onMounted(async () => {
     await ensureInitialSession()
 })
@@ -552,344 +618,361 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chat-page">
-    <section class="chat-title-panel">
-      <h1>对话工作台 / Chat</h1>
-      <p>与 IKAROS AI 助手对话，获取平台能力支持</p>
-    </section>
-
-    <div class="chat-workbench grid min-h-0 gap-0 md:grid-cols-[330px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)_300px]">
-    <!-- Mobile overlay -->
-    <div
-      v-if="showSessions"
-      class="fixed inset-0 z-30 bg-black/50 md:hidden"
-      @click="showSessions = false"
-    />
-
-    <!-- Sessions sidebar - fixed on mobile, relative on desktop -->
-    <aside
-      class="chat-panel chat-sessions-rail border-r border-slate-200 bg-slate-50/80 p-4 transition-transform duration-300 h-auto md:h-full"
-      :class="[
-        showSessions ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
-        'md:relative md:block md:w-[300px] md:flex-shrink-0',
-        'fixed top-[56px] left-0 bottom-0 z-40 w-[280px] md:static md:z-auto'
-      ]"
-    >
-      <div class="flex items-center justify-between">
-        <div>
-          <div class="text-lg font-semibold text-slate-900">会话列表</div>
-        </div>
-        <button class="chat-primary-small" @click="createNewSession">
-          <Plus class="h-4 w-4" />
-          新建会话
-        </button>
+    <header class="chat-header">
+      <div>
+        <p class="ikaros-page-kicker">Chat Workbench</p>
+        <h1 class="chat-title">对话工作台</h1>
       </div>
+      <p class="chat-subtitle">与 Ikaros 对话，支持文本、命令、语音和文件。</p>
+    </header>
 
-      <div class="mt-4 grid grid-cols-[minmax(0,1fr)_44px] gap-2">
-        <label class="chat-session-search">
-          <Search class="h-4 w-4" />
-          <input type="search" placeholder="搜索会话标题或内容">
-        </label>
-        <button
-          class="chat-icon-only"
-          @click="ensureInitialSession"
-        >
-          <RefreshCw class="h-4 w-4" />
-        </button>
-      </div>
+    <div class="chat-workbench">
+      <div
+        v-if="showSessions"
+        class="sessions-scrim"
+        @click="showSessions = false"
+      />
 
-      <div class="mt-5 space-y-2">
-        <div v-if="loadingSessions" class="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-500">
-          <Loader2 class="h-4 w-4 animate-spin" />
-          正在加载会话
-        </div>
-
-        <button
-          v-for="session in visibleSessions"
-          :key="session.id"
-          class="w-full rounded-[24px] border px-4 py-4 text-left transition"
-          :class="session.id === currentSessionId
-            ? 'border-blue-400 bg-blue-50 shadow-sm'
-            : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'"
-          @click="openSession(session.id)"
-        >
-          <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0">
-              <div class="truncate text-sm font-semibold text-slate-900">{{ session.title || '新对话' }}</div>
-              <div class="mt-2 max-h-[3.2rem] overflow-hidden text-xs leading-6 text-slate-500">{{ session.preview || '等待第一条消息' }}</div>
-            </div>
-            <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400">{{ session.message_count || 0 }}</div>
+      <LiquidGlass
+        as="aside"
+        :radius="22"
+        :optics="panelOptics"
+        class="chat-panel sessions-panel"
+        :class="{ 'is-open': showSessions }"
+      >
+        <div class="panel-fill sessions-inner">
+          <div class="sessions-top">
+            <label class="session-search">
+              <Search />
+              <input v-model="sessionQuery" type="search" placeholder="搜索会话…">
+            </label>
+            <button type="button" class="icon-button" title="刷新会话列表" @click="ensureInitialSession">
+              <RefreshCw />
+            </button>
           </div>
-        </button>
 
-        <div v-if="!loadingSessions && !visibleSessions.length" class="rounded-[24px] border border-dashed border-slate-300 bg-white/70 px-4 py-5 text-sm leading-7 text-slate-500">
-          还没有会话。点击右上角 `+` 开始一个新对话。
-        </div>
-      </div>
-    </aside>
-
-    <section class="chat-panel chat-canvas flex min-h-0 flex-col bg-[linear-gradient(180deg,_#ffffff_0%,_#f8fafc_100%)]" @drop="onDrop" @dragover.prevent>
-      <header class="chat-canvas-header flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div class="flex min-w-0 items-center gap-3">
-          <!-- Toggle sessions button (mobile) -->
-          <button
-            class="rounded-xl border border-slate-200 bg-white p-2 text-slate-700 transition hover:bg-slate-100 md:hidden"
-            @click="showSessions = !showSessions"
-          >
-            <PanelLeftOpen v-if="!showSessions" class="h-5 w-5" />
-            <PanelLeftClose v-else class="h-5 w-5" />
+          <button type="button" class="new-session-button" @click="createNewSession">
+            <Plus />
+            新建会话
           </button>
-          <div class="min-w-0">
-            <div class="line-clamp-2 break-words text-sm font-semibold text-slate-900 sm:line-clamp-1">{{ currentSession?.title || '准备开始新的对话' }}</div>
-            <div class="mt-1 truncate text-xs text-slate-500">
-              {{ currentSession ? '当前会话已就绪' : '新建会话后即可开始对话' }}
-            </div>
-          </div>
-        </div>
-        <div class="flex shrink-0 items-center gap-2 self-end sm:self-auto sm:gap-3">
-          <div
-            v-if="statusBadge"
-            class="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs"
-            :class="streamStatus === 'error'
-              ? 'border-rose-200 bg-rose-50 text-rose-700'
-              : 'border-slate-200 bg-white text-slate-600'"
-          >
-            <span class="h-2 w-2 rounded-full" :class="streamStatus === 'error' ? 'bg-rose-500' : 'bg-emerald-500'" />
-            {{ statusBadge }}
-          </div>
-          <div class="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500 sm:inline-flex">
-            <MessageSquareText class="h-4 w-4 text-blue-600" />
-            输入 / 使用命令
-          </div>
-        </div>
-      </header>
 
-      <div ref="messagesEl" class="chat-messages-container min-h-0 flex-1 overflow-auto px-5 py-5">
-        <div v-if="!messages.length" class="flex h-full min-h-[420px] items-center justify-center">
-          <div class="max-w-xl rounded-[28px] border border-dashed border-slate-300 bg-white/80 px-8 py-10 text-center shadow-sm">
-            <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-cyan-50 text-cyan-700">
-              <AudioLines class="h-6 w-6" />
+          <div class="sessions-list">
+            <div v-if="loadingSessions" class="sessions-loading">
+              <Loader2 class="is-spinning" />
+              正在加载会话
             </div>
-            <h3 class="mt-5 text-2xl font-semibold text-slate-950">开始一轮真正可用的对话</h3>
-            <p class="mt-3 text-sm leading-7 text-slate-500">
-              支持文本、命令、语音和文件。输入 / 开始使用命令，或点击下方按钮开始。
-            </p>
-          </div>
-        </div>
 
-        <div v-else class="space-y-5">
-          <div
-            v-for="message in messages"
-            :key="message.id"
-            class="flex"
-            :class="message.role === 'user' ? 'justify-end' : 'justify-start'"
-          >
-            <div
-              class="message-bubble max-w-[860px] rounded-[28px] border px-4 py-3 shadow-sm"
-              :class="message.role === 'user'
-                ? 'border-blue-200 bg-blue-50 text-slate-900'
-                : 'border-slate-200 bg-white text-slate-900'"
+            <button
+              v-for="session in visibleSessions"
+              :key="session.id"
+              type="button"
+              class="session-item"
+              :class="{ 'is-active': session.id === currentSessionId }"
+              @click="openSession(session.id)"
             >
-              <div class="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-slate-400">
-                <span>{{ message.role === 'user' ? 'You' : 'Ikaros' }}</span>
-                <span>{{ message.message_type }}</span>
+              <div class="session-item-head">
+                <strong>{{ session.title || '新对话' }}</strong>
+                <time>{{ formatSessionTime(session.updated_at || session.last_message_at || session.created_at) }}</time>
               </div>
-              <div v-if="message.content" class="whitespace-pre-wrap text-sm leading-7 text-slate-700">{{ message.content }}</div>
-
-              <div v-if="message.attachments?.length" class="mt-3 space-y-2">
-                <div
-                  v-for="attachment in message.attachments"
-                  :key="`${message.id}-${attachment.file_id}`"
-                  class="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50"
+              <p>{{ session.preview || '等待第一条消息' }}</p>
+              <div class="session-item-foot">
+                <span
+                  v-if="session.id === currentSessionId && streamStatus === 'connected'"
+                  class="live-flag"
                 >
-                  <button
-                    v-if="isImageAttachment(attachment) && attachmentObjectUrl(attachment)"
-                    type="button"
-                    class="block w-full bg-slate-100 text-left"
-                    @click="openAttachment(attachment)"
-                  >
-                    <img
-                      :src="attachmentObjectUrl(attachment)"
-                      :alt="attachment.name || '图片附件'"
-                      class="block max-h-[420px] w-full object-contain"
-                      loading="lazy"
-                    >
-                  </button>
+                  <span class="live-dot" />
+                  Live
+                </span>
+                <span v-else />
+                <span class="session-count">
+                  <MessageSquareText />
+                  {{ session.message_count || 0 }}
+                </span>
+              </div>
+            </button>
 
-                  <div
-                    v-else-if="isImageAttachment(attachment)"
-                    class="flex min-h-[180px] items-center justify-center bg-slate-100 px-4 py-8 text-sm text-slate-500"
-                  >
-                    正在加载图片…
+            <div v-if="!loadingSessions && !visibleSessions.length" class="sessions-empty">
+              {{ normalizedQuery ? '没有匹配的会话。' : '还没有会话，点击上方“新建会话”开始。' }}
+            </div>
+          </div>
+        </div>
+      </LiquidGlass>
+
+      <LiquidGlass
+        as="section"
+        :radius="22"
+        :optics="panelOptics"
+        class="chat-panel canvas-panel"
+        @drop="onDrop"
+        @dragover.prevent
+      >
+        <div class="panel-fill canvas-inner">
+          <header class="canvas-header">
+            <div class="canvas-heading">
+              <button
+                type="button"
+                class="icon-button sessions-toggle"
+                title="会话列表"
+                @click="showSessions = !showSessions"
+              >
+                <PanelLeftOpen v-if="!showSessions" />
+                <PanelLeftClose v-else />
+              </button>
+              <div class="canvas-title">
+                <h2>
+                  <span>{{ currentSession?.title || '准备开始新的对话' }}</span>
+                  <span v-if="streamStatus === 'connected'" class="active-badge">
+                    <span class="live-dot" />
+                    Active
+                  </span>
+                </h2>
+                <p>{{ currentSession ? '当前会话已就绪' : '新建会话后即可开始对话' }}</p>
+              </div>
+            </div>
+            <div class="canvas-header-actions">
+              <span v-if="statusBadge" class="stream-chip" :class="{ 'is-error': streamStatus === 'error' }">
+                <span class="stream-dot" />
+                {{ statusBadge }}
+              </span>
+              <span class="command-hint">
+                <MessageSquareText />
+                输入 / 使用命令
+              </span>
+            </div>
+          </header>
+
+          <div ref="messagesEl" class="messages-area">
+            <div v-if="!messages.length" class="messages-empty">
+              <div class="empty-card">
+                <span class="empty-icon"><AudioLines /></span>
+                <h3>开始新的对话</h3>
+                <p>支持文本、命令、语音和文件。输入 / 使用命令，或点击“新建会话”开始。</p>
+              </div>
+            </div>
+
+            <div v-else class="messages-list">
+              <div
+                v-for="message in messages"
+                :key="message.id"
+                class="message-row"
+                :class="message.role === 'user' ? 'is-user' : 'is-assistant'"
+              >
+                <span v-if="message.role !== 'user'" class="ai-avatar"><Bot /></span>
+                <div class="message-stack">
+                  <div class="message-meta">
+                    <span>{{ message.role === 'user' ? '你' : 'Ikaros' }}</span>
+                    <time>{{ formatTime(message.created_at) }}</time>
                   </div>
 
-                  <div class="space-y-3 p-3">
-                    <audio
-                      v-if="isAudioAttachment(attachment) && attachmentObjectUrl(attachment)"
-                      :src="attachmentObjectUrl(attachment)"
-                      controls
-                      preload="metadata"
-                      class="w-full"
-                    />
+                  <div class="message-bubble">
+                    <div v-if="message.content" class="message-text">{{ message.content }}</div>
 
-                    <div
-                      v-else-if="isAudioAttachment(attachment)"
-                      class="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-4 text-sm text-slate-500"
-                    >
-                      正在加载音频…
+                    <div v-if="message.attachments?.length" class="attachment-list">
+                      <div
+                        v-for="attachment in message.attachments"
+                        :key="`${message.id}-${attachment.file_id}`"
+                        class="attachment-card"
+                      >
+                        <button
+                          v-if="isImageAttachment(attachment) && attachmentObjectUrl(attachment)"
+                          type="button"
+                          class="attachment-image"
+                          @click="openAttachment(attachment)"
+                        >
+                          <img
+                            :src="attachmentObjectUrl(attachment)"
+                            :alt="attachment.name || '图片附件'"
+                            loading="lazy"
+                          >
+                        </button>
+
+                        <div
+                          v-else-if="isImageAttachment(attachment)"
+                          class="attachment-loading"
+                        >
+                          正在加载图片…
+                        </div>
+
+                        <div class="attachment-body">
+                          <audio
+                            v-if="isAudioAttachment(attachment) && attachmentObjectUrl(attachment)"
+                            :src="attachmentObjectUrl(attachment)"
+                            controls
+                            preload="metadata"
+                            class="attachment-audio"
+                          />
+
+                          <div
+                            v-else-if="isAudioAttachment(attachment)"
+                            class="attachment-loading is-compact"
+                          >
+                            正在加载音频…
+                          </div>
+
+                          <div class="attachment-row">
+                            <div class="attachment-file">
+                              <strong>{{ attachment.name }}</strong>
+                              <span>{{ attachment.mime_type }}</span>
+                            </div>
+                            <button
+                              type="button"
+                              class="attachment-open"
+                              @click="openAttachment(attachment)"
+                            >
+                              打开
+                            </button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
-                    <div class="flex items-center justify-between gap-3">
-                      <div class="min-w-0">
-                        <div class="truncate text-sm font-medium text-slate-900">{{ attachment.name }}</div>
-                        <div class="text-xs text-slate-500">{{ attachment.mime_type }}</div>
-                      </div>
-                      <button
-                        type="button"
-                        class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
-                        @click="openAttachment(attachment)"
+                    <div v-if="message.actions?.length" class="action-list">
+                      <div
+                        v-for="(row, rowIndex) in message.actions"
+                        :key="`${message.id}-row-${rowIndex}`"
+                        class="action-row"
                       >
-                        打开
+                        <button
+                          v-for="action in row"
+                          :key="action.callback_data"
+                          type="button"
+                          class="action-pill"
+                          @click="runMenuAction(action.callback_data)"
+                        >
+                          {{ action.text }}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div v-if="message.role === 'assistant' && message.content" class="message-tools">
+                      <button type="button" class="tts-button" @click="playMessage(message)">
+                        <Volume2 />
+                        朗读
                       </button>
                     </div>
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
 
-              <div v-if="message.actions?.length" class="mt-3 space-y-2">
-                <div v-for="(row, rowIndex) in message.actions" :key="`${message.id}-row-${rowIndex}`" class="flex flex-wrap gap-2">
-                  <button
-                    v-for="action in row"
-                    :key="action.callback_data"
-                    class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
-                    @click="runMenuAction(action.callback_data)"
-                  >
-                    {{ action.text }}
-                  </button>
-                </div>
+          <footer class="canvas-footer">
+            <div v-if="showCommandPicker && filteredCommands.length" class="command-picker">
+              <div class="command-picker-head">
+                <span>可用命令</span>
+                <button type="button" title="关闭" @click="showCommandPicker = false">
+                  <X />
+                </button>
               </div>
-
-              <div v-if="message.role === 'assistant' && message.content" class="mt-3 flex justify-end">
+              <div class="command-picker-grid">
                 <button
-                  class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 transition hover:bg-slate-100"
-                  @click="playMessage(message)"
+                  v-for="cmd in filteredCommands"
+                  :key="cmd.text"
+                  type="button"
+                  class="command-option"
+                  @click="selectCommand(cmd)"
                 >
-                  <Volume2 class="h-4 w-4" />
-                  朗读
+                  <span>{{ cmd.label }}</span>
+                  <small>{{ cmd.desc }}</small>
                 </button>
               </div>
             </div>
-          </div>
-        </div>
-      </div>
 
-      <footer class="chat-canvas-footer border-t border-slate-200 bg-white/90 p-4">
-        <!-- Command picker dropdown -->
-        <div v-if="showCommandPicker && filteredCommands.length" class="mb-3 rounded-[16px] border border-slate-200 bg-white p-2 shadow-lg">
-          <div class="mb-2 flex items-center justify-between px-2 py-1">
-            <span class="text-xs font-medium text-slate-500">可用命令</span>
-            <button class="text-slate-400 hover:text-slate-600" @click="showCommandPicker = false">
-              <X class="h-3 w-3" />
-            </button>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <button
-              v-for="cmd in filteredCommands"
-              :key="cmd.text"
-              class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
-              @click="selectCommand(cmd)"
-            >
-              {{ cmd.label }}
-            </button>
-          </div>
-        </div>
+            <div class="composer">
+              <textarea
+                v-model="composer"
+                rows="3"
+                placeholder="输入指令，或输入 '/' 唤出命令菜单…"
+                @keydown.enter.exact.prevent="sendText"
+              />
+              <div class="composer-toolbar">
+                <div class="composer-tools">
+                  <button type="button" class="tool-button" title="发送文件" @click="openFilePicker">
+                    <Paperclip />
+                  </button>
+                  <button
+                    type="button"
+                    class="tool-button"
+                    :class="{ 'is-recording': recording }"
+                    :title="recording ? '停止录音' : '语音输入'"
+                    @click="toggleRecord"
+                  >
+                    <component :is="recording ? CircleStop : Mic" />
+                  </button>
+                  <button type="button" class="command-chip" @click="insertCommandPrefix">
+                    / 命令
+                  </button>
+                  <input ref="fileInput" type="file" class="file-input" multiple @change="handleFileSelection">
+                </div>
 
-        <div class="composer-box rounded-[28px] border border-slate-200 bg-slate-50 p-3">
-          <textarea
-            v-model="composer"
-            class="min-h-[110px] w-full resize-none bg-transparent px-2 py-2 text-sm leading-7 text-slate-800 outline-none"
-            placeholder="输入消息，或输入 / 查看命令..."
-            @keydown.enter.exact.prevent="sendText"
-          />
-          <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <div class="flex flex-wrap items-center gap-2">
-              <button class="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-100" @click="openFilePicker">
-                <FilePlus2 class="h-4 w-4" />
-                文件
-              </button>
-              <button
-                class="inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition"
-                :class="recording ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'"
-                @click="toggleRecord"
-              >
-                <component :is="recording ? CircleStop : Mic" class="h-4 w-4" />
-                {{ recording ? '停止录音' : '语音' }}
-              </button>
-              <input ref="fileInput" type="file" class="hidden" multiple @change="handleFileSelection">
+                <button
+                  type="button"
+                  class="send-button"
+                  :disabled="sending || !composer.trim()"
+                  @click="sendText"
+                >
+                  <Loader2 v-if="sending" class="is-spinning" />
+                  <SendHorizonal v-else />
+                  发送
+                </button>
+              </div>
             </div>
+            <p class="composer-note">IKAROS AI 可能会产生不准确的信息，请核实关键数据。</p>
+          </footer>
+        </div>
+      </LiquidGlass>
 
-            <button
-              class="inline-flex items-center gap-2 rounded-2xl bg-blue-500 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-blue-600 disabled:opacity-60"
-              :disabled="sending || !composer.trim()"
-              @click="sendText"
-            >
-              <Loader2 v-if="sending" class="h-4 w-4 animate-spin" />
-              <SendHorizonal v-else class="h-4 w-4" />
-              发送
-            </button>
-          </div>
-        </div>
-      </footer>
-    </section>
+      <LiquidGlass
+        as="aside"
+        :radius="22"
+        :optics="panelOptics"
+        class="chat-panel info-panel"
+      >
+        <div class="panel-fill info-inner">
+          <section class="info-section">
+            <h3>会话元数据</h3>
+            <dl class="meta-list">
+              <div>
+                <dt>会话标题</dt>
+                <dd>{{ currentSession?.title || '未命名会话' }}</dd>
+              </div>
+              <div>
+                <dt>创建时间</dt>
+                <dd>{{ formatDateTime(currentSession?.created_at) }}</dd>
+              </div>
+              <div>
+                <dt>最后更新</dt>
+                <dd>{{ formatDateTime(currentSession?.updated_at || currentSession?.last_message_at) }}</dd>
+              </div>
+              <div>
+                <dt>消息数</dt>
+                <dd>{{ messages.length }}</dd>
+              </div>
+              <div>
+                <dt>会话 ID</dt>
+                <dd class="is-mono">{{ currentSession?.id || '-' }}</dd>
+              </div>
+            </dl>
+          </section>
 
-    <aside class="chat-info-panel hidden xl:flex">
-      <section class="info-section">
-        <div class="info-heading">
-          <h2>会话信息</h2>
-          <button type="button">⌃</button>
+          <section class="info-section">
+            <h3>快捷指令</h3>
+            <div class="command-list">
+              <button
+                v-for="cmd in commandEntries.slice(0, 5)"
+                :key="cmd.text"
+                type="button"
+                class="command-item"
+                @click="selectCommand(cmd)"
+              >
+                <span>{{ cmd.label }}</span>
+                <small>{{ cmd.desc }}</small>
+              </button>
+            </div>
+          </section>
         </div>
-        <dl class="info-list">
-          <div>
-            <dt>会话标题</dt>
-            <dd>{{ currentSession?.title || '未命名会话' }}</dd>
-          </div>
-          <div>
-            <dt>创建时间</dt>
-            <dd>{{ currentSession?.created_at || '-' }}</dd>
-          </div>
-          <div>
-            <dt>最后更新</dt>
-            <dd>{{ currentSession?.updated_at || currentSession?.last_message_at || '-' }}</dd>
-          </div>
-          <div>
-            <dt>消息数</dt>
-            <dd>{{ messages.length }}</dd>
-          </div>
-          <div>
-            <dt>会话 ID</dt>
-            <dd class="truncate">{{ currentSession?.id || '-' }}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="info-section">
-        <div class="info-heading">
-          <h2>快捷指令</h2>
-          <button type="button">⌃</button>
-        </div>
-        <div class="quick-command-list">
-          <button v-for="cmd in commandEntries.slice(0, 5)" :key="cmd.text" type="button" @click="selectCommand(cmd)">
-            <SquarePen class="h-4 w-4" />
-            <span>{{ cmd.label }}</span>
-            <small>{{ cmd.text }}</small>
-          </button>
-        </div>
-        <button type="button" class="manage-command-btn">
-          <Plus class="h-4 w-4" />
-          管理快捷指令
-        </button>
-      </section>
-    </aside>
-  </div>
+      </LiquidGlass>
+    </div>
   </div>
 </template>
 
@@ -899,303 +982,1174 @@ onBeforeUnmount(() => {
   height: calc(100vh - 154px);
   min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
   overflow: hidden;
-  border: 1px solid var(--panel-border);
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: var(--shadow-card);
+  color: var(--ikaros-ink);
 }
 
-.chat-title-panel {
-  padding: 22px 24px;
-  border-bottom: 1px solid var(--panel-border);
-  background: #fff;
+.chat-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 4px;
 }
 
-.chat-title-panel h1 {
+.chat-title {
   margin: 0;
-  color: var(--text-strong);
-  font-size: 24px;
-  font-weight: 800;
+  color: var(--ikaros-ink);
+  font-size: 22px;
+  font-weight: 780;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
 }
 
-.chat-title-panel p {
-  margin: 8px 0 0;
-  color: var(--text-muted);
-  font-size: 15px;
+.chat-subtitle {
+  margin: 0;
+  color: var(--ikaros-copy);
+  font-size: 12px;
 }
 
 .chat-workbench {
+  display: grid;
   min-height: 0;
-  overflow: hidden;
+  gap: 16px;
+  grid-template-columns: 320px minmax(0, 1fr);
 }
 
 .chat-panel {
   min-height: 0;
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.84);
 }
 
-.chat-sessions-rail {
-  background: #fbfdff;
+:global(.dark) .chat-panel {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.86);
+}
+
+.panel-fill {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.chat-panel :global(.liquid-glass__content) {
+  height: 100%;
+  min-height: 0;
+}
+
+/* Sessions rail */
+.sessions-inner {
+  gap: 12px;
+  padding: 14px;
+}
+
+.sessions-top {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.session-search {
+  display: flex;
+  min-width: 0;
+  height: 38px;
+  flex: 1;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-muted);
+}
+
+:global(.dark) .session-search {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.session-search svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.session-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  outline: none;
+}
+
+.icon-button {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-copy);
+}
+
+:global(.dark) .icon-button {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.icon-button:hover {
+  border-color: rgba(232, 93, 142, 0.32);
+  color: var(--ikaros-pink);
+}
+
+.icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.new-session-button {
+  display: flex;
+  height: 40px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 13px;
+  background: var(--ikaros-collar);
+  color: #fff9fc;
+  box-shadow: 0 8px 20px rgba(23, 19, 26, 0.18);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.new-session-button:hover {
+  background: #2a2230;
+}
+
+.new-session-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.sessions-list {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
   overflow-y: auto;
+  padding-right: 2px;
 }
 
-.chat-canvas {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  overflow: hidden;
-}
-
-.chat-primary-small {
-  display: inline-flex;
+.sessions-loading {
+  display: flex;
   align-items: center;
   gap: 8px;
-  height: 40px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--brand-blue);
-  color: #fff;
-  font-size: 14px;
+  padding: 12px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 13px;
+  color: var(--ikaros-copy);
+  font-size: 12px;
+}
+
+.sessions-loading svg {
+  width: 15px;
+  height: 15px;
+  color: var(--ikaros-pink);
+}
+
+.is-spinning {
+  animation: chat-spin 850ms linear infinite;
+}
+
+.session-item {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: 88px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  gap: 6px;
+  padding: 11px 12px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--ikaros-ink);
+  text-align: left;
+}
+
+.session-item:hover {
+  background: rgba(255, 255, 255, 0.42);
+}
+
+:global(.dark) .session-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.session-item.is-active {
+  border-color: rgba(232, 93, 142, 0.22);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+:global(.dark) .session-item.is-active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.session-item.is-active::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--ikaros-pink);
+  content: '';
+}
+
+.session-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.session-item-head strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item-head time {
+  flex: none;
+  color: var(--ikaros-muted);
+  font-size: 10px;
+}
+
+.session-item > p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--ikaros-copy);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.session-item-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.live-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ikaros-eye);
+  font-size: 10px;
   font-weight: 700;
 }
 
-.chat-session-search {
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ikaros-eye);
+  box-shadow: 0 0 0 3px rgba(42, 140, 138, 0.14);
+  animation: chat-pulse 2s ease-out infinite;
+}
+
+.session-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(23, 19, 26, 0.05);
+  color: var(--ikaros-muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+:global(.dark) .session-count {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.session-count svg {
+  width: 11px;
+  height: 11px;
+}
+
+.sessions-empty {
+  padding: 16px 14px;
+  border: 1px dashed var(--ikaros-line);
+  border-radius: 14px;
+  color: var(--ikaros-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sessions-scrim {
+  display: none;
+}
+
+/* Conversation canvas */
+.canvas-inner {
+  min-height: 0;
+}
+
+.canvas-header {
   display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--ikaros-line);
+}
+
+.canvas-heading {
+  display: flex;
+  min-width: 0;
   align-items: center;
   gap: 10px;
-  min-width: 0;
-  height: 40px;
-  padding: 0 12px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--text-subtle);
 }
 
-.chat-session-search input {
+.sessions-toggle {
+  display: none;
+}
+
+.canvas-title {
   min-width: 0;
-  width: 100%;
-  border: 0 !important;
-  box-shadow: none !important;
-  outline: 0;
+}
+
+.canvas-title h2 {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ikaros-ink);
   font-size: 14px;
+  font-weight: 750;
 }
 
-.chat-icon-only {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 40px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--text-body);
+.canvas-title h2 > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.chat-messages-container {
-  scrollbar-gutter: stable;
+.canvas-title p {
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(42, 140, 138, 0.1);
+  color: var(--ikaros-eye);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.canvas-header-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.stream-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-copy);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+:global(.dark) .stream-chip {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.stream-chip.is-error {
+  border-color: rgba(198, 55, 65, 0.2);
+  background: rgba(198, 55, 65, 0.08);
+  color: #c63741;
+}
+
+.stream-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ikaros-eye);
+}
+
+.stream-chip.is-error .stream-dot {
+  background: #c63741;
+}
+
+.command-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 999px;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.command-hint svg {
+  width: 13px;
+  height: 13px;
+  color: var(--ikaros-pink);
+}
+
+.messages-area {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
   overscroll-behavior: contain;
+  padding: 18px;
+  scrollbar-gutter: stable;
 }
 
-.chat-messages-container::-webkit-scrollbar {
+.messages-area::-webkit-scrollbar,
+.sessions-list::-webkit-scrollbar {
   width: 6px;
 }
 
-.chat-messages-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.chat-messages-container::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+.messages-area::-webkit-scrollbar-thumb,
+.sessions-list::-webkit-scrollbar-thumb {
   border-radius: 999px;
+  background: rgba(23, 19, 26, 0.18);
 }
 
-.chat-messages-container::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+:global(.dark) .messages-area::-webkit-scrollbar-thumb,
+:global(.dark) .sessions-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
 }
 
-.chat-canvas-header,
-.chat-canvas-footer {
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(18px);
+.messages-empty {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-card {
+  max-width: 460px;
+  padding: 30px 28px;
+  border: 1px dashed var(--ikaros-line);
+  border-radius: 20px;
+  text-align: center;
+}
+
+.empty-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  margin: 0 auto;
+  place-items: center;
+  border-radius: 15px;
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
+}
+
+.empty-icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.empty-card h3 {
+  margin: 14px 0 0;
+  color: var(--ikaros-ink);
+  font-size: 17px;
+  font-weight: 780;
+  letter-spacing: -0.02em;
+}
+
+.empty-card p {
+  margin: 8px 0 0;
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.messages-list {
+  display: grid;
+  gap: 18px;
+}
+
+.message-row {
+  display: flex;
+  gap: 10px;
+}
+
+.message-row.is-user {
+  justify-content: flex-end;
+}
+
+.ai-avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--ikaros-collar);
+  color: #fff9fc;
+  box-shadow: 0 4px 12px rgba(23, 19, 26, 0.18);
+}
+
+.ai-avatar svg {
+  width: 16px;
+  height: 16px;
+}
+
+.message-stack {
+  display: grid;
+  max-width: min(760px, 82%);
+  gap: 5px;
+  justify-items: start;
+}
+
+.message-row.is-user .message-stack {
+  justify-items: end;
+}
+
+.message-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px;
+  color: var(--ikaros-muted);
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .message-bubble {
-  border-radius: 10px !important;
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px 16px 16px 4px;
+  font-size: 13px;
+  line-height: 1.7;
 }
 
-.composer-box {
-  border-color: #6aa8ff !important;
-  background: #fff !important;
-  box-shadow: 0 0 0 1px rgba(47, 124, 246, 0.08);
+.message-row.is-assistant .message-bubble {
+  border: 1px solid var(--ikaros-line);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ikaros-ink);
+  box-shadow: 0 4px 14px rgba(23, 19, 26, 0.05);
 }
 
-.chat-info-panel {
+:global(.dark) .message-row.is-assistant .message-bubble {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.message-row.is-user .message-bubble {
+  border-radius: 16px 16px 4px 16px;
+  background: var(--ikaros-pink);
+  color: #17131a;
+  box-shadow: 0 8px 20px rgba(232, 93, 142, 0.22);
+}
+
+.message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.attachment-list {
+  display: grid;
+  gap: 8px;
+}
+
+.attachment-card {
+  overflow: hidden;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+:global(.dark) .attachment-card {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.attachment-image {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: rgba(23, 19, 26, 0.04);
+  padding: 0;
+}
+
+.attachment-image img {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+}
+
+.attachment-loading {
+  display: flex;
+  min-height: 150px;
+  align-items: center;
+  justify-content: center;
+  color: var(--ikaros-muted);
+  font-size: 12px;
+}
+
+.attachment-loading.is-compact {
   min-height: 0;
-  flex-direction: column;
-  border-left: 1px solid var(--panel-border);
-  background: #fff;
+  padding: 12px;
+  border: 1px dashed var(--ikaros-line);
+  border-radius: 11px;
+}
+
+.attachment-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.attachment-audio {
+  width: 100%;
+}
+
+.attachment-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.attachment-file {
+  min-width: 0;
+}
+
+.attachment-file strong {
+  display: block;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-file span {
+  color: var(--ikaros-muted);
+  font-size: 10px;
+}
+
+.attachment-open {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--ikaros-ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+:global(.dark) .attachment-open {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.attachment-open:hover {
+  border-color: rgba(232, 93, 142, 0.32);
+  color: var(--ikaros-pink);
+}
+
+.action-list {
+  display: grid;
+  gap: 8px;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.action-pill {
+  padding: 6px 12px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-ink);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+:global(.dark) .action-pill {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.action-pill:hover {
+  border-color: rgba(232, 93, 142, 0.32);
+  color: var(--ikaros-pink);
+}
+
+.message-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tts-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-copy);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+:global(.dark) .tts-button {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.tts-button:hover {
+  border-color: rgba(232, 93, 142, 0.32);
+  color: var(--ikaros-pink);
+}
+
+.tts-button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.canvas-footer {
+  flex: none;
+  padding: 12px 14px 10px;
+  border-top: 1px solid var(--ikaros-line);
+}
+
+.command-picker {
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 14px;
+  background: rgba(255, 249, 252, 0.9);
+  box-shadow: 0 12px 32px rgba(23, 19, 26, 0.1);
+}
+
+:global(.dark) .command-picker {
+  background: rgba(43, 34, 40, 0.94);
+}
+
+.command-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px 8px;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.command-picker-head button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ikaros-muted);
+}
+
+.command-picker-head button:hover {
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
+}
+
+.command-picker-head svg {
+  width: 12px;
+  height: 12px;
+}
+
+.command-picker-grid {
+  display: grid;
+  gap: 4px;
+}
+
+.command-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ikaros-ink);
+  text-align: left;
+}
+
+.command-option:hover {
+  background: rgba(232, 93, 142, 0.09);
+}
+
+.command-option span {
+  color: var(--ikaros-pink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.command-option small {
+  color: var(--ikaros-muted);
+  font-size: 11px;
+}
+
+.composer {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+:global(.dark) .composer {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.composer:focus-within {
+  border-color: rgba(232, 93, 142, 0.4);
+  box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.1);
+}
+
+.composer textarea {
+  width: 100%;
+  min-height: 64px;
+  max-height: 180px;
+  resize: none;
+  border: 0;
+  background: transparent;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  line-height: 1.7;
+  outline: none;
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ikaros-line);
+}
+
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ikaros-copy);
+}
+
+.tool-button:hover {
+  background: rgba(23, 19, 26, 0.05);
+  color: var(--ikaros-pink);
+}
+
+:global(.dark) .tool-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tool-button.is-recording {
+  background: rgba(198, 55, 65, 0.1);
+  color: #c63741;
+}
+
+.tool-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.command-chip {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(23, 19, 26, 0.05);
+  color: var(--ikaros-copy);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+:global(.dark) .command-chip {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.command-chip:hover {
+  color: var(--ikaros-pink);
+}
+
+.file-input {
+  display: none;
+}
+
+.send-button {
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--ikaros-collar);
+  color: #fff9fc;
+  box-shadow: 0 6px 16px rgba(23, 19, 26, 0.18);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.send-button:hover:not(:disabled) {
+  background: var(--ikaros-pink);
+}
+
+.send-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.send-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.composer-note {
+  margin: 8px 0 0;
+  color: var(--ikaros-muted);
+  font-size: 10px;
+  text-align: center;
+}
+
+/* Info panel */
+.info-panel {
+  display: none;
+}
+
+.info-inner {
+  gap: 0;
   overflow-y: auto;
 }
 
 .info-section {
-  padding: 22px 24px;
-  border-bottom: 1px solid var(--panel-border);
+  padding: 18px;
+  border-bottom: 1px solid var(--ikaros-line);
 }
 
-.info-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.info-section:last-child {
+  border-bottom: 0;
 }
 
-.info-heading h2 {
+.info-section h3 {
   margin: 0;
-  color: var(--text-strong);
-  font-size: 16px;
+  color: var(--ikaros-ink);
+  font-size: 13px;
   font-weight: 800;
+  letter-spacing: -0.01em;
 }
 
-.info-heading button {
-  border: 0;
-  background: transparent;
-  color: var(--text-body);
-}
-
-.info-list {
+.meta-list {
   display: grid;
-  gap: 20px;
-  margin: 22px 0 0;
+  gap: 14px;
+  margin: 16px 0 0;
 }
 
-.info-list div {
+.meta-list div {
   min-width: 0;
 }
 
-.info-list dt {
-  color: var(--text-muted);
-  font-size: 13px;
+.meta-list dt {
+  color: var(--ikaros-muted);
+  font-size: 11px;
 }
 
-.info-list dd {
-  margin: 8px 0 0;
-  color: var(--text-strong);
-  font-size: 14px;
+.meta-list dd {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--ikaros-ink);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.quick-command-list {
+.meta-list dd.is-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.command-list {
   display: grid;
-  gap: 12px;
-  margin-top: 20px;
+  gap: 4px;
+  margin-top: 14px;
 }
 
-.quick-command-list button {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+.command-item {
+  display: flex;
   align-items: center;
-  column-gap: 10px;
-  row-gap: 2px;
-  width: 100%;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
   border: 0;
+  border-radius: 10px;
   background: transparent;
-  color: var(--text-strong);
   text-align: left;
 }
 
-.quick-command-list svg {
-  grid-row: span 2;
-  color: var(--brand-blue);
+.command-item:hover {
+  background: rgba(232, 93, 142, 0.09);
 }
 
-.quick-command-list span {
-  font-weight: 800;
-}
-
-.quick-command-list small {
-  color: var(--text-muted);
+.command-item span {
+  color: var(--ikaros-pink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
+  font-weight: 700;
 }
 
-.manage-command-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 22px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--brand-blue);
-  padding: 10px 14px;
-  font-size: 14px;
-  font-weight: 800;
+.command-item small {
+  overflow: hidden;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-:global(.dark .chat-page),
-:global(.dark .chat-title-panel),
-:global(.dark .chat-info-panel) {
-  background: var(--color-bg-elevated);
+@keyframes chat-spin {
+  to { transform: rotate(360deg); }
 }
 
-:global(.dark .chat-sessions-rail),
-:global(.dark .chat-canvas) {
-  background: var(--color-bg-primary);
+@keyframes chat-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(42, 140, 138, 0.28); }
+  70%, 100% { box-shadow: 0 0 0 7px rgba(42, 140, 138, 0); }
 }
 
-:global(.dark .chat-canvas-header),
-:global(.dark .chat-canvas-footer) {
-  background: color-mix(in srgb, var(--color-bg-elevated) 94%, transparent);
+@media (min-width: 1280px) {
+  .chat-workbench {
+    grid-template-columns: 330px minmax(0, 1fr) 290px;
+  }
+
+  .info-panel {
+    display: block;
+  }
 }
 
-:global(.dark .chat-page .bg-white),
-:global(.dark .chat-page .bg-white\/70),
-:global(.dark .chat-page .bg-white\/80),
-:global(.dark .chat-page .bg-white\/90) {
-  background-color: var(--color-bg-elevated) !important;
+@media (max-width: 900px) {
+  .chat-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sessions-panel {
+    position: fixed;
+    z-index: 60;
+    top: 12px;
+    bottom: 12px;
+    left: 12px;
+    width: min(320px, calc(100vw - 48px));
+    transform: translateX(calc(-100% - 20px));
+    transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .sessions-panel.is-open {
+    transform: translateX(0);
+  }
+
+  .sessions-scrim {
+    position: fixed;
+    z-index: 55;
+    inset: 0;
+    display: block;
+    background: rgba(23, 19, 26, 0.28);
+    backdrop-filter: blur(4px);
+  }
+
+  .sessions-toggle {
+    display: grid;
+  }
+
+  .command-hint {
+    display: none;
+  }
 }
 
-:global(.dark .chat-page .bg-slate-50),
-:global(.dark .chat-page .bg-slate-50\/80),
-:global(.dark .chat-page .bg-slate-100) {
-  background-color: var(--color-bg-tertiary) !important;
-}
-
-:global(.dark .chat-page .bg-blue-50) {
-  background-color: var(--color-primary-50) !important;
-}
-
-:global(.dark .chat-page .border-slate-200),
-:global(.dark .chat-page .border-slate-300) {
-  border-color: var(--color-border-primary) !important;
-}
-
-:global(.dark .chat-page .border-blue-200) {
-  border-color: var(--color-primary-300) !important;
-}
-
-:global(.dark .chat-page .text-slate-950),
-:global(.dark .chat-page .text-slate-900) {
-  color: var(--color-text-primary) !important;
-}
-
-:global(.dark .chat-page .text-slate-800),
-:global(.dark .chat-page .text-slate-700),
-:global(.dark .chat-page .text-slate-600),
-:global(.dark .chat-page .text-slate-500),
-:global(.dark .chat-page .text-slate-400) {
-  color: var(--color-text-secondary) !important;
-}
-
-:global(.dark .chat-session-search),
-:global(.dark .chat-icon-only),
-:global(.dark .composer-box),
-:global(.dark .manage-command-btn) {
-  background: var(--color-bg-elevated) !important;
-  color: var(--color-text-primary);
-}
-
-@media (max-width: 768px) {
+@media (max-width: 640px) {
   .chat-page {
     height: calc(100dvh - 154px);
+    gap: 12px;
+  }
+
+  .chat-subtitle {
+    display: none;
+  }
+
+  .message-stack {
+    max-width: 92%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning {
+    animation: none;
+  }
+
+  .live-dot {
+    animation: none;
+  }
+
+  .sessions-panel {
+    transition: none;
   }
 }
 </style>

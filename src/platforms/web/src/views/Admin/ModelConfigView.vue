@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { computed, onMounted, ref, watch } from 'vue'
-import { Activity, Bot, Box, Copy, Download, Globe2, Loader2, MoreVertical, Play, Plus, Save, ShieldCheck, Trash2 } from 'lucide-vue-next'
+import { Activity, ArrowRight, Bot, Box, Copy, Download, Globe2, Loader2, MoreVertical, Play, Plus, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-vue-next'
 
+import LiquidGlass from '@/components/liquid-glass/LiquidGlass.vue'
 import ViewToastStack from '@/components/ViewToastStack.vue'
 import { useViewToasts } from '@/composables/useViewToasts'
 import {
@@ -107,6 +108,34 @@ const routingLatencyError = ref('')
 const routingLatencyResult = ref<ModelsLatencyCheckResponse | null>(null)
 
 const { toasts: viewToasts, push: pushViewToast, dismiss: dismissViewToast } = useViewToasts()
+
+const panelOptics = {
+    mapSize: 256,
+    strength: 0.06,
+    depth: 0.72,
+    dispersion: 0.46,
+    frost: 4,
+    saturate: 1.22,
+    specular: 1.15,
+    glow: 0.22,
+    sheen: 0.78,
+    curvature: 0.38,
+    bend: 0.62,
+}
+
+const compactOptics = {
+    mapSize: 256,
+    strength: 0.11,
+    depth: 0.9,
+    dispersion: 0.58,
+    frost: 3,
+    saturate: 1.26,
+    specular: 1.25,
+    glow: 0.3,
+    sheen: 1.05,
+    curvature: 0.48,
+    bend: 0.7,
+}
 
 watch(errorText, value => {
     if (value) {
@@ -229,10 +258,10 @@ const modelOverviewStats = computed(() => {
     const models = providers.flatMap(provider => provider.models)
     const readyRoles = quickRoleSummary.value.filter(item => item.ready).length
     return [
-        { label: 'Providers 数量', value: providers.length, detail: `已启用 ${providers.length} 个`, icon: Globe2, tone: 'blue' },
-        { label: '模型数量', value: models.length, detail: `可用 ${availableModelOptions.value.length} 个`, icon: Box, tone: 'violet' },
+        { label: 'Providers 数量', value: providers.length, detail: `已启用 ${providers.length} 个`, icon: Globe2, tone: 'pink' },
+        { label: '模型数量', value: models.length, detail: `可用 ${availableModelOptions.value.length} 个`, icon: Box, tone: 'dark' },
         { label: '默认模型状态', value: readyRoles >= quickRoleOrder.length ? '正常' : '待配置', detail: '所有分类已配置', icon: ShieldCheck, tone: 'green' },
-        { label: '最近校验结果', value: routingLatencyResult.value ? '通过' : '待测试', detail: routingLatencyResult.value ? `${routingLatencyResult.value.elapsed_ms} ms` : '可进行测试', icon: Activity, tone: 'blue' },
+        { label: '最近校验结果', value: routingLatencyResult.value ? '通过' : '待测试', detail: routingLatencyResult.value ? `${routingLatencyResult.value.elapsed_ms} ms` : '可进行测试', icon: Activity, tone: 'teal' },
     ]
 })
 
@@ -991,78 +1020,85 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="models-page">
-    <section class="models-hero">
-      <div>
-        <h1>模型配置 / Models</h1>
-        <p>配置默认模型路由、Providers 与角色池，优化模型分发与调用策略，提升系统稳定性与响应效率。</p>
+  <div class="ikaros-page models-page">
+    <header class="ikaros-page-header models-header">
+      <div class="ikaros-page-heading">
+        <p class="ikaros-page-kicker">Admin · Models</p>
+        <h1 class="ikaros-page-title">模型路由</h1>
+        <p class="ikaros-page-description">配置默认模型路由、Providers 与角色池，优化模型分发与调用策略，提升系统稳定性与响应效率。</p>
       </div>
       <div class="models-actions">
-        <button type="button" class="secondary-btn" :disabled="loading || saving" @click="resetModelsConfigForm">
-          还原当前加载值
+        <button type="button" class="models-text-action" :disabled="loading || saving" @click="resetModelsConfigForm">
+          还原当前值
         </button>
-        <button type="button" class="secondary-btn" :disabled="routingLatencyChecking || loading || saving" @click="testRoutingLatency">
-          <Loader2 v-if="routingLatencyChecking" class="h-4 w-4 animate-spin" />
-          <Activity v-else class="h-4 w-4" />
+        <button type="button" class="ikaros-secondary-action" :disabled="routingLatencyChecking || loading || saving" @click="testRoutingLatency">
+          <Loader2 v-if="routingLatencyChecking" class="is-spinning" />
+          <Activity v-else />
           测试配置
         </button>
-        <button type="button" class="primary-btn" :disabled="saving || loading || !snapshot || !modelConfigForm" @click="save">
-          <Loader2 v-if="saving" class="h-4 w-4 animate-spin" />
-          <Save v-else class="h-4 w-4" />
+        <button type="button" class="ikaros-primary-action" :disabled="saving || loading || !snapshot || !modelConfigForm" @click="save">
+          <Loader2 v-if="saving" class="is-spinning" />
+          <Save v-else />
           保存更改
         </button>
       </div>
-    </section>
+    </header>
 
     <ViewToastStack :toasts="viewToasts" @dismiss="dismissViewToast" />
 
-    <div v-if="loading" class="loading-card">
-      <Loader2 class="h-4 w-4 animate-spin" />
+    <div v-if="loading" class="models-loading ikaros-surface">
+      <Loader2 class="is-spinning" />
       正在加载模型配置
     </div>
 
     <template v-else-if="snapshot && modelConfigForm">
-      <section class="models-surface">
-        <div class="model-stat-grid">
-          <article v-for="item in modelOverviewStats" :key="item.label" class="model-stat-card" :class="`tone-${item.tone}`">
-            <div class="model-stat-icon">
-              <component :is="item.icon" class="h-7 w-7" />
-            </div>
+      <section class="models-stats" aria-label="模型概览">
+        <LiquidGlass
+          v-for="item in modelOverviewStats"
+          :key="item.label"
+          :radius="18"
+          :optics="compactOptics"
+          class="model-stat-card"
+          :class="`tone-${item.tone}`"
+        >
+          <div class="model-stat-inner">
+            <span class="model-stat-icon"><component :is="item.icon" /></span>
             <div>
-              <div class="model-stat-label">{{ item.label }}</div>
-              <div class="model-stat-value">{{ item.value }}</div>
+              <span class="model-stat-label">{{ item.label }}</span>
+              <strong class="model-stat-value">{{ item.value }}</strong>
               <p>{{ item.detail }}</p>
             </div>
-          </article>
-        </div>
+          </div>
+        </LiquidGlass>
+      </section>
 
-        <div class="model-tabs">
-          <button type="button" :class="{ active: activeModelTab === 'defaults' }" @click="activeModelTab = 'defaults'">默认模型</button>
-          <button type="button" :class="{ active: activeModelTab === 'providers' }" @click="activeModelTab = 'providers'">Providers</button>
-          <button type="button" :class="{ active: activeModelTab === 'roles' }" @click="activeModelTab = 'roles'">角色池</button>
-          <button type="button" :class="{ active: activeModelTab === 'matrix' }" @click="activeModelTab = 'matrix'">能力矩阵</button>
-        </div>
+      <div class="model-tabs" role="tablist">
+        <button type="button" :class="{ active: activeModelTab === 'defaults' }" @click="activeModelTab = 'defaults'">默认模型</button>
+        <button type="button" :class="{ active: activeModelTab === 'providers' }" @click="activeModelTab = 'providers'">Providers</button>
+        <button type="button" :class="{ active: activeModelTab === 'roles' }" @click="activeModelTab = 'roles'">角色池</button>
+        <button type="button" :class="{ active: activeModelTab === 'matrix' }" @click="activeModelTab = 'matrix'">能力矩阵</button>
+      </div>
 
-        <section v-if="activeModelTab === 'defaults'" class="defaults-layout">
-          <div class="route-table-card">
-            <div class="panel-head">
-              <div>
-                <h2>默认模型路由</h2>
-                <p>为不同能力分类配置默认模型与降级策略</p>
-              </div>
-              <button
-                type="button"
-                class="secondary-btn small"
-                :disabled="isTestingAction('routes:all')"
-                @click="testAllDefaultRoutes"
-              >
-                <Loader2 v-if="isTestingAction('routes:all')" class="h-4 w-4 animate-spin" />
-                <Play v-else class="h-4 w-4" />
-                {{ isTestingAction('routes:all') ? '测试中' : '批量测试' }}
-              </button>
+      <section v-if="activeModelTab === 'defaults'" class="defaults-layout">
+        <LiquidGlass :radius="24" :optics="panelOptics" class="route-table-card">
+          <div class="panel-head">
+            <div>
+              <h2>默认模型路由</h2>
+              <p>为不同能力分类配置默认模型与降级策略</p>
             </div>
+            <button
+              type="button"
+              class="ikaros-secondary-action is-small"
+              :disabled="isTestingAction('routes:all')"
+              @click="testAllDefaultRoutes"
+            >
+              <Loader2 v-if="isTestingAction('routes:all')" class="is-spinning" />
+              <Play v-else />
+              {{ isTestingAction('routes:all') ? '测试中' : '批量测试' }}
+            </button>
+          </div>
 
-            <div class="route-table-wrap">
+          <div class="route-table-wrap">
               <table>
                 <thead>
                   <tr>
@@ -1140,42 +1176,46 @@ onMounted(load)
                 </tbody>
               </table>
             </div>
-          </div>
+        </LiquidGlass>
 
-          <aside class="provider-quick-panel">
+        <LiquidGlass :radius="24" :optics="panelOptics" class="provider-quick-panel">
+          <div class="quick-panel-shell">
             <div class="provider-head">
               <h2>Providers 快速视图</h2>
-              <button type="button" @click="load">刷新</button>
+              <button type="button" title="刷新" @click="load"><RefreshCw /></button>
             </div>
             <label class="provider-search">
-              <span>⌕</span>
+              <Search />
               <input v-model="providerSearchText" type="search" placeholder="搜索 Provider 或模型...">
             </label>
             <div class="provider-list">
               <button v-for="provider in providerQuickList" :key="provider.uid" type="button" class="provider-item" @click="selectProvider(provider.uid)">
-                <div class="provider-mark"><Box class="h-4 w-4" /></div>
+                <div class="provider-mark"><Box /></div>
                 <div>
                   <strong>{{ provider.name }}</strong>
                   <p>{{ provider.models.join(', ') || '暂无模型' }}</p>
                 </div>
-                <span :class="{ healthy: provider.healthy }">{{ provider.healthy ? '健康' : '待配置' }}</span>
+                <span :class="{ healthy: provider.healthy }"><i aria-hidden="true" />{{ provider.healthy ? '健康' : '待配置' }}</span>
               </button>
               <div v-if="!providerQuickList.length" class="provider-empty">还没有 Provider</div>
             </div>
             <button type="button" class="all-provider-link" @click="activeModelTab = 'providers'">
-              查看全部 Providers ({{ providerQuickList.length }}) <span>→</span>
+              查看全部 Providers ({{ providerQuickList.length }})
+              <ArrowRight />
             </button>
-          </aside>
-        </section>
+          </div>
+        </LiquidGlass>
+      </section>
 
-        <section v-else-if="activeModelTab === 'providers'" class="providers-layout">
-          <aside class="provider-list-panel">
-            <div class="provider-list-head">
-              <h2>提供商列表 <span>{{ modelConfigForm.providers.length }}</span></h2>
-              <button type="button" @click="addProvider"><Plus class="h-4 w-4" />新增提供商</button>
-            </div>
+      <section v-else-if="activeModelTab === 'providers'" class="providers-layout">
+        <LiquidGlass :radius="24" :optics="panelOptics" class="provider-list-panel">
+          <div class="provider-list-head">
+            <h2>提供商列表 <span>{{ modelConfigForm.providers.length }}</span></h2>
+            <button type="button" @click="addProvider"><Plus />新增提供商</button>
+          </div>
+          <div class="provider-list-shell">
             <label class="provider-search">
-              <span>⌕</span>
+              <Search />
               <input v-model="providerSearchText" type="search" placeholder="搜索提供商...">
             </label>
             <div class="provider-card-list">
@@ -1193,15 +1233,16 @@ onMounted(load)
                 <small>{{ provider.models.length }} 个模型</small>
               </button>
             </div>
-          </aside>
+          </div>
+        </LiquidGlass>
 
-          <section v-if="selectedProvider" class="provider-detail-panel">
-            <div class="provider-detail-actions">
+        <LiquidGlass v-if="selectedProvider" :radius="24" :optics="panelOptics" class="provider-detail-panel">
+          <div class="provider-detail-actions">
               <h2>提供商详情</h2>
               <div>
                 <button
                   type="button"
-                  class="secondary-btn small"
+                  class="secondary-btn"
                   :disabled="isTestingAction(actionKeyForProvider(selectedProvider.uid))"
                   @click="testProviderConnection(selectedProvider)"
                 >
@@ -1209,11 +1250,11 @@ onMounted(load)
                   <Activity v-else class="h-4 w-4" />
                   {{ isTestingAction(actionKeyForProvider(selectedProvider.uid)) ? '测试中' : '测试连接' }}
                 </button>
-                <button type="button" class="secondary-btn small" @click="copyProviderConfig(selectedProvider)">
+                <button type="button" class="secondary-btn" @click="copyProviderConfig(selectedProvider)">
                   <Copy class="h-4 w-4" />
                   复制配置
                 </button>
-                <button type="button" class="danger-btn small" @click="removeProvider(selectedProvider.uid)"><Trash2 class="h-4 w-4" />删除提供商</button>
+                <button type="button" class="danger-btn" @click="removeProvider(selectedProvider.uid)"><Trash2 class="h-4 w-4" />删除提供商</button>
               </div>
             </div>
 
@@ -1242,7 +1283,7 @@ onMounted(load)
                     <strong>自定义 Headers</strong>
                     <span>连接测试和所有模型请求都会携带这些请求头</span>
                   </div>
-                  <button type="button" class="secondary-btn small" @click="addProviderHeader(selectedProvider.uid)"><Plus class="h-4 w-4" />新增 Header</button>
+                  <button type="button" class="secondary-btn" @click="addProviderHeader(selectedProvider.uid)"><Plus class="h-4 w-4" />新增 Header</button>
                 </div>
                 <div v-if="selectedProvider.headers.length" class="custom-header-list">
                   <div v-for="header in selectedProvider.headers" :key="header.uid" class="custom-header-row">
@@ -1265,7 +1306,7 @@ onMounted(load)
                 <div class="model-list-actions">
                   <button
                     type="button"
-                    class="secondary-btn small"
+                    class="secondary-btn"
                     :disabled="isTestingAction(fetchActionKeyForProvider(selectedProvider.uid))"
                     @click="fetchProviderModels(selectedProvider)"
                   >
@@ -1273,7 +1314,7 @@ onMounted(load)
                     <Download v-else class="h-4 w-4" />
                     {{ isTestingAction(fetchActionKeyForProvider(selectedProvider.uid)) ? '拉取中' : '从 Provider 拉取' }}
                   </button>
-                  <button type="button" class="secondary-btn small" @click="addProviderModel(selectedProvider.uid)"><Plus class="h-4 w-4" />新增模型</button>
+                  <button type="button" class="secondary-btn" @click="addProviderModel(selectedProvider.uid)"><Plus class="h-4 w-4" />新增模型</button>
                 </div>
               </div>
               <div class="model-table-wrap">
@@ -1366,17 +1407,18 @@ onMounted(load)
                 <div v-if="!selectedProviderModels.length" class="provider-empty">该 Provider 还没有模型。</div>
               </div>
             </div>
-          </section>
+        </LiquidGlass>
 
-          <section v-else class="provider-detail-panel empty-detail">
-            还没有 Provider。点击左侧“新增提供商”开始配置。
-          </section>
+        <section v-else class="provider-detail-panel empty-detail ikaros-surface">
+          还没有 Provider。点击左侧“新增提供商”开始配置。
         </section>
+      </section>
 
-        <section v-else-if="activeModelTab === 'roles'" class="role-pool-grid">
-          <article v-for="card in roleCards" :key="card.role" class="role-card">
+      <section v-else-if="activeModelTab === 'roles'" class="role-pool-grid">
+        <LiquidGlass v-for="card in roleCards" :key="card.role" :radius="20" :optics="compactOptics" class="role-card">
+          <div class="role-card-shell">
             <div class="route-role">
-              <span><Bot class="h-4 w-4" /></span>
+              <span><Bot /></span>
               <div>
                 <strong>{{ card.label }}</strong>
                 <small>当前池 {{ card.poolCount }} 个模型，{{ card.capabilityText }}</small>
@@ -1407,11 +1449,12 @@ onMounted(load)
                 <small>IN {{ option.input.join(' / ') || '-' }} · OUT {{ option.output.join(' / ') || '-' }}</small>
               </button>
             </div>
-          </article>
-        </section>
+          </div>
+        </LiquidGlass>
+      </section>
 
-        <section v-else class="matrix-panel">
-          <div class="panel-head">
+      <LiquidGlass v-else :radius="24" :optics="panelOptics" class="matrix-panel">
+        <div class="panel-head">
             <div>
               <h2>能力矩阵</h2>
               <p>集中查看模型输入输出能力、reasoning 与角色兼容性。</p>
@@ -1450,173 +1493,196 @@ onMounted(load)
             </table>
             <div v-if="!availableModelOptions.length" class="provider-empty">暂无可用模型。</div>
           </div>
-        </section>
-      </section>
+      </LiquidGlass>
     </template>
   </div>
 </template>
 
 <style scoped>
-.model-overview-card {
-  display: grid;
+.models-page {
   gap: 22px;
-  padding: 24px;
-  border: 1px solid var(--panel-border);
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: var(--shadow-card);
 }
 
-.model-stat-grid {
+.models-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.models-actions :is(.ikaros-secondary-action, .ikaros-primary-action) svg {
+  width: 16px;
+  height: 16px;
+}
+
+.models-text-action {
+  min-height: 40px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--ikaros-copy);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.models-text-action:hover { color: var(--ikaros-pink); }
+.models-text-action:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.is-spinning { animation: models-spin 850ms linear infinite; }
+
+.models-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  color: var(--ikaros-muted);
+  font-size: 13px;
+}
+
+.models-loading svg { width: 16px; height: 16px; }
+
+.models-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 28px;
+  gap: 14px;
 }
 
 .model-stat-card {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.8);
+}
+
+:global(.dark) .model-stat-card { --ikaros-glass-fill: rgba(43, 34, 40, 0.82); }
+
+.model-stat-inner {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-columns: 46px minmax(0, 1fr);
   align-items: center;
-  gap: 18px;
-  min-height: 110px;
-  padding: 20px 22px;
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  background: #fff;
+  gap: 14px;
+  padding: 16px 18px;
 }
 
 .model-stat-icon {
   display: grid;
+  width: 46px;
+  height: 46px;
   place-items: center;
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: var(--brand-blue-soft);
-  color: var(--brand-blue);
+  border-radius: 14px;
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
 }
 
-.model-stat-card.tone-violet .model-stat-icon {
-  background: #f1e8ff;
-  color: #7c3aed;
-}
-
-.model-stat-card.tone-green .model-stat-icon {
-  background: #ecfdf3;
-  color: #16a34a;
-}
+.model-stat-icon svg { width: 21px; height: 21px; }
+.model-stat-card.tone-dark .model-stat-icon { background: rgba(23, 19, 26, 0.07); color: var(--ikaros-ink); }
+:global(.dark) .model-stat-card.tone-dark .model-stat-icon { background: rgba(255, 255, 255, 0.08); }
+.model-stat-card.tone-green .model-stat-icon { background: rgba(47, 125, 74, 0.1); color: var(--ikaros-rind); }
+.model-stat-card.tone-teal .model-stat-icon { background: rgba(42, 140, 138, 0.1); color: var(--ikaros-eye); }
 
 .model-stat-label {
-  color: var(--text-body);
-  font-size: 14px;
+  display: block;
+  color: var(--ikaros-muted);
+  font-size: 11px;
   font-weight: 700;
 }
 
 .model-stat-value {
-  margin-top: 5px;
-  color: var(--text-strong);
-  font-size: 25px;
+  display: block;
+  margin-top: 4px;
+  color: var(--ikaros-ink);
+  font-size: 21px;
   font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
 }
 
-.model-stat-card p {
+.model-stat-inner p {
   margin: 4px 0 0;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.model-workspace-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 24px;
-  align-items: start;
+  color: var(--ikaros-muted);
+  font-size: 11px;
 }
 
 .model-tabs {
   display: flex;
   align-items: center;
-  gap: 34px;
-  border-bottom: 1px solid var(--panel-border);
+  gap: 26px;
+  border-bottom: 1px solid var(--ikaros-line);
 }
 
 .model-tabs button {
   position: relative;
-  height: 46px;
+  height: 44px;
+  padding: 0 2px;
   border: 0;
   background: transparent;
-  color: var(--text-body);
-  font-size: 16px;
-  font-weight: 800;
+  color: var(--ikaros-copy);
+  font-size: 14px;
+  font-weight: 700;
 }
 
-.model-tabs button.active {
-  color: var(--brand-blue);
-}
+.model-tabs button:hover { color: var(--ikaros-ink); }
+.model-tabs button.active { color: var(--ikaros-pink); }
 
 .model-tabs button.active::after {
-  content: '';
   position: absolute;
   right: 0;
   bottom: -1px;
   left: 0;
-  height: 3px;
+  height: 2px;
   border-radius: 999px;
-  background: var(--brand-blue);
+  background: var(--ikaros-pink);
+  content: '';
+}
+
+.defaults-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.8fr);
+  gap: 18px;
+  align-items: start;
 }
 
 .route-table-card,
-.provider-quick-panel {
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  background: #fff;
+.provider-quick-panel,
+.provider-list-panel,
+.provider-detail-panel,
+.matrix-panel {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.84);
 }
 
-.route-table-card {
-  margin-top: 24px;
-  overflow: hidden;
+:global(.dark) :is(.route-table-card, .provider-quick-panel, .provider-list-panel, .provider-detail-panel, .matrix-panel, .role-card) {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.86);
 }
 
-.route-table-head {
+.panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 20px 22px;
-  border-bottom: 1px solid var(--panel-border);
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--ikaros-line);
 }
 
-.route-table-head h3,
-.provider-head h3 {
+.panel-head h2 {
   margin: 0;
-  color: var(--text-strong);
-  font-size: 17px;
+  color: var(--ikaros-ink);
+  font-size: 15px;
   font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
-.route-table-head p {
-  margin: 6px 0 0;
-  color: var(--text-muted);
-  font-size: 14px;
+.panel-head p {
+  margin: 5px 0 0;
+  color: var(--ikaros-muted);
+  font-size: 11px;
 }
 
-.route-table-head button,
-.table-action,
-.table-menu,
-.provider-head button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--text-body);
-  font-size: 13px;
-  font-weight: 700;
+.ikaros-secondary-action.is-small {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 12px;
 }
 
-.route-table-head button {
-  height: 36px;
-  padding: 0 14px;
+.ikaros-secondary-action.is-small svg {
+  width: 14px;
+  height: 14px;
 }
 
 .route-table-wrap {
@@ -1625,83 +1691,113 @@ onMounted(load)
 
 .route-table-wrap table {
   width: 100%;
-  min-width: 880px;
+  min-width: 860px;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .route-table-wrap th {
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--panel-border);
-  background: #f8fafc;
-  color: var(--text-muted);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ikaros-line);
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 750;
   text-align: left;
+  white-space: nowrap;
 }
 
 .route-table-wrap td {
-  padding: 14px 18px;
-  border-bottom: 1px solid #eef2f7;
-  color: var(--text-body);
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--ikaros-line);
+  color: var(--ikaros-copy);
+  vertical-align: middle;
 }
 
-.route-table-wrap tbody tr:last-child td {
-  border-bottom: 0;
+.route-table-wrap tbody tr:hover { background: rgba(255, 255, 255, 0.42); }
+:global(.dark) .route-table-wrap tbody tr:hover { background: rgba(255, 255, 255, 0.05); }
+.route-table-wrap tbody tr:last-child td { border-bottom: 0; }
+
+.route-table-wrap select {
+  min-width: 170px;
+  height: 36px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 10px !important;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-ink);
+  font-size: 12px;
+  outline: none;
 }
+
+:global(.dark) .route-table-wrap select { background: rgba(255, 255, 255, 0.07); }
 
 .route-role {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
+  gap: 11px;
 }
 
-.route-role span {
+.route-role > span {
   display: grid;
-  place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: 9px;
-  background: var(--brand-blue-soft);
-  color: var(--brand-blue);
+  place-items: center;
+  border-radius: 11px;
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
 }
+
+.route-role > span svg { width: 17px; height: 17px; }
 
 .route-role strong {
   display: block;
-  color: var(--text-strong);
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  font-weight: 750;
 }
 
 .route-role small {
   display: block;
   margin-top: 3px;
-  color: var(--text-muted);
+  color: var(--ikaros-muted);
+  font-size: 10px;
 }
 
-.route-table-wrap select {
-  min-width: 180px;
-  height: 36px;
-  border-radius: 8px !important;
-  padding: 0 12px;
+.route-effort {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.route-effort span {
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.route-effort select {
+  min-width: 130px;
+  height: 32px;
+  font-size: 12px;
 }
 
 .capability-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
 }
 
 .capability-list span {
-  border: 1px solid #e5ebf3;
+  border: 1px solid var(--ikaros-line);
   border-radius: 7px;
-  background: #f8fafc;
-  color: var(--text-body);
-  padding: 4px 8px;
-  font-size: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-copy);
+  padding: 3px 8px;
+  font-size: 11px;
 }
 
-.table-action {
-  height: 34px;
-  padding: 0 11px;
-}
+:global(.dark) .capability-list span { background: rgba(255, 255, 255, 0.06); }
 
 .route-actions {
   position: relative;
@@ -1710,14 +1806,44 @@ onMounted(load)
   gap: 8px;
 }
 
+.table-action {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+:global(.dark) .table-action { background: rgba(255, 255, 255, 0.06); }
+.table-action:hover { border-color: rgba(232, 93, 142, 0.32); color: var(--ikaros-pink); }
+.table-action:disabled { cursor: wait; opacity: 0.6; }
+.table-action svg { width: 13px; height: 13px; }
+
 .route-menu-wrap {
   position: relative;
 }
 
 .table-menu {
-  width: 34px;
-  height: 34px;
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--ikaros-muted);
 }
+
+.table-menu:hover { border-color: rgba(232, 93, 142, 0.32); color: var(--ikaros-pink); }
+.table-menu svg { width: 15px; height: 15px; }
 
 .action-menu {
   position: absolute;
@@ -1727,486 +1853,428 @@ onMounted(load)
   display: grid;
   min-width: 150px;
   padding: 6px;
-  border: 1px solid var(--panel-border);
-  border-radius: 9px;
-  background: #fff;
-  box-shadow: 0 18px 40px rgb(15 23 42 / 12%);
+  border: 0.5px solid var(--ikaros-glass-hairline);
+  border-radius: 12px;
+  background: var(--ikaros-glass-strong);
+  box-shadow: 0 18px 44px rgba(23, 19, 26, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(26px) saturate(150%);
+  -webkit-backdrop-filter: blur(26px) saturate(150%);
 }
 
 .action-menu button {
-  justify-content: flex-start;
+  display: flex;
   height: 34px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-body);
+  align-items: center;
+  justify-content: flex-start;
   padding: 0 10px;
-  text-align: left;
-  font-size: 13px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ikaros-copy);
+  font-size: 12px;
   font-weight: 700;
+  text-align: left;
 }
 
 .action-menu button:hover {
-  background: #f8fafc;
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
 }
 
 .action-menu button.danger {
-  color: #e11d48;
+  color: #c63741;
 }
 
-.provider-quick-panel {
-  padding: 20px;
+.action-menu button.danger:hover {
+  background: rgba(198, 55, 65, 0.09);
+}
+
+.quick-panel-shell {
+  padding: 18px;
 }
 
 .provider-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
+}
+
+.provider-head h2 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
 .provider-head button {
+  display: grid;
+  width: 30px;
   height: 30px;
-  padding: 0 10px;
+  place-items: center;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--ikaros-copy);
 }
+
+.provider-head button:hover { border-color: rgba(232, 93, 142, 0.32); color: var(--ikaros-pink); }
+.provider-head button svg { width: 14px; height: 14px; }
 
 .provider-search {
   display: flex;
+  height: 38px;
   align-items: center;
-  gap: 10px;
-  height: 40px;
-  margin-top: 16px;
+  gap: 9px;
+  margin-top: 14px;
   padding: 0 12px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  color: var(--text-subtle);
+  border: 1px solid var(--ikaros-line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-muted);
 }
+
+:global(.dark) .provider-search { background: rgba(255, 255, 255, 0.06); }
+.provider-search:focus-within { border-color: rgba(232, 93, 142, 0.4); box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.1); }
+.provider-search svg { width: 15px; height: 15px; flex: none; }
 
 .provider-search input {
   width: 100%;
+  min-width: 0;
   border: 0 !important;
   outline: 0;
+  background: transparent !important;
   box-shadow: none !important;
+  color: var(--ikaros-ink);
+  font-size: 12px;
 }
 
 .provider-list {
   display: grid;
-  gap: 10px;
-  margin-top: 14px;
+  gap: 8px;
+  margin-top: 13px;
 }
 
 .provider-item {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid #eef2f7;
+  gap: 11px;
+  padding: 10px 11px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.35);
+  text-align: left;
+  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+:global(.dark) .provider-item { background: rgba(255, 255, 255, 0.04); }
+
+.provider-item:hover {
+  border-color: rgba(232, 93, 142, 0.3);
+  background: rgba(255, 255, 255, 0.55);
+  transform: translateY(-1px);
 }
 
 .provider-mark {
   display: grid;
+  width: 36px;
+  height: 36px;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: #f2f4f7;
-  color: var(--text-muted);
+  border-radius: 11px;
+  background: rgba(232, 93, 142, 0.09);
+  color: var(--ikaros-pink);
 }
 
+.provider-mark svg { width: 16px; height: 16px; }
+
 .provider-item strong {
-  color: var(--text-strong);
-  font-size: 14px;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  font-weight: 750;
 }
 
 .provider-item p {
-  margin: 4px 0 0;
+  margin: 3px 0 0;
   overflow: hidden;
-  color: var(--text-muted);
-  font-size: 12px;
+  color: var(--ikaros-muted);
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .provider-item > span {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.provider-item > span i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(23, 19, 26, 0.25);
 }
 
 .provider-item > span.healthy {
-  color: #16a34a;
+  color: var(--ikaros-rind);
+}
+
+.provider-item > span.healthy i {
+  background: var(--ikaros-rind);
+  box-shadow: 0 0 0 4px rgba(47, 125, 74, 0.12);
 }
 
 .provider-empty {
-  padding: 28px 0;
-  color: var(--text-muted);
+  padding: 26px 0;
+  color: var(--ikaros-muted);
+  font-size: 12px;
   text-align: center;
 }
 
 .all-provider-link {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 16px;
+  gap: 7px;
+  margin-top: 15px;
   border: 0;
   background: transparent;
-  color: var(--brand-blue);
-  font-weight: 800;
+  color: var(--ikaros-pink);
+  font-size: 12px;
+  font-weight: 750;
 }
 
-@media (max-width: 1400px) {
-  .model-stat-grid,
-  .model-workspace-grid {
-    grid-template-columns: 1fr 1fr;
-  }
+.all-provider-link svg { width: 14px; height: 14px; transition: transform 160ms ease; }
+.all-provider-link:hover svg { transform: translateX(2px); }
 
-  .provider-quick-panel {
-    grid-column: span 2;
-  }
-}
-
-@media (max-width: 900px) {
-  .model-stat-grid,
-  .model-workspace-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .provider-quick-panel {
-    grid-column: auto;
-  }
-}
-
-.models-page {
+.providers-layout {
   display: grid;
-  gap: 20px;
-}
-
-.models-hero,
-.models-surface,
-.loading-card {
-  border: 1px solid var(--panel-border);
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: var(--shadow-card);
-}
-
-.models-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 20px;
-  padding: 28px 30px;
-}
-
-.models-hero h1 {
-  margin: 0;
-  color: var(--text-strong);
-  font-size: 26px;
-  font-weight: 800;
-}
-
-.models-hero p {
-  margin: 10px 0 0;
-  color: var(--text-body);
-  font-size: 15px;
-}
-
-.models-actions {
-  display: flex;
-  gap: 14px;
-}
-
-.primary-btn,
-.secondary-btn,
-.danger-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  height: 42px;
-  padding: 0 18px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 800;
-}
-
-.primary-btn {
-  border: 0;
-  background: var(--brand-blue);
-  color: #fff;
-}
-
-.secondary-btn {
-  border: 1px solid var(--panel-border);
-  background: #fff;
-  color: var(--text-body);
-}
-
-.danger-btn {
-  border: 1px solid #fecdd3;
-  background: #fff;
-  color: #e11d48;
-}
-
-.small {
-  height: 34px;
-  padding: 0 12px;
-  font-size: 13px;
-}
-
-.loading-card {
-  grid-column: 1 / -1;
-  border-radius: 8px;
-  padding: 12px 14px;
-  font-size: 14px;
-}
-
-.loading-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-muted);
-}
-
-.models-surface {
-  display: grid;
-  gap: 24px;
-  padding: 24px;
-}
-
-.defaults-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 24px;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 18px;
   align-items: start;
 }
 
-.route-table-card,
-.provider-quick-panel,
-.provider-list-panel,
-.provider-detail-panel,
-.role-card,
-.matrix-panel {
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  background: #fff;
-}
-
-.panel-head,
-.provider-detail-actions,
-.model-list-head,
 .provider-list-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 14px;
+  padding: 17px 18px;
+  border-bottom: 1px solid var(--ikaros-line);
 }
 
-.panel-head,
-.provider-detail-actions,
-.provider-list-head {
-  padding: 20px 22px;
-  border-bottom: 1px solid var(--panel-border);
-}
-
-.panel-head h2,
-.provider-head h2,
-.provider-list-head h2,
-.provider-detail-actions h2,
-.model-list-head h3,
-.provider-section h3,
-.matrix-panel h2 {
+.provider-list-head h2 {
   margin: 0;
-  color: var(--text-strong);
-  font-size: 17px;
+  color: var(--ikaros-ink);
+  font-size: 15px;
   font-weight: 800;
-}
-
-.panel-head p,
-.matrix-panel p {
-  margin: 6px 0 0;
-  color: var(--text-muted);
-  font-size: 14px;
-}
-
-.route-table-card {
-  overflow: hidden;
-}
-
-.route-table-wrap table,
-.model-table-wrap table,
-.matrix-table-wrap table {
-  width: 100%;
-  min-width: 900px;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-
-.route-table-wrap th,
-.model-table-wrap th,
-.matrix-table-wrap th {
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--panel-border);
-  background: #f8fafc;
-  color: var(--text-muted);
-  text-align: left;
-  white-space: nowrap;
-}
-
-.route-table-wrap td,
-.model-table-wrap td,
-.matrix-table-wrap td {
-  padding: 14px 18px;
-  border-bottom: 1px solid #eef2f7;
-  color: var(--text-body);
-  vertical-align: middle;
-}
-
-.route-table-wrap,
-.model-table-wrap,
-.matrix-table-wrap {
-  overflow-x: auto;
-}
-
-.providers-layout {
-  display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  gap: 24px;
-  align-items: start;
-}
-
-.provider-list-panel {
-  padding-bottom: 18px;
-  overflow: hidden;
+  letter-spacing: -0.02em;
 }
 
 .provider-list-head h2 span {
   display: inline-grid;
+  min-width: 22px;
+  height: 22px;
   place-items: center;
-  min-width: 24px;
-  height: 24px;
-  margin-left: 8px;
+  margin-left: 7px;
   border-radius: 999px;
-  background: #eef2f7;
-  color: var(--text-muted);
-  font-size: 12px;
+  background: rgba(232, 93, 142, 0.12);
+  color: var(--ikaros-pink);
+  font-size: 11px;
 }
 
 .provider-list-head button {
   display: inline-flex;
+  height: 32px;
   align-items: center;
-  gap: 7px;
-  height: 36px;
-  border: 1px solid #9ec5ff;
-  border-radius: 8px;
-  background: #fff;
-  color: var(--brand-blue);
-  padding: 0 12px;
-  font-weight: 800;
+  gap: 6px;
+  padding: 0 11px;
+  border: 1px solid rgba(232, 93, 142, 0.3);
+  border-radius: 9px;
+  background: rgba(232, 93, 142, 0.08);
+  color: var(--ikaros-pink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.provider-list-head button:hover { background: rgba(232, 93, 142, 0.14); }
+.provider-list-head button svg { width: 13px; height: 13px; }
+
+.provider-list-shell {
+  padding: 0 14px 16px;
 }
 
 .provider-card-list {
   display: grid;
-  gap: 10px;
-  margin-top: 14px;
-  padding: 0 14px;
+  gap: 9px;
+  margin-top: 13px;
 }
 
 .provider-card {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  min-height: 76px;
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  background: #fff;
-  padding: 12px;
+  gap: 11px;
+  min-height: 72px;
+  padding: 11px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.35);
   text-align: left;
+  transition: border-color 160ms ease, background-color 160ms ease;
 }
 
+:global(.dark) .provider-card { background: rgba(255, 255, 255, 0.04); }
+.provider-card:hover { border-color: rgba(232, 93, 142, 0.3); }
+
 .provider-card.active {
-  border-color: #7fb2ff;
-  background: #f0f7ff;
+  border-color: rgba(232, 93, 142, 0.45);
+  background: rgba(232, 93, 142, 0.07);
+  box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.08);
 }
 
 .provider-logo {
   display: grid;
-  place-items: center;
   width: 40px;
   height: 40px;
-  border-radius: 10px;
-  background: var(--brand-blue-soft);
-  color: var(--brand-blue);
+  place-items: center;
+  border-radius: 11px;
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
 }
 
+.provider-logo svg { width: 18px; height: 18px; }
+
 .provider-card strong {
-  color: var(--text-strong);
+  color: var(--ikaros-ink);
+  font-size: 13px;
 }
 
 .provider-card em {
-  color: #16a34a;
+  color: var(--ikaros-rind);
+  font-size: 11px;
   font-style: normal;
-  font-size: 12px;
-  font-weight: 800;
+  font-weight: 750;
+  white-space: nowrap;
 }
 
 .provider-card small {
   grid-column: 2 / 4;
-  color: var(--text-muted);
+  color: var(--ikaros-muted);
+  font-size: 10px;
 }
 
-.provider-detail-panel {
-  overflow: hidden;
+.provider-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 17px 20px;
+  border-bottom: 1px solid var(--ikaros-line);
+}
+
+.provider-detail-actions h2 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
 .provider-detail-actions > div {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 9px;
 }
+
+.secondary-btn,
+.danger-btn {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 13px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.secondary-btn {
+  border: 1px solid var(--ikaros-line);
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--ikaros-ink);
+}
+
+:global(.dark) .secondary-btn { background: rgba(255, 255, 255, 0.06); }
+.secondary-btn:hover { border-color: rgba(232, 93, 142, 0.32); color: var(--ikaros-pink); }
+.secondary-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+.secondary-btn svg { width: 14px; height: 14px; }
+
+.danger-btn {
+  border: 1px solid rgba(198, 55, 65, 0.25);
+  background: rgba(198, 55, 65, 0.06);
+  color: #c63741;
+}
+
+.danger-btn:hover { background: rgba(198, 55, 65, 0.12); }
+.danger-btn svg { width: 14px; height: 14px; }
 
 .model-list-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 9px;
 }
 
 .provider-section {
-  padding: 20px 24px;
-  border-bottom: 1px solid var(--panel-border);
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--ikaros-line);
 }
 
 .provider-section:last-child {
   border-bottom: 0;
 }
 
+.provider-section h3 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .provider-form-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) 240px;
-  gap: 18px 24px;
-  margin-top: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 230px;
+  gap: 14px 18px;
+  margin-top: 14px;
 }
 
 .interface-grid {
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) 140px 140px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr);
 }
 
 .custom-headers-block {
   display: grid;
-  gap: 12px;
-  margin-top: 18px;
-  padding: 14px;
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  background: #f8fafc;
+  gap: 11px;
+  margin-top: 16px;
+  padding: 13px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.35);
 }
+
+:global(.dark) .custom-headers-block { background: rgba(255, 255, 255, 0.04); }
 
 .custom-headers-head,
 .custom-header-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 11px;
 }
 
 .custom-headers-head {
@@ -2215,87 +2283,111 @@ onMounted(load)
 
 .custom-headers-head > div {
   display: grid;
-  gap: 4px;
+  gap: 3px;
 }
 
 .custom-headers-head strong {
-  color: var(--text-strong);
-  font-size: 13px;
+  color: var(--ikaros-ink);
+  font-size: 12px;
 }
 
 .custom-headers-head span,
 .custom-headers-empty {
-  color: var(--text-muted);
-  font-size: 12px;
+  color: var(--ikaros-muted);
+  font-size: 11px;
 }
 
 .custom-header-list {
   display: grid;
-  gap: 10px;
+  gap: 9px;
 }
 
 .custom-header-row input {
   min-width: 0;
-  height: 40px;
+  height: 38px;
   flex: 1;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 10px;
   padding: 0 12px;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-ink);
+  font-size: 12px;
+  outline: none;
 }
+
+:global(.dark) .custom-header-row input { background: rgba(255, 255, 255, 0.06); }
+.custom-header-row input:focus { border-color: rgba(232, 93, 142, 0.45); box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.1); }
 
 .icon-danger-btn {
   display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
-  border: 1px solid #fecdd3;
-  border-radius: 8px;
-  background: #fff;
-  color: #e11d48;
+  border: 1px solid rgba(198, 55, 65, 0.25);
+  border-radius: 10px;
+  background: rgba(198, 55, 65, 0.05);
+  color: #c63741;
 }
+
+.icon-danger-btn:hover { background: rgba(198, 55, 65, 0.12); }
+.icon-danger-btn svg { width: 15px; height: 15px; }
 
 .custom-headers-empty {
   margin: 0;
 }
 
 .provider-form-grid label,
-.role-card label,
+.role-card-shell label,
 .mode-field {
   display: grid;
-  gap: 8px;
+  gap: 7px;
 }
 
 .provider-form-grid label span,
-.role-card label span,
+.role-card-shell label span,
 .mode-field span {
-  color: var(--text-body);
-  font-size: 13px;
-  font-weight: 800;
+  color: var(--ikaros-copy);
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .provider-form-grid input,
-.role-card select,
-.matrix-panel input,
-.route-table-wrap select {
+.role-card-shell select,
+.matrix-panel input {
   width: 100%;
-  height: 40px;
-  border: 1px solid var(--panel-border);
-  border-radius: 8px !important;
+  height: 38px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 10px !important;
   padding: 0 12px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-ink);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+:global(.dark) :is(.provider-form-grid input, .role-card-shell select, .matrix-panel input) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.provider-form-grid input:focus,
+.role-card-shell select:focus,
+.matrix-panel input:focus {
+  border-color: rgba(232, 93, 142, 0.45);
+  box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.1);
 }
 
 .provider-status-box {
   display: grid;
-  gap: 7px;
+  gap: 6px;
   align-content: center;
 }
 
-.provider-status-box span {
-  color: var(--text-body);
-  font-size: 13px;
-  font-weight: 800;
+.provider-status-box > span {
+  color: var(--ikaros-copy);
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .provider-status-box strong,
@@ -2303,123 +2395,178 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #b45309;
+  color: #b86717;
+  font-size: 12px;
 }
 
 .provider-status-box i,
 .connection-line i {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: #f59e0b;
+  background: #c87820;
 }
 
 .provider-status-box small,
 .connection-line span {
-  color: var(--text-muted);
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 
 .provider-status-box.success strong,
 .connection-line.success {
-  color: #16a34a;
+  color: var(--ikaros-eye);
 }
 
 .provider-status-box.success i,
 .connection-line.success i {
-  background: #22c55e;
+  background: var(--ikaros-eye);
+  box-shadow: 0 0 0 4px rgba(42, 140, 138, 0.12);
 }
 
 .provider-status-box.error strong,
 .connection-line.error {
-  color: #e11d48;
+  color: #c63741;
 }
 
 .provider-status-box.error i,
 .connection-line.error i {
-  background: #e11d48;
+  background: #c63741;
 }
 
 .connection-line {
-  margin-top: 14px;
-  font-size: 13px;
+  margin-top: 13px;
 }
 
 .model-list-head {
-  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
 }
+
+.model-list-head h3 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.model-table-wrap {
+  overflow-x: auto;
+}
+
+.model-table-wrap table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.model-table-wrap th {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--ikaros-line);
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.model-table-wrap td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--ikaros-line);
+  color: var(--ikaros-copy);
+  vertical-align: middle;
+}
+
+.model-table-wrap tbody tr:last-child td { border-bottom: 0; }
 
 .model-table-wrap input {
   width: 100%;
-  min-width: 94px;
-  height: 34px;
-  border: 1px solid var(--panel-border);
-  border-radius: 7px !important;
+  min-width: 90px;
+  height: 33px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 8px !important;
   padding: 0 9px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ikaros-ink);
+  font-size: 12px;
+  outline: none;
 }
 
+:global(.dark) .model-table-wrap input { background: rgba(255, 255, 255, 0.06); }
+.model-table-wrap input:focus { border-color: rgba(232, 93, 142, 0.45); box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.1); }
+
 .model-edit-row td {
-  background: #fbfdff;
+  background: rgba(232, 93, 142, 0.045);
 }
 
 .model-edit-panel {
   display: grid;
   grid-template-columns: 170px minmax(190px, 1fr) minmax(190px, 1fr) 130px 130px;
-  gap: 14px;
+  gap: 13px;
   align-items: end;
 }
 
 .model-edit-panel label,
 .model-toggle-block {
   display: grid;
-  gap: 8px;
+  gap: 7px;
 }
 
 .model-edit-panel label span,
 .model-toggle-block strong {
-  color: var(--text-body);
-  font-size: 12px;
-  font-weight: 800;
+  color: var(--ikaros-copy);
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .switch-inline {
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex !important;
+  height: 33px;
   align-items: center;
-  height: 34px;
   align-self: end;
+  gap: 8px;
 }
 
 .switch-inline input {
-  width: 16px;
-  min-width: 16px;
-  height: 16px;
+  width: 15px;
+  min-width: 15px;
+  height: 15px;
+  accent-color: var(--ikaros-pink);
 }
 
 .toggle-chip-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
 }
 
 .toggle-chip-row button {
-  height: 30px;
-  border: 1px solid var(--panel-border);
-  border-radius: 7px;
-  background: #fff;
-  color: var(--text-body);
+  height: 29px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--ikaros-copy);
   padding: 0 10px;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 11px;
+  font-weight: 750;
 }
 
+:global(.dark) .toggle-chip-row button { background: rgba(255, 255, 255, 0.05); }
+
 .toggle-chip-row button.active {
-  border-color: #93c5fd;
-  background: #eff6ff;
-  color: var(--brand-blue);
+  border-color: rgba(232, 93, 142, 0.45);
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
 }
 
 .limit-inline {
   display: grid;
-  grid-template-columns: 78px 78px;
+  grid-template-columns: 76px 76px;
   gap: 8px;
 }
 
@@ -2427,131 +2574,161 @@ onMounted(load)
   min-width: 0;
 }
 
-.mini-tags,
-.capability-list {
+.mini-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
 }
 
-.mini-tags span,
-.capability-list span {
-  border: 1px solid #dbeafe;
+.mini-tags span {
+  border: 1px solid rgba(42, 140, 138, 0.2);
   border-radius: 7px;
-  background: #eff6ff;
-  color: var(--brand-blue);
-  padding: 4px 8px;
-  font-size: 12px;
+  background: rgba(42, 140, 138, 0.08);
+  color: var(--ikaros-eye);
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .text-action {
   border: 0;
   background: transparent;
-  color: var(--brand-blue);
-  font-weight: 800;
+  color: var(--ikaros-pink);
+  font-size: 12px;
+  font-weight: 750;
 }
 
+.text-action:hover { color: var(--ikaros-pink-dark); }
+
 .text-action.danger {
-  color: #ef4444;
+  color: #c63741;
 }
 
 .row-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 11px;
   white-space: nowrap;
-}
-
-.route-effort {
-  display: grid;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.route-effort span {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.route-effort select {
-  height: 34px;
-  font-size: 13px;
 }
 
 .role-pool-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+  gap: 16px;
 }
 
 .role-card {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.8);
+}
+
+.role-card-shell {
   display: grid;
-  gap: 16px;
-  padding: 20px;
+  gap: 15px;
+  padding: 18px;
 }
 
 .pool-chip-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 9px;
+  gap: 8px;
 }
 
 .pool-chip-list button {
   display: grid;
   gap: 4px;
-  border: 1px solid var(--panel-border);
-  border-radius: 9px;
-  background: #fff;
-  color: var(--text-body);
-  padding: 10px 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 700;
   text-align: left;
+  transition: border-color 160ms ease, background-color 160ms ease;
 }
 
+:global(.dark) .pool-chip-list button { background: rgba(255, 255, 255, 0.05); }
+.pool-chip-list button:hover { border-color: rgba(232, 93, 142, 0.3); }
+
 .pool-chip-list button.selected {
-  border-color: #7fb2ff;
-  background: #eff6ff;
-  color: var(--brand-blue);
+  border-color: rgba(232, 93, 142, 0.5);
+  background: rgba(232, 93, 142, 0.1);
+  color: var(--ikaros-pink);
+  box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.08);
 }
 
 .pool-chip-list small {
-  color: var(--text-muted);
+  color: var(--ikaros-muted);
+  font-size: 10px;
+  font-weight: 400;
 }
 
-.matrix-panel {
-  overflow: hidden;
+.matrix-table-wrap {
+  overflow-x: auto;
 }
+
+.matrix-table-wrap table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.matrix-table-wrap th {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ikaros-line);
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.matrix-table-wrap td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ikaros-line);
+  color: var(--ikaros-copy);
+  vertical-align: middle;
+}
+
+.matrix-table-wrap tbody tr:last-child td { border-bottom: 0; }
 
 .mode-field {
-  min-width: 180px;
+  min-width: 170px;
 }
 
 .compat {
   display: inline-flex;
   border-radius: 999px;
-  background: #f2f4f7;
-  color: var(--text-muted);
-  padding: 4px 8px;
-  font-size: 12px;
-  font-weight: 800;
+  background: rgba(23, 19, 26, 0.07);
+  color: var(--ikaros-muted);
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 750;
 }
 
+:global(.dark) .compat { background: rgba(255, 255, 255, 0.08); }
+
 .compat.eligible {
-  background: #dcfce7;
-  color: #15803d;
+  background: rgba(47, 125, 74, 0.1);
+  color: var(--ikaros-rind);
 }
 
 .compat.legacy {
-  background: #fff7ed;
-  color: #c2410c;
+  background: rgba(200, 120, 32, 0.12);
+  color: #b86717;
 }
 
 .empty-detail {
   display: grid;
+  min-height: 340px;
   place-items: center;
-  min-height: 360px;
-  color: var(--text-muted);
+  padding: 24px;
+  color: var(--ikaros-muted);
+  font-size: 13px;
 }
+
+@keyframes models-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1400px) {
   .defaults-layout,
@@ -2560,19 +2737,25 @@ onMounted(load)
   }
 
   .provider-form-grid,
-  .interface-grid,
   .role-pool-grid {
     grid-template-columns: 1fr 1fr;
   }
 }
 
+@media (max-width: 1100px) {
+  .models-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
-  .models-hero,
-  .model-stat-grid,
   .provider-form-grid,
-  .interface-grid,
   .role-pool-grid {
     grid-template-columns: 1fr;
+  }
+
+  .model-edit-panel {
+    grid-template-columns: 1fr 1fr;
   }
 
   .custom-headers-head,
@@ -2591,5 +2774,23 @@ onMounted(load)
   .model-list-head {
     flex-wrap: wrap;
   }
+}
+
+@media (max-width: 640px) {
+  .models-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .model-tabs {
+    gap: 18px;
+    overflow-x: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning { animation: none; }
+  .provider-item,
+  .pool-chip-list button,
+  .provider-card { transition: none; }
 }
 </style>

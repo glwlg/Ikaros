@@ -1,19 +1,64 @@
 <script setup lang="ts">
 import axios from 'axios'
-import { computed, onMounted, ref, watch } from 'vue'
-import { CheckCircle2, Link2, Loader2, RefreshCw, Trash2, TriangleAlert } from 'lucide-vue-next'
+import { computed, onMounted, ref, watch, type Component } from 'vue'
+import {
+    Briefcase,
+    CheckCircle2,
+    Loader2,
+    MessageCircle,
+    MessagesSquare,
+    RefreshCw,
+    Send,
+    Trash2,
+    TriangleAlert,
+} from 'lucide-vue-next'
 
 import { deleteMyBinding, listMyBindings, saveMyBinding, type ChannelBinding } from '@/api/binding'
+import LiquidGlass from '@/components/liquid-glass/LiquidGlass.vue'
 
 type PlatformKey = 'telegram' | 'discord' | 'dingtalk' | 'weixin'
 
-const platformOptions: Array<{ value: PlatformKey; label: string; hint: string }> = [
-    { value: 'telegram', label: 'Telegram', hint: '填写 Telegram 机器人看到的用户 ID。' },
-    { value: 'discord', label: 'Discord', hint: '填写 Discord 渠道中的用户 ID。' },
-    { value: 'dingtalk', label: '钉钉', hint: '填写钉钉会话中的用户标识。' },
-    { value: 'weixin', label: '微信 / 企微', hint: '填写微信或企微渠道中的用户标识。' },
+const platformOptions: Array<{
+    value: PlatformKey
+    label: string
+    hint: string
+    icon: Component
+    accent: string
+}> = [
+    { value: 'telegram', label: 'Telegram', hint: '填写 Telegram 机器人看到的用户 ID。', icon: Send, accent: '#2aabee' },
+    { value: 'discord', label: 'Discord', hint: '填写 Discord 渠道中的用户 ID。', icon: MessagesSquare, accent: '#5865f2' },
+    { value: 'dingtalk', label: '钉钉', hint: '填写钉钉会话中的用户标识。', icon: Briefcase, accent: '#0089ff' },
+    { value: 'weixin', label: '微信 / 企微', hint: '填写微信或企微渠道中的用户标识。', icon: MessageCircle, accent: '#07c160' },
 ]
 const defaultPlatformMeta = platformOptions[0]!
+
+const panelOptics = {
+    mapSize: 256,
+    strength: 0.06,
+    depth: 0.72,
+    dispersion: 0.46,
+    frost: 4,
+    saturate: 1.22,
+    specular: 1.15,
+    glow: 0.22,
+    sheen: 0.78,
+    curvature: 0.38,
+    bend: 0.62,
+}
+
+const compactOptics = {
+    mapSize: 256,
+    strength: 0.11,
+    depth: 0.9,
+    dispersion: 0.58,
+    frost: 3,
+    saturate: 1.26,
+    specular: 1.25,
+    glow: 0.3,
+    sheen: 1.05,
+    curvature: 0.48,
+    bend: 0.7,
+}
 
 const bindings = ref<ChannelBinding[]>([])
 const loading = ref(false)
@@ -33,6 +78,12 @@ const bindingsByPlatform = computed(() =>
 const selectedMeta = computed(() =>
     platformOptions.find(item => item.value === form.value.platform) || defaultPlatformMeta
 )
+
+const platformMeta = (platform: string) =>
+    platformOptions.find(item => item.value === platform) || {
+        ...defaultPlatformMeta,
+        label: platform,
+    }
 
 const selectedBinding = computed(() =>
     bindingsByPlatform.value.get(form.value.platform)
@@ -123,110 +174,635 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="grid gap-6 p-6 md:grid-cols-[380px_minmax(0,1fr)] md:p-8">
-    <section class="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-      <div class="flex items-center gap-3">
-        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
-          <Link2 class="h-5 w-5" />
-        </div>
-        <div>
-          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Channels</div>
-          <h2 class="text-xl font-semibold text-slate-900">绑定渠道账户</h2>
-        </div>
+  <div class="ikaros-page bindings-page">
+    <header class="ikaros-page-header">
+      <div class="ikaros-page-heading">
+        <p class="ikaros-page-kicker">Channels</p>
+        <h1 class="ikaros-page-title">渠道绑定</h1>
+        <p class="ikaros-page-description">
+          把消息渠道中的账户关联到当前 Web 账号，绑定后 Ikaros 才能在对应渠道里识别你并收发消息。
+        </p>
       </div>
+      <div class="bindings-header-actions">
+        <span class="bindings-count-chip">{{ bindings.length }} 个绑定</span>
+        <button type="button" class="ikaros-secondary-action" :disabled="loading" @click="load">
+          <RefreshCw :class="{ 'is-spinning': loading }" />
+          刷新
+        </button>
+      </div>
+    </header>
 
-      <form class="mt-6 space-y-4" @submit.prevent="submit">
-        <select v-model="form.platform" class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-cyan-400 focus:bg-white">
-          <option v-for="item in platformOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-        </select>
-
-        <input
-          v-model="form.platform_user_id"
-          type="text"
-          class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-cyan-400 focus:bg-white"
-          :placeholder="`${selectedMeta.label} 账户 ID`"
+    <div class="bindings-layout">
+      <section class="bindings-platforms" aria-label="可用渠道">
+        <h2 class="bindings-section-label">可用渠道</h2>
+        <LiquidGlass
+          v-for="item in platformOptions"
+          :key="item.value"
+          as="button"
+          type="button"
+          :radius="18"
+          :optics="compactOptics"
+          interactive
+          class="bindings-platform-card"
+          :class="{
+            'is-selected': form.platform === item.value,
+            'is-bound': bindingsByPlatform.has(item.value),
+          }"
+          @click="form.platform = item.value"
         >
+          <span
+            class="bindings-platform-icon"
+            :style="{ color: item.accent, background: `${item.accent}14`, borderColor: `${item.accent}30` }"
+          >
+            <component :is="item.icon" />
+          </span>
+          <span class="bindings-platform-copy">
+            <strong>{{ item.label }}</strong>
+            <small>{{ item.hint }}</small>
+          </span>
+          <span class="bindings-platform-state" :class="{ 'is-bound': bindingsByPlatform.has(item.value) }">
+            {{ bindingsByPlatform.has(item.value) ? '已绑定' : '未绑定' }}
+          </span>
+        </LiquidGlass>
+      </section>
 
-        <div class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-          {{ selectedMeta.hint }}
-        </div>
+      <div class="bindings-main">
+        <LiquidGlass :radius="22" :optics="panelOptics" class="bindings-editor">
+          <form class="bindings-form" @submit.prevent="submit">
+            <header class="bindings-editor-head">
+              <span
+                class="bindings-editor-icon"
+                :style="{
+                  color: selectedMeta.accent,
+                  background: `${selectedMeta.accent}14`,
+                  borderColor: `${selectedMeta.accent}30`,
+                }"
+              >
+                <component :is="selectedMeta.icon" />
+              </span>
+              <div class="bindings-editor-title">
+                <h2>配置 {{ selectedMeta.label }} 渠道</h2>
+                <p>{{ selectedMeta.hint }}</p>
+              </div>
+              <span class="bindings-state-chip" :class="{ 'is-bound': selectedBinding }">
+                {{ selectedBinding ? '已绑定' : '未绑定' }}
+              </span>
+            </header>
 
-        <div v-if="selectedBinding" class="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-700">
-          当前已绑定：{{ selectedBinding.platform_user_id }}
-        </div>
+            <label class="bindings-field">
+              <span>账户 ID</span>
+              <input
+                v-model="form.platform_user_id"
+                type="text"
+                :placeholder="`${selectedMeta.label} 账户 ID`"
+              >
+            </label>
 
-        <div v-if="errorText" class="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {{ errorText }}
-        </div>
-
-        <div v-if="successText" class="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          {{ successText }}
-        </div>
-
-        <div class="flex gap-3">
-          <button class="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:opacity-60" :disabled="saving">
-            <Loader2 v-if="saving" class="h-4 w-4 animate-spin" />
-            {{ submitLabel }}
-          </button>
-
-          <button type="button" class="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 transition hover:bg-slate-100" :disabled="loading" @click="load">
-            <RefreshCw class="h-4 w-4" />
-          </button>
-        </div>
-      </form>
-    </section>
-
-    <section class="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-      <div class="flex items-center justify-between gap-3">
-        <div>
-          <div class="text-xs uppercase tracking-[0.24em] text-slate-400">Bindings</div>
-          <h2 class="text-xl font-semibold text-slate-900">当前渠道</h2>
-        </div>
-        <div class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-          {{ bindings.length }} 个绑定
-        </div>
-      </div>
-
-      <div v-if="loading" class="mt-6 flex items-center gap-2 text-sm text-slate-500">
-        <Loader2 class="h-4 w-4 animate-spin" />
-        正在加载绑定信息
-      </div>
-
-      <div v-else-if="!bindings.length" class="mt-6 flex min-h-[240px] flex-col items-center justify-center gap-3 rounded-[24px] border border-dashed border-slate-200 bg-slate-50 px-6 text-center text-slate-500">
-        <TriangleAlert class="h-5 w-5" />
-        <div>当前还没有渠道绑定。</div>
-      </div>
-
-      <div v-else class="mt-6 grid gap-4 md:grid-cols-2">
-        <article
-          v-for="binding in bindings"
-          :key="binding.id"
-          class="rounded-[24px] border border-slate-200 bg-slate-50 p-5"
-        >
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <div class="text-xs uppercase tracking-[0.24em] text-slate-400">{{ binding.platform }}</div>
-              <div class="mt-2 text-lg font-semibold text-slate-900">{{ binding.platform_user_id }}</div>
+            <div v-if="selectedBinding" class="bindings-note is-current">
+              <CheckCircle2 />
+              当前已绑定：{{ selectedBinding.platform_user_id }}
             </div>
 
-            <button
-              type="button"
-              class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
-              :disabled="deletingId === binding.id"
-              @click="removeBinding(binding)"
-            >
-              <Loader2 v-if="deletingId === binding.id" class="h-3.5 w-3.5 animate-spin" />
-              <Trash2 v-else class="h-3.5 w-3.5" />
-              移除
-            </button>
+            <div v-if="errorText" class="bindings-note is-error">
+              {{ errorText }}
+            </div>
+
+            <div v-if="successText" class="bindings-note is-success">
+              {{ successText }}
+            </div>
+
+            <div class="bindings-form-actions">
+              <button type="submit" class="ikaros-primary-action bindings-submit" :disabled="saving">
+                <Loader2 v-if="saving" class="is-spinning" />
+                {{ submitLabel }}
+              </button>
+            </div>
+          </form>
+        </LiquidGlass>
+
+        <section class="bindings-list" aria-label="当前绑定">
+          <h2 class="bindings-section-label">当前绑定</h2>
+
+          <div v-if="loading" class="bindings-loading">
+            <Loader2 class="is-spinning" />
+            正在加载绑定信息
           </div>
 
-          <div class="mt-4 flex items-center gap-2 text-sm text-emerald-700">
-            <CheckCircle2 class="h-4 w-4" />
-            已关联到当前 Web 账号
+          <div v-else-if="!bindings.length" class="bindings-empty">
+            <TriangleAlert />
+            <div>当前还没有渠道绑定。</div>
           </div>
-        </article>
+
+          <div v-else class="bindings-rows">
+            <article v-for="binding in bindings" :key="binding.id" class="ikaros-surface bindings-row">
+              <span
+                class="bindings-row-icon"
+                :style="{
+                  color: platformMeta(binding.platform).accent,
+                  background: `${platformMeta(binding.platform).accent}14`,
+                  borderColor: `${platformMeta(binding.platform).accent}30`,
+                }"
+              >
+                <component :is="platformMeta(binding.platform).icon" />
+              </span>
+              <div class="bindings-row-copy">
+                <strong>{{ platformMeta(binding.platform).label }}</strong>
+                <small :title="binding.platform_user_id">{{ binding.platform_user_id }}</small>
+              </div>
+              <span class="bindings-row-status">
+                <CheckCircle2 />
+                已关联到当前 Web 账号
+              </span>
+              <button
+                type="button"
+                class="bindings-row-remove"
+                :disabled="deletingId === binding.id"
+                @click="removeBinding(binding)"
+              >
+                <Loader2 v-if="deletingId === binding.id" class="is-spinning" />
+                <Trash2 v-else />
+                移除
+              </button>
+            </article>
+          </div>
+        </section>
       </div>
-    </section>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.bindings-page {
+  gap: 22px;
+}
+
+.bindings-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bindings-count-chip {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  padding: 0 14px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: var(--panel-muted);
+  color: var(--ikaros-copy);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bindings-header-actions svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bindings-layout {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+  align-items: start;
+}
+
+.bindings-platforms {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  align-content: start;
+}
+
+.bindings-section-label {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.bindings-platform-card {
+  position: relative;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bindings-platform-card.is-selected {
+  border-color: rgba(232, 93, 142, 0.38);
+  box-shadow:
+    0 16px 40px rgba(232, 93, 142, 0.12),
+    inset 0 0 22px rgba(255, 255, 255, 0.28);
+}
+
+.bindings-platform-card.is-selected::before {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--ikaros-pink);
+  content: '';
+}
+
+.bindings-platform-icon,
+.bindings-editor-icon,
+.bindings-row-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  border: 1px solid;
+}
+
+.bindings-platform-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+}
+
+.bindings-platform-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.bindings-platform-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.bindings-platform-copy strong {
+  color: var(--ikaros-ink);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.bindings-platform-copy small {
+  overflow: hidden;
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bindings-platform-state {
+  flex: none;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--panel-muted);
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bindings-platform-state.is-bound {
+  background: rgba(42, 140, 138, 0.1);
+  color: var(--ikaros-eye);
+}
+
+.bindings-main {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+  align-content: start;
+}
+
+.bindings-editor {
+  --ikaros-glass-fill: rgba(255, 249, 252, 0.84);
+}
+
+:global(.dark) .bindings-editor {
+  --ikaros-glass-fill: rgba(43, 34, 40, 0.86);
+}
+
+.bindings-form {
+  display: grid;
+  gap: 15px;
+  padding: 22px;
+}
+
+.bindings-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--ikaros-line);
+}
+
+.bindings-editor-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 15px;
+}
+
+.bindings-editor-icon svg {
+  width: 21px;
+  height: 21px;
+}
+
+.bindings-editor-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.bindings-editor-title h2 {
+  margin: 0;
+  color: var(--ikaros-ink);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.bindings-editor-title p {
+  margin: 3px 0 0;
+  color: var(--ikaros-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.bindings-state-chip {
+  flex: none;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--panel-muted);
+  color: var(--ikaros-muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.bindings-state-chip.is-bound {
+  background: rgba(42, 140, 138, 0.1);
+  color: var(--ikaros-eye);
+}
+
+.bindings-field {
+  display: grid;
+  gap: 7px;
+}
+
+.bindings-field span {
+  color: var(--ikaros-copy);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.bindings-field input {
+  width: 100%;
+  padding: 11px 14px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ikaros-ink);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+:global(.dark) .bindings-field input {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bindings-field input:focus {
+  border-color: rgba(232, 93, 142, 0.45);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(232, 93, 142, 0.12);
+}
+
+:global(.dark) .bindings-field input:focus {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.bindings-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border: 1px solid;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.bindings-note svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.bindings-note.is-current {
+  border-color: rgba(42, 140, 138, 0.22);
+  background: rgba(42, 140, 138, 0.08);
+  color: var(--ikaros-eye);
+}
+
+.bindings-note.is-error {
+  border-color: rgba(198, 55, 65, 0.18);
+  background: rgba(198, 55, 65, 0.07);
+  color: #c63741;
+}
+
+.bindings-note.is-success {
+  border-color: rgba(47, 125, 74, 0.2);
+  background: rgba(47, 125, 74, 0.08);
+  color: var(--ikaros-rind);
+}
+
+.bindings-form-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.bindings-submit {
+  flex: 1;
+  border: 0;
+  cursor: pointer;
+}
+
+.bindings-submit:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.bindings-submit svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bindings-list {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.bindings-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 4px;
+  color: var(--ikaros-muted);
+  font-size: 13px;
+}
+
+.bindings-loading svg {
+  width: 16px;
+  height: 16px;
+}
+
+.bindings-empty {
+  display: flex;
+  min-height: 200px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px dashed var(--ikaros-line);
+  border-radius: 18px;
+  color: var(--ikaros-muted);
+  font-size: 13px;
+}
+
+.bindings-empty svg {
+  width: 22px;
+  height: 22px;
+}
+
+.bindings-rows {
+  display: grid;
+  gap: 10px;
+}
+
+.bindings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: 16px;
+}
+
+.bindings-row-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+}
+
+.bindings-row-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.bindings-row-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.bindings-row-copy strong {
+  color: var(--ikaros-ink);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.bindings-row-copy small {
+  overflow: hidden;
+  color: var(--ikaros-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bindings-row-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--ikaros-rind);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.bindings-row-status svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bindings-row-remove {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--ikaros-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.45);
+  color: var(--ikaros-copy);
+  font-size: 12px;
+  font-weight: 700;
+  transition: border-color 160ms ease, color 160ms ease, background-color 160ms ease;
+}
+
+:global(.dark) .bindings-row-remove {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bindings-row-remove:hover {
+  border-color: rgba(198, 55, 65, 0.3);
+  background: rgba(198, 55, 65, 0.07);
+  color: #c63741;
+}
+
+.bindings-row-remove:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.bindings-row-remove svg {
+  width: 13px;
+  height: 13px;
+}
+
+.is-spinning {
+  animation: bindings-spin 850ms linear infinite;
+}
+
+@keyframes bindings-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (min-width: 1024px) {
+  .bindings-layout {
+    grid-template-columns: 340px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .bindings-row {
+    flex-wrap: wrap;
+  }
+
+  .bindings-row-status {
+    order: 3;
+    width: 100%;
+    padding-left: 48px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-spinning {
+    animation: none;
+  }
+}
+</style>
