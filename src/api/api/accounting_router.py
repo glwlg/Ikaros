@@ -55,6 +55,8 @@ class RecordCreate(BaseModel):
     payee: str = ""
     remark: str = ""
     record_time: Optional[str] = None
+    is_large_expense: Optional[bool] = None
+    exclude_from_budget: Optional[bool] = None
 
 
 class RecordUpdate(BaseModel):
@@ -66,6 +68,8 @@ class RecordUpdate(BaseModel):
     payee: Optional[str] = None
     remark: Optional[str] = None
     record_time: Optional[str] = None
+    is_large_expense: Optional[bool] = None
+    exclude_from_budget: Optional[bool] = None
 
 
 class AccountCreate(BaseModel):
@@ -73,6 +77,7 @@ class AccountCreate(BaseModel):
     type: str = "现金"
     balance: float = 0
     include_in_assets: bool = True
+    trade_account_id: Optional[int] = None
 
 
 class AccountUpdate(BaseModel):
@@ -80,6 +85,7 @@ class AccountUpdate(BaseModel):
     type: Optional[str] = None
     balance: Optional[float] = None
     include_in_assets: Optional[bool] = None
+    trade_account_id: Optional[int] = None
 
 
 class AccountMerge(BaseModel):
@@ -94,9 +100,13 @@ class BalanceAdjust(BaseModel):
 
 
 class BudgetUpdate(BaseModel):
-    month: str
+    month: Optional[str] = None
     total_amount: float
     category_id: Optional[int] = None
+    budget_type: str = "monthly"  # monthly / annual_pool
+    period_key: Optional[str] = None
+    monthly_provision: float = 0.0
+    pool_name: str = ""
 
 
 class BookUpdate(BaseModel):
@@ -107,6 +117,15 @@ class CategoryCreate(BaseModel):
     name: str
     type: str
     parent_id: Optional[int] = None
+
+
+class BatchLargeExpenseUpdate(BaseModel):
+    record_ids: list[int] = []
+    is_large_expense: bool = True
+    # Optional rule-based match
+    category_names: Optional[list[str]] = None
+    min_amount: Optional[float] = None
+    year: Optional[int] = None
 
 
 class CategoryUpdate(BaseModel):
@@ -313,6 +332,7 @@ def _serialize_account_payload(
         "initial_balance": float(account.balance),
         "balance": balance,
         "include_in_assets": account.include_in_assets,
+        "trade_account_id": getattr(account, "trade_account_id", None),
         "book_id": account.book_id,
         "aliases": aliases or [],
     }
@@ -402,6 +422,8 @@ async def _serialize_record(session: AsyncSession, record: Record) -> dict:
         "payee": record.payee or "",
         "remark": record.remark or "",
         "record_time": record.record_time.isoformat() if record.record_time else "",
+        "is_large_expense": bool(getattr(record, "is_large_expense", False)),
+        "exclude_from_budget": bool(getattr(record, "exclude_from_budget", False)),
     }
 
 
@@ -427,13 +449,15 @@ def _record_create_from_draft(draft: dict[str, object]) -> RecordCreate:
         account_name=str(
             draft.get("account_name") or draft.get("account") or ""
         ).strip(),
-        target_account_name=str(
-            draft.get("target_account_name") or draft.get("target_account") or ""
-        ).strip(),
-        payee=str(draft.get("payee") or "").strip(),
-        remark=str(draft.get("remark") or "").strip(),
-        record_time=str(draft.get("record_time") or "").strip() or None,
-    )
+    target_account_name=str(
+        draft.get("target_account_name") or draft.get("target_account") or ""
+    ).strip(),
+    payee=str(draft.get("payee") or "").strip(),
+    remark=str(draft.get("remark") or "").strip(),
+    record_time=str(draft.get("record_time") or "").strip() or None,
+    is_large_expense=bool(draft.get("is_large_expense")) if "is_large_expense" in draft and draft.get("is_large_expense") is not None else None,
+    exclude_from_budget=bool(draft.get("exclude_from_budget")) if "exclude_from_budget" in draft and draft.get("exclude_from_budget") is not None else None,
+)
 
 
 async def _create_record_entity(
@@ -455,6 +479,8 @@ async def _create_record_entity(
         target_account_id=to_acc.id if to_acc else None,
         category_id=cat.id if cat else None,
         record_time=_parse_record_time_value(data.record_time),
+        is_large_expense=bool(data.is_large_expense) if data.is_large_expense is not None else False,
+        exclude_from_budget=bool(data.exclude_from_budget) if data.exclude_from_budget is not None else False,
         payee=data.payee[:100] if data.payee else "",
         remark=data.remark[:500] if data.remark else "",
         creator_id=creator_id,
@@ -931,14 +957,17 @@ async def clear_operation_logs(
 @router.get("/records")
 async def get_records(
     book_id: int,
-    limit: int = Query(default=50, le=200),
-    offset: int = Query(default=0, ge=0),
+    limit: int = 50,
+    offset: int = 0,
     keyword: str = None,
     start_date: str = None,
     end_date: str = None,
     type: str = None,
     category: str = None,
     account: str = None,
+    is_large_expense: Optional[bool] = None,
+    min_amount: Optional[float] = None,
+    max_amount: Optional[float] = None,
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -961,8 +990,14 @@ async def get_records(
         if len(end_raw) <= 10:
             end_dt = end_dt + timedelta(days=1)
         query = query.where(Record.record_time < end_dt)
-    if type:
+    if type: 
         query = query.where(Record.type == type)
+    if is_large_expense is not None:
+        query = query.where(Record.is_large_expense == is_large_expense)
+    if min_amount is not None:
+        query = query.where(Record.amount >= min_amount)
+    if max_amount is not None:
+        query = query.where(Record.amount <= max_amount)
     if keyword:
         query = query.where(
             or_(
@@ -1031,6 +1066,50 @@ async def create_record(
         data=data,
     )
     return {"id": rec.id, "message": "记录已创建"}
+
+
+@router.post("/records/batch-large-expense")
+async def batch_update_large_expense(
+    book_id: int,
+    data: BatchLargeExpenseUpdate,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+    updated_count = 0
+
+    if data.record_ids:
+        stmt = (
+            update(Record)
+            .where(Record.book_id == book_id, Record.id.in_(data.record_ids))
+            .values(is_large_expense=data.is_large_expense)
+        )
+        res = await session.execute(stmt)
+        updated_count += res.rowcount
+
+    if data.category_names or data.min_amount is not None:
+        query = select(Record).where(Record.book_id == book_id, Record.type == "支出")
+        if data.year:
+            start_dt = datetime(data.year, 1, 1)
+            end_dt = datetime(data.year + 1, 1, 1)
+            query = query.where(Record.record_time >= start_dt, Record.record_time < end_dt)
+        if data.min_amount is not None:
+            query = query.where(Record.amount >= data.min_amount)
+        if data.category_names:
+            cat_ids_subq = select(Category.id).where(
+                Category.book_id == book_id,
+                Category.name.in_(data.category_names),
+            )
+            query = query.where(Record.category_id.in_(cat_ids_subq))
+
+        matching_records = (await session.execute(query)).scalars().all()
+        for r in matching_records:
+            if r.is_large_expense != data.is_large_expense:
+                r.is_large_expense = data.is_large_expense
+                updated_count += 1
+
+    await session.commit()
+    return {"message": f"成功更新 {updated_count} 条记录的大额专项标记", "updated_count": updated_count}
 
 
 @router.post("/records/auto-from-image")
@@ -1301,6 +1380,10 @@ async def get_balance_trend(
 
         period_income = 0.0
         period_expense = 0.0
+        period_start_balances = dict(balances)
+        acc_period_income = {acc.id: 0.0 for acc in scoped_accounts}
+        acc_period_expense = {acc.id: 0.0 for acc in scoped_accounts}
+
         while index < len(records) and records[index].record_time < next_cursor:
             record = records[index]
             delta = _record_scope_delta(record, scoped_id_set)
@@ -1309,10 +1392,45 @@ async def get_balance_trend(
             elif delta < 0:
                 period_expense += -delta
 
+            amt = float(record.amount or 0.0)
+            from_id = record.account_id
+            to_id = record.target_account_id
+            if record.type == "收入" and from_id in acc_period_income:
+                acc_period_income[from_id] += amt
+            elif record.type == "支出" and from_id in acc_period_expense:
+                acc_period_expense[from_id] += amt
+            elif record.type == "转账":
+                if from_id in acc_period_expense:
+                    acc_period_expense[from_id] += amt
+                if to_id in acc_period_income:
+                    acc_period_income[to_id] += amt
+
             _apply_record_balance_change(record, balances, scoped_id_set)
             index += 1
 
         current_balance = _scope_balance_total(scope, balances, scoped_ids)
+
+        account_changes = []
+        for acc in scoped_accounts:
+            st_bal = period_start_balances.get(acc.id, 0.0)
+            ed_bal = balances.get(acc.id, 0.0)
+            chg = round(ed_bal - st_bal, 2)
+            inc = round(acc_period_income.get(acc.id, 0.0), 2)
+            exp = round(acc_period_expense.get(acc.id, 0.0), 2)
+            account_changes.append(
+                {
+                    "account_id": acc.id,
+                    "account_name": acc.name,
+                    "account_type": acc.type,
+                    "start_balance": round(st_bal, 2),
+                    "end_balance": round(ed_bal, 2),
+                    "change": chg,
+                    "income": inc,
+                    "expense": exp,
+                }
+            )
+        account_changes.sort(key=lambda x: (abs(x["change"]) > 0.001, abs(x["change"])), reverse=True)
+
         rows.append(
             {
                 "period": _period_key_for_datetime(cursor, granularity),
@@ -1322,6 +1440,7 @@ async def get_balance_trend(
                 "change": round(current_balance - previous_balance, 2),
                 "income": round(period_income, 2),
                 "expense": round(period_expense, 2),
+                "account_changes": account_changes,
             }
         )
 
@@ -1754,6 +1873,11 @@ async def update_record(
     if data.remark is not None:
         record.remark = data.remark[:500]
 
+    if data.is_large_expense is not None:
+        record.is_large_expense = bool(data.is_large_expense)
+    if data.exclude_from_budget is not None:
+        record.exclude_from_budget = bool(data.exclude_from_budget)
+
     await session.commit()
     await session.refresh(record)
 
@@ -2108,6 +2232,7 @@ async def create_account(
         type=data.type,
         balance=data.balance,
         include_in_assets=data.include_in_assets,
+        trade_account_id=data.trade_account_id,
     )
     session.add(acc)
     await session.commit()
@@ -2140,6 +2265,8 @@ async def update_account(
         acc.balance = data.balance
     if data.include_in_assets is not None:
         acc.include_in_assets = data.include_in_assets
+    if data.trade_account_id is not None:
+        acc.trade_account_id = data.trade_account_id
     await session.commit()
     current = await _calc_account_balance(session, acc.id, float(acc.balance))
     alias_map = await _load_account_aliases_map(session, [acc.id])
@@ -2660,13 +2787,19 @@ async def import_csv(
 async def get_budgets(
     book_id: int,
     month: str = None,
+    period_key: str = None,
+    budget_type: str = None,
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ):
     await _get_book(book_id, user, session)
     query = select(Budget).where(Budget.book_id == book_id)
     if month:
-        query = query.where(Budget.month == month)
+        query = query.where(or_(Budget.month == month, Budget.period_key == month))
+    if period_key:
+        query = query.where(or_(Budget.period_key == period_key, Budget.month == period_key))
+    if budget_type:
+        query = query.where(Budget.budget_type == budget_type)
 
     result = await session.execute(query.order_by(Budget.month.desc()))
     budgets = result.scalars().all()
@@ -2682,6 +2815,10 @@ async def get_budgets(
             {
                 "id": b.id,
                 "month": b.month,
+                "period_key": b.period_key or b.month,
+                "budget_type": b.budget_type or "monthly",
+                "monthly_provision": float(getattr(b, "monthly_provision", 0.0) or 0.0),
+                "pool_name": b.pool_name or "",
                 "total_amount": float(b.total_amount),
                 "category_id": b.category_id,
                 "category_name": cat_name,
@@ -2699,8 +2836,18 @@ async def create_or_update_budget(
 ):
     await _get_book(book_id, user, session)
 
+    budget_type = data.budget_type or "monthly"
+    period_key = (data.period_key or data.month or "").strip()
+    if not period_key:
+        raise HTTPException(status_code=400, detail="周期标识(month或period_key)不能为空")
+    month_val = data.month if data.month else period_key
+
     # Check if a budget already exists
-    query = select(Budget).where(Budget.book_id == book_id, Budget.month == data.month)
+    query = select(Budget).where(
+        Budget.book_id == book_id,
+        Budget.budget_type == budget_type,
+        or_(Budget.period_key == period_key, Budget.month == period_key),
+    )
     if data.category_id:
         query = query.where(Budget.category_id == data.category_id)
     else:
@@ -2711,11 +2858,20 @@ async def create_or_update_budget(
 
     if existing:
         existing.total_amount = data.total_amount
+        existing.month = month_val
+        existing.period_key = period_key
+        existing.budget_type = budget_type
+        existing.monthly_provision = data.monthly_provision
+        existing.pool_name = data.pool_name
         budget = existing
     else:
         budget = Budget(
             book_id=book_id,
-            month=data.month,
+            month=month_val,
+            period_key=period_key,
+            budget_type=budget_type,
+            monthly_provision=data.monthly_provision,
+            pool_name=data.pool_name,
             total_amount=data.total_amount,
             category_id=data.category_id,
         )
@@ -2723,6 +2879,151 @@ async def create_or_update_budget(
 
     await session.commit()
     return {"message": "预算保存成功"}
+
+
+@router.get("/budgets/dual-track-summary")
+async def get_dual_track_summary(
+    book_id: int,
+    year: int,
+    month: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    await _get_book(book_id, user, session)
+
+    month_str = f"{year:04d}-{month:02d}"
+    year_str = f"{year:04d}"
+
+    # 1. 常规月度预算
+    routine_budget_query = select(Budget).where(
+        Budget.book_id == book_id,
+        Budget.budget_type == "monthly",
+        or_(Budget.period_key == month_str, Budget.month == month_str),
+    )
+    routine_budgets = (await session.execute(routine_budget_query)).scalars().all()
+    global_routine = next((b for b in routine_budgets if not b.category_id), None)
+    routine_limit = float(global_routine.total_amount) if global_routine else 0.0
+
+    # 当月时间窗口
+    start_month = datetime(year, month, 1)
+    if month == 12:
+        end_month = datetime(year + 1, 1, 1)
+    else:
+        end_month = datetime(year, month + 1, 1)
+
+    # 当月常规支出 (type='支出' and is_large_expense=False)
+    month_routine_spent_res = await session.execute(
+        select(func.coalesce(func.sum(Record.amount), 0)).where(
+            Record.book_id == book_id,
+            Record.type == "支出",
+            Record.is_large_expense.is_(False),
+            Record.exclude_from_budget.is_(False),
+            Record.record_time >= start_month,
+            Record.record_time < end_month,
+        )
+    )
+    routine_spent = float(month_routine_spent_res.scalar() or 0.0)
+    routine_remaining = routine_limit - routine_spent
+    routine_usage_pct = round((routine_spent / routine_limit * 100), 2) if routine_limit > 0 else 0.0
+
+    # 各分类常规支出与分类预算
+    cat_spent_res = await session.execute(
+        select(
+            Category.id.label("cat_id"),
+            Category.name.label("category"),
+            func.sum(Record.amount).label("spent"),
+        )
+        .join(Category, Record.category_id == Category.id, isouter=True)
+        .where(
+            Record.book_id == book_id,
+            Record.type == "支出",
+            Record.is_large_expense.is_(False),
+            Record.exclude_from_budget.is_(False),
+            Record.record_time >= start_month,
+            Record.record_time < end_month,
+        )
+        .group_by(Category.id, Category.name)
+    )
+    cat_spent_map: dict[int | None, float] = {}
+    cat_name_map: dict[int | None, str] = {}
+    for row in cat_spent_res.all():
+        cat_spent_map[row.cat_id] = float(row.spent or 0.0)
+        cat_name_map[row.cat_id] = row.category or "未分类"
+
+    routine_categories = []
+    for b in routine_budgets:
+        if b.category_id:
+            cat = await session.get(Category, b.category_id)
+            cat_name = cat.name if cat else "未分类"
+            b_amount = float(b.total_amount)
+            c_spent = cat_spent_map.get(b.category_id, 0.0)
+            routine_categories.append({
+                "category_id": b.category_id,
+                "category_name": cat_name,
+                "budget_amount": b_amount,
+                "spent_amount": c_spent,
+                "remaining_amount": b_amount - c_spent,
+                "usage_percent": round((c_spent / b_amount * 100), 2) if b_amount > 0 else 0.0,
+            })
+
+    # 2. 年度大额专项资金池
+    pool_budget_query = select(Budget).where(
+        Budget.book_id == book_id,
+        Budget.budget_type == "annual_pool",
+        or_(Budget.period_key == year_str, Budget.month == year_str),
+    )
+    pool_budgets = (await session.execute(pool_budget_query)).scalars().all()
+    global_pool = next((b for b in pool_budgets if not b.category_id), None)
+
+    annual_limit = float(global_pool.total_amount) if global_pool else 0.0
+    monthly_provision = float(global_pool.monthly_provision) if global_pool else 0.0
+    pool_name = global_pool.pool_name if (global_pool and global_pool.pool_name) else "年度大额专项池"
+
+    accumulated_provision = monthly_provision * month
+
+    # 当年时间窗口
+    start_year = datetime(year, 1, 1)
+    end_year = datetime(year + 1, 1, 1)
+
+    # 当年实际已核销大额支出 (type='支出' and is_large_expense=True)
+    pool_records_res = await session.execute(
+        select(Record).where(
+            Record.book_id == book_id,
+            Record.type == "支出",
+            Record.is_large_expense.is_(True),
+            Record.exclude_from_budget.is_(False),
+            Record.record_time >= start_year,
+            Record.record_time < end_year,
+        ).order_by(Record.record_time.desc())
+    )
+    pool_record_objs = pool_records_res.scalars().all()
+    pool_spent_total = sum(float(r.amount) for r in pool_record_objs)
+    current_balance = accumulated_provision - pool_spent_total
+    pool_usage_pct = round((pool_spent_total / annual_limit * 100), 2) if annual_limit > 0 else 0.0
+
+    serialized_pool_records = [await _serialize_record(session, r) for r in pool_record_objs]
+
+    return {
+        "month": month_str,
+        "year": year_str,
+        "routine_budget": {
+            "budget_amount": routine_limit,
+            "spent_amount": routine_spent,
+            "remaining_amount": routine_remaining,
+            "usage_percent": routine_usage_pct,
+            "categories": routine_categories,
+        },
+        "annual_pool": {
+            "pool_name": pool_name,
+            "annual_budget_limit": annual_limit,
+            "monthly_provision": monthly_provision,
+            "accumulated_provision": accumulated_provision,
+            "spent_total": pool_spent_total,
+            "current_balance": current_balance,
+            "usage_percent": pool_usage_pct,
+            "records": serialized_pool_records,
+        },
+    }
 
 
 # ─── Scheduled Tasks CRUD ───────────────────────────────────────────
@@ -2977,3 +3278,76 @@ async def repay_debt(
         "remaining_amount": debt.remaining_amount,
         "is_settled": debt.is_settled,
     }
+
+
+class BindTradeAccountRequest(BaseModel):
+    trade_account_id: Optional[int] = None
+
+
+@router.post("/accounts/{account_id}/bind-trade-account")
+async def bind_trade_account(
+    account_id: int,
+    data: BindTradeAccountRequest,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """将现有记账账户与股票交易账户进行双向关联"""
+    from api.models.trade import TradeAccount
+    acc = await session.get(Account, account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="记账账户不存在")
+    await _get_book(acc.book_id, user, session)
+
+    if data.trade_account_id is not None:
+        trade_acc = await session.get(TradeAccount, data.trade_account_id)
+        if not trade_acc or trade_acc.user_id != user.id:
+            raise HTTPException(status_code=404, detail="关联的股票账户不存在")
+
+    acc.trade_account_id = data.trade_account_id
+    await session.commit()
+    return {"success": True, "account_id": acc.id, "trade_account_id": acc.trade_account_id}
+
+
+@router.post("/accounts/{account_id}/sync-trade-asset")
+async def sync_single_trade_asset(
+    account_id: int,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """收盘资金对齐：计算股票最新总资产，差额自动生成收支记录平齐账户"""
+    from api.services.accounting_trade_sync import sync_account_with_trade_assets
+    acc = await session.get(Account, account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="记账账户不存在")
+    await _get_book(acc.book_id, user, session)
+
+    try:
+        res = await sync_account_with_trade_assets(session, acc.id, user.id)
+        await session.commit()
+        return res
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/sync-all-trade-assets")
+async def sync_all_trade_assets_endpoint(
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """一键对齐所有关联了股票账户的记账账户资产"""
+    from api.services.accounting_trade_sync import sync_account_with_trade_assets
+    stmt = (
+        select(Account)
+        .join(Book, Account.book_id == Book.id)
+        .where(Book.owner_id == user.id, Account.trade_account_id.isnot(None))
+    )
+    accounts = (await session.execute(stmt)).scalars().all()
+    results = []
+    for acc in accounts:
+        try:
+            res = await sync_account_with_trade_assets(session, acc.id, user.id)
+            results.append(res)
+        except Exception as exc:
+            results.append({"account_id": acc.id, "error": str(exc)})
+    await session.commit()
+    return {"results": results}

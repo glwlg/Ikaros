@@ -1,7 +1,8 @@
-from sqlalchemy import String, ForeignKey, Numeric, DateTime, Text, UniqueConstraint
+from sqlalchemy import String, ForeignKey, Numeric, DateTime, Text, UniqueConstraint, Boolean
 from sqlalchemy.orm import mapped_column, Mapped
 from datetime import datetime
 from api.core.database import Base
+from api.models.trade import TradeAccount  # noqa: F401
 
 
 class Book(Base):
@@ -23,6 +24,9 @@ class Account(Base):
     type: Mapped[str] = mapped_column(String(50), default="现金", nullable=False)
     balance: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
     include_in_assets: Mapped[bool] = mapped_column(default=True, nullable=False)
+    trade_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("trade_accounts.id", ondelete="SET NULL"), nullable=True
+    )
 
 
 class AccountAlias(Base):
@@ -78,6 +82,8 @@ class Record(Base):
     record_time: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
+    is_large_expense: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    exclude_from_budget: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     payee: Mapped[str] = mapped_column(String(100), nullable=True)
     remark: Mapped[str] = mapped_column(String(500), nullable=True)
     creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -89,10 +95,20 @@ class Budget(Base):
     book_id: Mapped[int] = mapped_column(
         ForeignKey("accounting_books.id", ondelete="CASCADE"), nullable=False
     )
-    month: Mapped[str] = mapped_column(String(7), nullable=False)  # Format: YYYY-MM
+    month: Mapped[str] = mapped_column(String(10), default="", nullable=False)  # Format: YYYY-MM or YYYY
     total_amount: Mapped[float] = mapped_column(
         Numeric(12, 2), default=0, nullable=False
     )
+    budget_type: Mapped[str] = mapped_column(
+        String(20), default="monthly", nullable=False
+    )  # monthly / annual_pool
+    period_key: Mapped[str] = mapped_column(
+        String(10), default="", nullable=False
+    )  # YYYY-MM or YYYY
+    monthly_provision: Mapped[float] = mapped_column(
+        Numeric(12, 2), default=0, nullable=False
+    )
+    pool_name: Mapped[str] = mapped_column(String(50), default="", nullable=False)
     category_id: Mapped[int] = mapped_column(
         ForeignKey("accounting_categories.id", ondelete="CASCADE"), nullable=True
     )

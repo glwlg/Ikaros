@@ -14,6 +14,7 @@ const props = defineProps<{
     account?: string
     targetAccount?: string
     recordTime: string
+    isLargeExpense?: boolean
     showChevron?: boolean
     showDate?: boolean
 }>()
@@ -62,7 +63,16 @@ const accountLabel = computed(() => {
       />
       <div class="min-w-0">
         <p class="font-medium text-theme-primary text-sm truncate">{{ title }}</p>
-        <p v-if="subtitle" class="text-xs text-theme-muted mt-0.5 truncate">{{ subtitle }}</p>
+        <div class="flex items-center gap-1.5 flex-wrap mt-0.5">
+          <span
+            v-if="isLargeExpense"
+            class="text-[10px] px-1.5 py-0.2 rounded font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800/60 inline-flex items-center"
+            title="本笔开销已由年度专项资金池核销，不计入月度常规超支"
+          >
+            年度大额
+          </span>
+          <p v-if="subtitle" class="text-xs text-theme-muted truncate">{{ subtitle }}</p>
+        </div>
       </div>
     </div>
     <div class="text-right flex-shrink-0">

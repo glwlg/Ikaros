@@ -19,6 +19,8 @@ export interface RecordItem {
     payee: string
     remark: string
     record_time: string
+    is_large_expense?: boolean
+    exclude_from_budget?: boolean
 }
 
 export interface AccountItem {
@@ -30,6 +32,7 @@ export interface AccountItem {
     include_in_assets: boolean
     book_id?: number
     aliases?: string[]
+    trade_account_id?: number | null
 }
 
 export interface BalanceTrendItem {
@@ -44,6 +47,17 @@ export type BalanceTrendScope =
     | 'account_type'
     | 'account'
 
+export interface AccountChangeItem {
+    account_id: number
+    account_name: string
+    account_type: string
+    start_balance: number
+    end_balance: number
+    change: number
+    income: number
+    expense: number
+}
+
 export interface ScopedBalanceTrendItem {
     period: string
     period_start: string
@@ -52,6 +66,7 @@ export interface ScopedBalanceTrendItem {
     change: number
     income: number
     expense: number
+    account_changes?: AccountChangeItem[]
 }
 
 export interface CategoryItem {
@@ -108,9 +123,44 @@ export interface StatsOverview {
 export interface Budget {
     id: number
     month: string
+    period_key?: string
+    budget_type?: string
+    monthly_provision?: number
+    pool_name?: string
     total_amount: number
     category_id: number | null
     category_name: string | null
+}
+
+export interface DualTrackRoutineCategory {
+    category_id: number
+    category_name: string
+    budget_amount: number
+    spent_amount: number
+    remaining_amount: number
+    usage_percent: number
+}
+
+export interface DualTrackSummary {
+    month: string
+    year: string
+    routine_budget: {
+        budget_amount: number
+        spent_amount: number
+        remaining_amount: number
+        usage_percent: number
+        categories: DualTrackRoutineCategory[]
+    }
+    annual_pool: {
+        pool_name: string
+        annual_budget_limit: number
+        monthly_provision: number
+        accumulated_provision: number
+        spent_total: number
+        current_balance: number
+        usage_percent: number
+        records: RecordItem[]
+    }
 }
 
 // ─── Books ──────────────────────────────────────────────────────────
@@ -137,6 +187,9 @@ export const getRecords = (
     category?: string,
     account?: string,
     offset: number = 0,
+    is_large_expense?: boolean,
+    min_amount?: number,
+    max_amount?: number,
 ) =>
     request.get<RecordItem[]>('/accounting/records', {
         params: {
@@ -149,6 +202,9 @@ export const getRecords = (
             type,
             category,
             account,
+            is_large_expense,
+            min_amount,
+            max_amount,
         },
     })
 
@@ -161,6 +217,8 @@ export const createRecord = (bookId: number, data: {
     payee?: string
     remark?: string
     record_time?: string
+    is_large_expense?: boolean
+    exclude_from_budget?: boolean
 }) =>
     request.post('/accounting/records', data, { params: { book_id: bookId } })
 
@@ -195,6 +253,8 @@ export const updateRecord = (bookId: number, recordId: number, data: {
     payee?: string
     remark?: string
     record_time?: string
+    is_large_expense?: boolean
+    exclude_from_budget?: boolean
 }) =>
     request.put<{ message: string; record: RecordItem }>(`/accounting/records/${recordId}`, data, {
         params: { book_id: bookId }
@@ -205,6 +265,16 @@ export const deleteRecord = (bookId: number, recordId: number) =>
         params: { book_id: bookId }
     })
 
+export const batchUpdateLargeExpense = (bookId: number, data: {
+    record_ids?: number[]
+    is_large_expense: boolean
+    category_names?: string[]
+    min_amount?: number
+    year?: number
+}) =>
+    request.post<{ message: string; updated_count: number }>('/accounting/records/batch-large-expense', data, {
+        params: { book_id: bookId }
+    })
 // ─── Statistics ─────────────────────────────────────────────────────
 export const getRecordsSummary = (bookId: number, year: number, month: number) =>
     request.get<MonthlySummary>('/accounting/records/summary', { params: { book_id: bookId, year, month } })
@@ -274,6 +344,24 @@ export const updateAccount = (accountId: number, data: { name?: string; type?: s
 export const deleteAccount = (accountId: number) =>
     request.delete(`/accounting/accounts/${accountId}`)
 
+export const bindTradeAccount = (accountId: number, tradeAccountId: number | null) =>
+    request.post<{ success: boolean }>(`/accounting/accounts/${accountId}/bind-trade-account`, {
+        trade_account_id: tradeAccountId,
+    })
+
+export const syncTradeAsset = (accountId: number) =>
+    request.post<{
+        account_id: number
+        account_name: string
+        trade_account_name: string
+        previous_balance: number
+        target_assets: number
+        diff: number
+        record_id: number | null
+        record_type: string | null
+        new_balance: number
+    }>(`/accounting/accounts/${accountId}/sync-trade-asset`)
+
 export const mergeAccount = (accountId: number, targetAccountId: number) =>
     request.post<{ message: string; account: AccountItem }>(`/accounting/accounts/${accountId}/merge`, {
         target_account_id: targetAccountId,
@@ -323,10 +411,21 @@ export const getStatsOverview = (bookId: number) =>
     request.get<StatsOverview>('/accounting/stats/overview', { params: { book_id: bookId } })
 
 // ─── Budgets ────────────────────────────────────────────────────────
-export const getBudgets = (bookId: number, month?: string) =>
-    request.get<Budget[]>('/accounting/budgets', { params: { book_id: bookId, month } })
+export const getBudgets = (bookId: number, month?: string, periodKey?: string, budgetType?: string) =>
+    request.get<Budget[]>('/accounting/budgets', { params: { book_id: bookId, month, period_key: periodKey, budget_type: budgetType } })
 
-export const createOrUpdateBudget = (bookId: number, data: { month: string, total_amount: number, category_id?: number | null }) =>
+export const getDualTrackSummary = (bookId: number, year: number, month: number) =>
+    request.get<DualTrackSummary>('/accounting/budgets/dual-track-summary', { params: { book_id: bookId, year, month } })
+
+export const createOrUpdateBudget = (bookId: number, data: {
+    month?: string
+    period_key?: string
+    budget_type?: string
+    monthly_provision?: number
+    pool_name?: string
+    total_amount: number
+    category_id?: number | null
+}) =>
     request.post('/accounting/budgets', data, { params: { book_id: bookId } })
 
 // ─── CSV Import ─────────────────────────────────────────────────────

@@ -15,6 +15,8 @@ export interface RecordListQueryInput {
     /** Window end (exclusive preferred, ISO local) */
     end?: Date | string | null
     keyword?: string
+    min_amount?: number | string
+    max_amount?: number | string
 }
 
 export type RecordListQuery = Record<string, string>
@@ -67,6 +69,12 @@ export function buildRecordListQuery(input: RecordListQueryInput): RecordListQue
     const keyword = (input.keyword || '').trim()
     if (keyword) {
         query.keyword = keyword
+    }
+    if (input.min_amount !== undefined && input.min_amount !== null && String(input.min_amount).trim() !== '') {
+        query.min_amount = String(input.min_amount).trim()
+    }
+    if (input.max_amount !== undefined && input.max_amount !== null && String(input.max_amount).trim() !== '') {
+        query.max_amount = String(input.max_amount).trim()
     }
     const label = (input.label || '').trim()
     if (label) {

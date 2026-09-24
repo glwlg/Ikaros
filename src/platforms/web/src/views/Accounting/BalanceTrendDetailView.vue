@@ -11,7 +11,7 @@ import {
     type BalanceTrendScope,
     type ScopedBalanceTrendItem,
 } from '@/api/accounting'
-import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, ChevronDown, Loader2 } from 'lucide-vue-next'
 import * as echarts from 'echarts'
 import {
     createDefaultCustomRangeState,
@@ -41,6 +41,7 @@ const selectedAccountId = ref<number | null>(null)
 const accounts = ref<AccountItem[]>([])
 const trendRows = ref<ScopedBalanceTrendItem[]>([])
 const allTimeStart = ref<Date | null>(null)
+const expandedPeriods = ref<Set<string>>(new Set())
 
 const chartRef = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
@@ -158,6 +159,17 @@ const granularityLabel = computed(() => {
 const pad2 = (n: number) => String(n).padStart(2, '0')
 const toDateLabel = (d: Date) => `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`
 
+const togglePeriod = (period: string) => {
+    if (expandedPeriods.value.has(period)) {
+        expandedPeriods.value.delete(period)
+    } else {
+        expandedPeriods.value.add(period)
+    }
+}
+
+const openAccount = (id: number) => {
+    router.push('/accounting/account/' + id)
+}
 
 const formatPeriodLabel = (period: string) => {
     if (granularity.value === 'day') return period.slice(5)
@@ -517,12 +529,18 @@ onBeforeUnmount(() => {
           <div
             v-for="row in orderedTrendRows"
             :key="`${row.period}-${row.period_end}`"
-            class="rounded-2xl bg-theme-elevated border border-theme-primary p-4 shadow-sm"
+            class="rounded-2xl bg-theme-elevated border border-theme-primary p-4 shadow-sm cursor-pointer transition-all duration-200 hover:border-indigo-300 dark:hover:border-indigo-700"
+            @click="togglePeriod(row.period)"
           >
             <div class="flex items-center justify-between gap-2">
               <div class="flex items-center gap-2">
                 <div class="w-2.5 h-2.5 rounded-full" :class="row.change >= 0 ? 'bg-indigo-500' : 'bg-rose-400'"></div>
                 <p class="text-xl text-theme-primary">{{ formatPeriodLabel(row.period) }}</p>
+                <ChevronDown
+                  :size="16"
+                  class="text-theme-muted transition-transform duration-200"
+                  :class="{ 'rotate-180 text-indigo-500': expandedPeriods.has(row.period) }"
+                />
               </div>
               <p class="text-4xl font-semibold" :class="row.change >= 0 ? 'text-indigo-500' : 'text-rose-500'">
                 {{ formatAccountingMoney(row.change, { signed: true }) }}
@@ -532,6 +550,50 @@ onBeforeUnmount(() => {
             <div class="mt-1 flex items-center justify-between text-sm text-theme-muted">
               <p>{{ formatAccountingMoney(row.income, { signed: true }) }} · {{ formatAccountingMoney(-Math.abs(row.expense)) }}</p>
               <p class="px-2 py-0.5 rounded-full border border-theme-primary">余额 {{ formatAccountingMoney(row.balance) }}</p>
+            </div>
+
+            <!-- 展开展示各账户变动明细 -->
+            <div
+              v-if="expandedPeriods.has(row.period)"
+              class="mt-3 pt-3 border-t border-theme-primary/60 space-y-2"
+              @click.stop
+            >
+              <div class="flex items-center justify-between text-xs text-theme-muted mb-1">
+                <span>账户变动明细</span>
+                <span>共 {{ row.account_changes?.length ?? 0 }} 个账户</span>
+              </div>
+
+              <div v-if="!row.account_changes || row.account_changes.length === 0" class="py-2 text-center text-xs text-theme-muted">
+                暂无账户变动记录
+              </div>
+
+              <div
+                v-for="acc in row.account_changes"
+                :key="`acc-${row.period}-${acc.account_id}`"
+                class="flex items-center justify-between py-2 px-3 rounded-xl bg-theme-secondary/80 hover:bg-theme-secondary transition cursor-pointer text-xs"
+                @click="openAccount(acc.account_id)"
+              >
+                <div class="flex items-center gap-2 min-w-0">
+                  <span
+                    class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    :class="acc.change !== 0 ? (acc.change > 0 ? 'bg-indigo-500' : 'bg-rose-400') : 'bg-gray-300 dark:bg-slate-600'"
+                  ></span>
+                  <div class="truncate">
+                    <span class="font-medium text-theme-primary">{{ acc.account_name }}</span>
+                    <span class="ml-1 text-[10px] text-theme-muted">({{ acc.account_type }})</span>
+                  </div>
+                </div>
+
+                <div class="text-right flex-shrink-0 ml-2">
+                  <span
+                    class="font-semibold"
+                    :class="acc.change > 0 ? 'text-indigo-500' : acc.change < 0 ? 'text-rose-500' : 'text-theme-muted'"
+                  >
+                    {{ formatAccountingMoney(acc.change, { signed: true }) }}
+                  </span>
+                  <span class="text-[10px] text-theme-muted ml-2">结余 {{ formatAccountingMoney(acc.end_balance) }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>

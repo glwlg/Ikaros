@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
 import {
     getAccountDetail, getAccountRecords, getAccountBalanceTrend,
-    updateAccount, adjustAccountBalance, deleteAccount,
+    updateAccount, adjustAccountBalance, deleteAccount, bindTradeAccount, syncTradeAsset,
     type AccountItem, type RecordItem, type BalanceTrendItem
 } from '@/api/accounting'
+import { getTradeAccounts, type TradeAccount } from '@/api/trade'
 import {
-    ArrowLeft, Trash2, Pencil, X, Loader2, Plus
+    ArrowLeft, Trash2, Pencil, X, Loader2, Plus, RefreshCw, ChevronRight
 } from 'lucide-vue-next'
 import * as echarts from 'echarts'
 import { appendOperationLog } from '@/utils/accountingLocal'
@@ -41,6 +42,9 @@ const loadError = ref('')
 const showEdit = ref(false)
 const editName = ref('')
 const editType = ref('')
+const editTradeAccountId = ref<number | null>(null)
+const tradeAccounts = ref<TradeAccount[]>([])
+const syncingTrade = ref(false)
 const saving = ref(false)
 
 // Balance adjust modal
@@ -199,7 +203,37 @@ const openEdit = () => {
     if (!account.value) return
     editName.value = account.value.name
     editType.value = account.value.type
+    editTradeAccountId.value = account.value.trade_account_id ?? null
+    getTradeAccounts().then((res) => {
+        tradeAccounts.value = res.data || []
+    }).catch(() => {})
     showEdit.value = true
+}
+
+const linkedTradeAccountName = computed(() => {
+    if (!account.value?.trade_account_id) return ''
+    const found = tradeAccounts.value.find((t) => t.id === account.value?.trade_account_id)
+    return found ? `${found.name} (${found.broker})` : `股票账户 #${account.value.trade_account_id}`
+})
+
+const handleSyncTradeAsset = async () => {
+    if (!account.value?.trade_account_id) return
+    syncingTrade.value = true
+    try {
+        const res = await syncTradeAsset(accountId)
+        const diff = res.data.diff
+        if (Math.abs(diff) < 0.01) {
+            accountingToastSuccess('资金已对齐，当前无差额')
+        } else {
+            const actionName = diff > 0 ? '收益增加' : '亏损扣减'
+            accountingToastSuccess(`已对齐股票资产（${actionName} ¥${Math.abs(diff).toFixed(2)} 已记入账单）`)
+        }
+        await loadData()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '对齐失败'))
+    } finally {
+        syncingTrade.value = false
+    }
 }
 
 const handleSaveEdit = async () => {
@@ -210,6 +244,7 @@ const handleSaveEdit = async () => {
             name: editName.value,
             type: editType.value,
         })
+        await bindTradeAccount(accountId, editTradeAccountId.value)
         appendOperationLog(
             resolveLogBookId(),
             '更新账户',
@@ -323,6 +358,22 @@ onMounted(loadData)
             <Pencil class="w-4 h-4 text-theme-muted" />
           </button>
         </div>
+        <div v-if="account.trade_account_id" class="mt-3 pt-3 border-t border-gray-100 dark:border-slate-700 flex items-center justify-between">
+          <div class="text-xs text-theme-muted flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span>已关联股票：{{ linkedTradeAccountName }}</span>
+          </div>
+          <button
+            type="button"
+            :disabled="syncingTrade"
+            @click="handleSyncTradeAsset"
+            class="px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 transition flex items-center gap-1"
+          >
+            <Loader2 v-if="syncingTrade" class="w-3 h-3 animate-spin" />
+            <RefreshCw v-else="" class="w-3 h-3" />
+            <span>收盘资金对齐</span>
+          </button>
+        </div>
         <p class="text-xs text-theme-muted mt-2">当前余额 = 初始余额 + 余额起始时间后的交易金额的和</p>
       </div>
 
@@ -405,6 +456,13 @@ onMounted(loadData)
           </div>
         </div>
         <div @click="openEdit" class="px-4 py-3 flex items-center justify-between border-b border-gray-50 dark:border-slate-700/50 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition">
+          <span class="text-sm text-theme-primary">关联股票账户</span>
+          <div class="flex items-center gap-1">
+            <span class="text-sm text-theme-muted">{{ linkedTradeAccountName || '未关联' }}</span>
+            <ChevronRight class="w-4 h-4 text-theme-muted" />
+          </div>
+        </div>
+        <div @click="openEdit" class="px-4 py-3 flex items-center justify-between border-b border-gray-50 dark:border-slate-700/50 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition">
           <span class="text-sm text-theme-primary">名称</span>
           <div class="flex items-center gap-1">
             <span class="text-sm text-theme-muted">{{ account.name }}</span>
@@ -434,6 +492,13 @@ onMounted(loadData)
             <label class="text-xs text-theme-muted font-medium">类型</label>
             <select v-model="editType" class="accounting-field mt-1">
               <option v-for="t in accountTypes" :key="t" :value="t">{{ t }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-theme-muted font-medium">关联股票账户</label>
+            <select v-model="editTradeAccountId" class="accounting-field mt-1">
+              <option :value="null">不关联</option>
+              <option v-for="t in tradeAccounts" :key="t.id" :value="t.id">{{ t.name }} ({{ t.broker }})</option>
             </select>
           </div>
           <button type="submit" :disabled="saving" class="w-full py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50">

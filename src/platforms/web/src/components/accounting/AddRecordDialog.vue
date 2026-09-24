@@ -47,6 +47,8 @@ const remark = ref('')
 const payee = ref('')
 const selectedProject = ref('')
 const selectedTag = ref('')
+const isLargeExpense = ref(false)
+const excludeFromBudget = ref(false)
 const projects = ref<NamedItem[]>([])
 const tags = ref<NamedItem[]>([])
 const merchants = ref<NamedItem[]>([])
@@ -351,6 +353,8 @@ const handleSave = async () => {
             payee: payee.value.trim() || undefined,
             remark: buildRemarkWithDimensions(),
             record_time: buildRecordTime(),
+            is_large_expense: activeTab.value === '支出' ? isLargeExpense.value : false,
+            exclude_from_budget: activeTab.value === '支出' ? excludeFromBudget.value : false,
         })
         appendOperationLog(
             props.bookId,
@@ -615,6 +619,33 @@ const keyRows = [
           placeholder="点击添加备注"
           class="accounting-field mt-1"
         />
+      </div>
+
+      <!-- Large expense toggle -->
+      <div v-if="activeTab === '支出'" class="px-4 py-2.5 border-t border-theme-secondary space-y-2">
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="text-xs text-accounting-brand font-medium block">不计入预算</label>
+            <p class="text-[11px] text-theme-muted mt-0.5">不占用常规月度预算与专项大额池（如投资理财、特殊调整等）</p>
+          </div>
+          <input
+            v-model="excludeFromBudget"
+            type="checkbox"
+            class="w-5 h-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+          />
+        </div>
+
+        <div v-if="!excludeFromBudget" class="flex items-center justify-between pt-2 border-t border-theme-secondary/50">
+          <div>
+            <label class="text-xs text-accounting-brand font-medium block">年度大额专项支出</label>
+            <p class="text-[11px] text-theme-muted mt-0.5">计入年度大额专项池，不占用常规月度预算</p>
+          </div>
+          <input
+            v-model="isLargeExpense"
+            type="checkbox"
+            class="w-5 h-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+          />
+        </div>
       </div>
 
       <!-- Date Time Selector -->

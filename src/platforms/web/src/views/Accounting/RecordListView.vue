@@ -44,6 +44,8 @@ const endDate = ref('')
 const selectedType = ref('')
 const selectedCategory = ref('')
 const selectedAccount = ref('')
+const minAmount = ref<number | ''>('')
+const maxAmount = ref<number | ''>('')
 const filterLabel = ref('')
 const filtersExpanded = ref(false)
 
@@ -107,6 +109,10 @@ const hydrateFromRoute = () => {
     queryEndRaw.value = queryString('end')
     startDate.value = toDateInputValue(queryStartRaw.value)
     endDate.value = toDateInputValue(queryEndRaw.value)
+    const minRaw = queryString('min_amount')
+    minAmount.value = minRaw && !Number.isNaN(Number(minRaw)) ? Number(minRaw) : ''
+    const maxRaw = queryString('max_amount')
+    maxAmount.value = maxRaw && !Number.isNaN(Number(maxRaw)) ? Number(maxRaw) : ''
 }
 
 const hasActiveFilters = computed(() =>
@@ -116,7 +122,9 @@ const hasActiveFilters = computed(() =>
         || selectedAccount.value
         || startDate.value
         || endDate.value
-        || keyword.value,
+        || keyword.value
+        || minAmount.value !== ''
+        || maxAmount.value !== '',
     ),
 )
 
@@ -127,6 +135,9 @@ const filterSummary = computed(() => {
     if (selectedAccount.value) parts.push(selectedAccount.value)
     if (startDate.value || endDate.value) {
         parts.push(`${startDate.value || '…'}–${endDate.value || '…'}`)
+    }
+    if (minAmount.value !== '' || maxAmount.value !== '') {
+        parts.push(`¥${minAmount.value !== '' ? minAmount.value : 0}–¥${maxAmount.value !== '' ? maxAmount.value : '不限'}`)
     }
     if (keyword.value) parts.push(`“${keyword.value}”`)
     return parts.join(' · ')
@@ -168,6 +179,9 @@ const loadData = async (mode: 'replace' | 'append' = 'replace') => {
             selectedCategory.value || undefined,
             selectedAccount.value || undefined,
             offset,
+            undefined,
+            minAmount.value !== '' ? Number(minAmount.value) : undefined,
+            maxAmount.value !== '' ? Number(maxAmount.value) : undefined,
         )
         if (mode === 'append') {
             const seen = new Set(records.value.map(r => r.id))
@@ -201,6 +215,8 @@ const syncQueryToRoute = () => {
         label: filterLabel.value,
         start: queryStartRaw.value || startDate.value || undefined,
         end: queryEndRaw.value || endDate.value || undefined,
+        min_amount: minAmount.value !== '' ? Number(minAmount.value) : undefined,
+        max_amount: maxAmount.value !== '' ? Number(maxAmount.value) : undefined,
     })
     if (startDate.value) {
         const origDay = toDateInputValue(queryStartRaw.value)
@@ -245,6 +261,8 @@ const clearFilters = () => {
     selectedType.value = ''
     selectedCategory.value = ''
     selectedAccount.value = ''
+    minAmount.value = ''
+    maxAmount.value = ''
     keyword.value = ''
     searchInput.value = ''
     filterLabel.value = ''
@@ -389,6 +407,30 @@ onBeforeUnmount(() => {
             <label class="accounting-field-label">结束日期</label>
             <input v-model="endDate" type="date" class="accounting-field" @change="applyFilters">
           </div>
+          <div>
+            <label class="accounting-field-label">最低金额(¥)</label>
+            <input
+              v-model.number="minAmount"
+              type="number"
+              min="0"
+              step="any"
+              placeholder="0"
+              class="accounting-field"
+              @change="applyFilters"
+            >
+          </div>
+          <div>
+            <label class="accounting-field-label">最高金额(¥)</label>
+            <input
+              v-model.number="maxAmount"
+              type="number"
+              min="0"
+              step="any"
+              placeholder="不限"
+              class="accounting-field"
+              @change="applyFilters"
+            >
+          </div>
           <div class="span-2 flex gap-2 pt-1">
             <button
               type="button"
@@ -462,6 +504,7 @@ onBeforeUnmount(() => {
                   :account="rec.account"
                   :target-account="rec.target_account"
                   :record-time="rec.record_time"
+                  :is-large-expense="rec.is_large_expense"
                   :show-date="false"
                 />
               </li>

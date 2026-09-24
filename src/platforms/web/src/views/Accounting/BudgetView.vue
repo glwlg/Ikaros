@@ -2,8 +2,18 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAccountingStore } from '@/stores/accounting'
-import { getBudgets, createOrUpdateBudget, getRecordsSummary, getCategorySummary, getCategories, type Budget, type CategoryItem } from '@/api/accounting'
-import { Loader2, Plus, ArrowLeft, Target, Wallet, Pencil, ChevronRight } from 'lucide-vue-next'
+import {
+    getBudgets,
+    createOrUpdateBudget,
+    getCategorySummary,
+    getCategories,
+    getDualTrackSummary,
+    batchUpdateLargeExpense,
+    type Budget,
+    type CategoryItem,
+    type DualTrackSummary,
+} from '@/api/accounting'
+import { Loader2, Plus, ArrowLeft, Target, Wallet, Pencil, ChevronRight, Waves, Settings2, RefreshCw } from 'lucide-vue-next'
 import { formatAccountingMoney } from '@/utils/accountingFormat'
 import AccountingPageHeader from '@/components/accounting/AccountingPageHeader.vue'
 import AccountingLoadingState from '@/components/accounting/AccountingLoadingState.vue'
@@ -29,6 +39,18 @@ const selectedMonth = ref(now.getMonth() + 1)
 const budgets = ref<Budget[]>([])
 const amountSpent = ref(0)
 const globalBudgetAmount = ref(0) // total_amount when category is null
+const dualSummary = ref<DualTrackSummary | null>(null)
+const activeTrackTab = ref<'routine' | 'annual_pool'>('routine')
+
+const showPoolConfigDialog = ref(false)
+const poolAnnualLimit = ref<number | ''>('')
+const poolMonthlyProvision = ref<number | ''>('')
+const poolNameInput = ref('年度大额专项资金池')
+
+const showBatchOrganizeDialog = ref(false)
+const batchMinAmount = ref<number | ''>(1500)
+const batchCategories = ref('房租, 车险, 车位费, 大件家电, 商业保险')
+const batchSaving = ref(false)
 
 const showEditDialog = ref(false)
 const inputAmount = ref<number | ''>('')
@@ -51,14 +73,15 @@ const loadData = async () => {
     loading.value = true
     loadError.value = ''
     try {
-        const [sumRes, budgetRes, catSumRes, catsRes] = await Promise.all([
-            getRecordsSummary(store.currentBookId, selectedYear.value, selectedMonth.value),
-            getBudgets(store.currentBookId, monthLabel.value),
+        const [dualRes, budgetRes, catSumRes, catsRes] = await Promise.all([
+            getDualTrackSummary(store.currentBookId, selectedYear.value, selectedMonth.value),
+            getBudgets(store.currentBookId, monthLabel.value, undefined, 'monthly'),
             getCategorySummary(store.currentBookId, selectedYear.value, selectedMonth.value, '支出'),
             getCategories(store.currentBookId)
         ])
         
-        amountSpent.value = sumRes.data.expense || 0
+        dualSummary.value = dualRes.data
+        amountSpent.value = dualRes.data.routine_budget.spent_amount || 0
         budgets.value = budgetRes.data
         allCategories.value = catsRes.data.filter(c => c.type === '支出')
         
@@ -68,8 +91,11 @@ const loadData = async () => {
         }
         categorySpentMap.value = cMap
         
-        const globalBudget = budgets.value.find(b => !b.category_id)
-        globalBudgetAmount.value = globalBudget ? globalBudget.total_amount : 0
+        globalBudgetAmount.value = dualRes.data.routine_budget.budget_amount || 0
+        
+        poolAnnualLimit.value = dualRes.data.annual_pool.annual_budget_limit || ''
+        poolMonthlyProvision.value = dualRes.data.annual_pool.monthly_provision || ''
+        poolNameInput.value = dualRes.data.annual_pool.pool_name || '年度大额专项资金池'
         
     } catch (e) {
         loadError.value = accountingErrorMessage(e, '预算加载失败')
@@ -103,6 +129,8 @@ const handleSaveBudget = async () => {
     try {
         await createOrUpdateBudget(store.currentBookId, {
             month: monthLabel.value,
+            period_key: monthLabel.value,
+            budget_type: 'monthly',
             total_amount: Number(inputAmount.value),
             category_id: null
         })
@@ -122,6 +150,8 @@ const handleSaveCategoryBudget = async () => {
     try {
         await createOrUpdateBudget(store.currentBookId, {
             month: monthLabel.value,
+            period_key: monthLabel.value,
+            budget_type: 'monthly',
             total_amount: Number(inputCategoryAmount.value),
             category_id: Number(inputCategoryId.value)
         })
@@ -132,6 +162,55 @@ const handleSaveCategoryBudget = async () => {
         accountingToastError(accountingErrorMessage(e, '保存分类预算失败'))
     } finally {
         saving.value = false
+    }
+}
+
+const handleSavePoolConfig = async () => {
+    if (!store.currentBookId || poolAnnualLimit.value === '') return
+    saving.value = true
+    try {
+        const yearStr = String(selectedYear.value)
+        await createOrUpdateBudget(store.currentBookId, {
+            month: yearStr,
+            period_key: yearStr,
+            budget_type: 'annual_pool',
+            total_amount: Number(poolAnnualLimit.value),
+            monthly_provision: Number(poolMonthlyProvision.value || 0),
+            pool_name: poolNameInput.value.trim() || '年度大额专项资金池',
+            category_id: null,
+        })
+        showPoolConfigDialog.value = false
+        accountingToastSuccess('年度大额资金池配置已保存')
+        await loadData()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '保存年度资金池失败'))
+    } finally {
+        saving.value = false
+    }
+}
+
+const handleRunBatchOrganize = async () => {
+    if (!store.currentBookId) return
+    batchSaving.value = true
+    try {
+        const catNames = batchCategories.value
+            .split(/[,，\s]+/)
+            .map(s => s.trim())
+            .filter(Boolean)
+        const minAmt = batchMinAmount.value !== '' ? Number(batchMinAmount.value) : undefined
+        const res = await batchUpdateLargeExpense(store.currentBookId, {
+            is_large_expense: true,
+            category_names: catNames.length ? catNames : undefined,
+            min_amount: minAmt,
+            year: selectedYear.value,
+        })
+        accountingToastSuccess(res.data.message || '归集完成')
+        showBatchOrganizeDialog.value = false
+        await loadData()
+    } catch (e) {
+        accountingToastError(accountingErrorMessage(e, '归集失败'))
+    } finally {
+        batchSaving.value = false
     }
 }
 
@@ -179,6 +258,17 @@ const budgetPercentage = computed(() => {
     return Math.min(100, Math.round((amountSpent.value / globalBudgetAmount.value) * 100))
 })
 
+const poolSpentPercentage = computed(() => {
+    const limit = dualSummary.value?.annual_pool?.annual_budget_limit || 0
+    const spent = dualSummary.value?.annual_pool?.spent_total || 0
+    if (limit === 0) return 0
+    return Math.min(100, Math.round((spent / limit) * 100))
+})
+
+const openRecordDetail = (id: number) => {
+    router.push({ name: 'RecordDetail', params: { id } })
+}
+
 watch([selectedYear, selectedMonth], () => loadData())
 
 onMounted(async () => {
@@ -204,6 +294,28 @@ onMounted(async () => {
       </button>
     </div>
 
+    <!-- Dual Track Switch Tabs -->
+    <div class="mx-4 mb-5 flex p-1 rounded-2xl bg-gray-100 dark:bg-slate-800/80 border border-gray-200/60 dark:border-slate-700">
+      <button
+        type="button"
+        class="flex-1 py-2 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5"
+        :class="activeTrackTab === 'routine' ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-theme-secondary hover:text-theme-primary'"
+        @click="activeTrackTab = 'routine'"
+      >
+        <Target class="w-4 h-4" />
+        日常月度预算
+      </button>
+      <button
+        type="button"
+        class="flex-1 py-2 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5"
+        :class="activeTrackTab === 'annual_pool' ? 'bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 shadow-sm' : 'text-theme-secondary hover:text-theme-primary'"
+        @click="activeTrackTab = 'annual_pool'"
+      >
+        <Waves class="w-4 h-4" />
+        年度大额专项池
+      </button>
+    </div>
+
     <AccountingLoadingState v-if="loading" />
     <AccountingErrorState
       v-else-if="loadError"
@@ -213,11 +325,13 @@ onMounted(async () => {
     />
 
     <template v-else>
+      <!-- Track 1: Routine Monthly Budget -->
+      <div v-show="activeTrackTab === 'routine'">
       <!-- Overall Budget Card -->
       <div class="mx-4 bg-white dark:bg-slate-800 rounded-3xl p-6 shadow-sm border border-gray-100 dark:border-slate-700 relative overflow-hidden">
         <div class="flex justify-between items-start mb-6 z-10 relative">
           <div>
-            <p class="text-sm font-medium text-theme-secondary mb-1">当月剩余预算</p>
+            <p class="text-sm font-medium text-theme-secondary mb-1">常规当月剩余预算</p>
             <div class="text-3xl font-bold text-theme-primary flex items-baseline gap-1">
               {{ formatAccountingMoney(remainingBudget) }}
             </div>
@@ -238,8 +352,8 @@ onMounted(async () => {
           </div>
           
           <div class="flex justify-between text-xs font-medium text-theme-muted">
-            <p>已支出 {{ formatAccountingMoney(amountSpent) }}</p>
-            <p>总预算 {{ formatAccountingMoney(globalBudgetAmount) }}</p>
+            <p>常规已支出 {{ formatAccountingMoney(amountSpent) }}</p>
+            <p>常规总预算 {{ formatAccountingMoney(globalBudgetAmount) }}</p>
           </div>
         </div>
         
@@ -301,8 +415,139 @@ onMounted(async () => {
                 </div>
             </div>
             <div v-if="categoryBudgets.length === 0" class="text-center text-sm text-theme-muted py-8 bg-white/50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-gray-200 dark:border-slate-700">
-                暂未设置分类预算
+              暂未设置分类预算
             </div>
+        </div>
+      </div>
+      </div>
+
+      <!-- Track 2: Annual Large-Expense Pool -->
+      <div v-show="activeTrackTab === 'annual_pool'" class="space-y-6">
+        <!-- Pool Reservoir Card -->
+        <div class="mx-4 bg-gradient-to-br from-amber-500/10 via-amber-500/5 to-transparent dark:from-amber-950/40 dark:via-slate-800 dark:to-slate-800 rounded-3xl p-6 shadow-sm border border-amber-200/60 dark:border-amber-800/50 relative overflow-hidden">
+          <div class="flex justify-between items-start mb-4 z-10 relative">
+            <div>
+              <div class="flex items-center gap-2 mb-1">
+                <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">
+                  {{ dualSummary?.annual_pool?.pool_name || '年度大额专项资金池' }}
+                </span>
+                <span class="text-xs text-theme-muted">{{ selectedYear }}年度</span>
+              </div>
+              <p class="text-xs text-theme-secondary">专项池当前可用结余（蓄水结余）</p>
+              <div class="text-3xl font-bold flex items-baseline gap-1 mt-1" :class="(dualSummary?.annual_pool?.current_balance || 0) >= 0 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-500'">
+                {{ formatAccountingMoney(dualSummary?.annual_pool?.current_balance || 0) }}
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="flex items-center justify-center w-9 h-9 rounded-full bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-slate-600 shadow-sm transition hover:bg-amber-50 dark:hover:bg-slate-600"
+                title="批量历史归集"
+                @click="showBatchOrganizeDialog = true"
+              >
+                <RefreshCw class="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                class="flex items-center justify-center w-9 h-9 rounded-full bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-slate-600 shadow-sm transition hover:bg-amber-50 dark:hover:bg-slate-600"
+                title="设置年度资金池"
+                @click="showPoolConfigDialog = true"
+              >
+                <Settings2 class="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Grid Stats -->
+          <div class="grid grid-cols-3 gap-2 py-3 border-y border-amber-200/50 dark:border-slate-700/80 my-3 text-center">
+            <div>
+              <p class="text-[11px] text-theme-muted">年度总预算</p>
+              <p class="text-xs sm:text-sm font-semibold text-theme-primary mt-0.5 tabular-nums">
+                {{ formatAccountingMoney(dualSummary?.annual_pool?.annual_budget_limit || 0) }}
+              </p>
+            </div>
+            <div>
+              <p class="text-[11px] text-theme-muted">月度建议计提</p>
+              <p class="text-xs sm:text-sm font-semibold text-theme-primary mt-0.5 tabular-nums">
+                {{ formatAccountingMoney(dualSummary?.annual_pool?.monthly_provision || 0) }}
+              </p>
+            </div>
+            <div>
+              <p class="text-[11px] text-theme-muted">截至{{ selectedMonth }}月已蓄水</p>
+              <p class="text-xs sm:text-sm font-semibold text-amber-600 dark:text-amber-400 mt-0.5 tabular-nums">
+                {{ formatAccountingMoney(dualSummary?.annual_pool?.accumulated_provision || 0) }}
+              </p>
+            </div>
+          </div>
+
+          <!-- Reservoir Progress -->
+          <div class="space-y-1.5 z-10 relative">
+            <div class="flex justify-between text-xs font-medium text-theme-muted">
+              <p>当年大额已核销 {{ formatAccountingMoney(dualSummary?.annual_pool?.spent_total || 0) }}</p>
+              <p>年度消耗 {{ poolSpentPercentage }}%</p>
+            </div>
+            <div class="w-full h-3 bg-gray-100 dark:bg-slate-700 rounded-full overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all duration-500 bg-amber-500"
+                :class="poolSpentPercentage > 100 ? 'bg-rose-500' : ''"
+                :style="{ width: `${Math.min(100, poolSpentPercentage)}%` }"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pool Records List -->
+        <div class="mx-4">
+          <div class="flex justify-between items-center mb-3 px-2">
+            <div>
+              <h3 class="font-bold text-theme-primary text-sm">已核销大额支出流水</h3>
+              <p class="text-[11px] text-theme-muted">房租、车险、家电等低频刚性开销（共 {{ dualSummary?.annual_pool?.records?.length || 0 }} 笔）</p>
+            </div>
+            <button
+              type="button"
+              class="text-xs text-indigo-600 dark:text-indigo-400 font-medium hover:underline"
+              @click="router.push({ name: 'RecordList', query: { type: '支出', start: `${selectedYear}-01-01`, end: `${selectedYear}-12-31`, label: `${selectedYear}年度大额专项` } })"
+            >
+              查看全部流水
+            </button>
+          </div>
+
+          <div class="space-y-2">
+            <div
+              v-for="rec in (dualSummary?.annual_pool?.records || [])"
+              :key="rec.id"
+              class="bg-white dark:bg-slate-800 rounded-2xl p-3.5 shadow-sm border border-gray-100 dark:border-slate-700 flex items-center justify-between gap-3 active:bg-gray-50 dark:active:bg-slate-750 transition cursor-pointer"
+              @click="openRecordDetail(rec.id)"
+            >
+              <div class="min-w-0">
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <span class="text-[10px] px-1.5 py-0.2 rounded font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800/60">
+                    年度大额
+                  </span>
+                  <p class="font-medium text-theme-primary text-sm truncate">
+                    {{ rec.category || rec.payee || rec.remark || '未分类' }}
+                  </p>
+                </div>
+                <p class="text-xs text-theme-muted mt-0.5 truncate">
+                  {{ rec.record_time?.slice(0, 10) }} {{ rec.payee ? '· ' + rec.payee : '' }} {{ rec.remark ? '· ' + rec.remark : '' }}
+                </p>
+              </div>
+              <div class="text-right flex-shrink-0">
+                <p class="font-semibold text-sm tabular-nums text-rose-500">
+                  -{{ formatAccountingMoney(rec.amount) }}
+                </p>
+                <p v-if="rec.account" class="text-[10px] text-theme-muted mt-0.5">
+                  {{ rec.account }}
+                </p>
+              </div>
+            </div>
+            <div
+              v-if="!dualSummary?.annual_pool?.records?.length"
+              class="text-center text-sm text-theme-muted py-8 bg-white/50 dark:bg-slate-800/50 rounded-2xl border border-dashed border-gray-200 dark:border-slate-700"
+            >
+              当年暂无核销的大额专项支出
+            </div>
+          </div>
         </div>
       </div>
     </template>
@@ -348,6 +593,90 @@ onMounted(async () => {
           <button @click="handleSaveBudget" :disabled="saving || !inputAmount" type="button" class="flex-1 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50">
             <Loader2 v-if="saving" class="w-4 h-4 animate-spin mx-auto" />
             <span v-else>保存</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Set Annual Pool Config Dialog -->
+    <div v-if="showPoolConfigDialog" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" @click.self="showPoolConfigDialog = false">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[380px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom">
+        <h3 class="text-lg font-semibold text-theme-primary mb-1">设置 {{ selectedYear }} 年度专项资金池</h3>
+        <p class="text-xs text-theme-muted mb-4">规划年度低频大额开销（房租、保险、车位、耐用品）</p>
+        
+        <div class="space-y-3 mb-5">
+          <div>
+            <label class="block text-xs font-medium text-theme-secondary mb-1">专项池名称</label>
+            <input
+              v-model="poolNameInput"
+              type="text"
+              placeholder="例如：年度大额专项池"
+              class="accounting-field"
+            />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-theme-secondary mb-1">年度规划总额度(¥)</label>
+            <input
+              v-model.number="poolAnnualLimit"
+              type="number"
+              placeholder="例如：60000"
+              class="accounting-field"
+            />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-theme-secondary mb-1">月度建议储备计提(¥/月)</label>
+            <input
+              v-model.number="poolMonthlyProvision"
+              type="number"
+              placeholder="例如：5000"
+              class="accounting-field"
+            />
+            <p class="text-[11px] text-theme-muted mt-1">每月计划蓄水储备，用于平摊大额冲击</p>
+          </div>
+        </div>
+
+        <div class="flex gap-3">
+          <button @click="showPoolConfigDialog = false" type="button" class="flex-1 py-2.5 border border-gray-200 dark:border-slate-600 rounded-xl text-theme-secondary font-medium hover:bg-gray-50 dark:hover:bg-slate-700 transition">取消</button>
+          <button @click="handleSavePoolConfig" :disabled="saving || poolAnnualLimit === ''" type="button" class="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-xl transition disabled:opacity-50">
+            <Loader2 v-if="saving" class="w-4 h-4 animate-spin mx-auto" />
+            <span v-else>保存资金池</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Batch Organize Dialog -->
+    <div v-if="showBatchOrganizeDialog" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" @click.self="showBatchOrganizeDialog = false">
+      <div class="bg-theme-elevated rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 w-full sm:w-[380px] max-h-[90dvh] overflow-y-auto accounting-scroll shadow-xl safe-bottom">
+        <h3 class="text-lg font-semibold text-theme-primary mb-1">一键历史大额归集</h3>
+        <p class="text-xs text-theme-muted mb-4">按分类或单笔金额筛选 {{ selectedYear }} 年历史支出，一键归集至年度大额专项池</p>
+        
+        <div class="space-y-3 mb-5">
+          <div>
+            <label class="block text-xs font-medium text-theme-secondary mb-1">匹配分类（逗号分隔）</label>
+            <input
+              v-model="batchCategories"
+              type="text"
+              placeholder="房租, 车险, 车位费, 大件家电"
+              class="accounting-field"
+            />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-theme-secondary mb-1">或者单笔金额达到或超过(¥)</label>
+            <input
+              v-model.number="batchMinAmount"
+              type="number"
+              placeholder="例如：1500"
+              class="accounting-field"
+            />
+          </div>
+        </div>
+
+        <div class="flex gap-3">
+          <button @click="showBatchOrganizeDialog = false" type="button" class="flex-1 py-2.5 border border-gray-200 dark:border-slate-600 rounded-xl text-theme-secondary font-medium hover:bg-gray-50 dark:hover:bg-slate-700 transition">取消</button>
+          <button @click="handleRunBatchOrganize" :disabled="batchSaving" type="button" class="flex-1 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-medium rounded-xl transition disabled:opacity-50">
+            <Loader2 v-if="batchSaving" class="w-4 h-4 animate-spin mx-auto" />
+            <span v-else>立即归集</span>
           </button>
         </div>
       </div>

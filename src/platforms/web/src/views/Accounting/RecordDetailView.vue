@@ -57,6 +57,8 @@ const form = ref({
     payee: '',
     remark: '',
     record_time: '',
+    is_large_expense: false,
+    exclude_from_budget: false,
 })
 
 const tabs = ['支出', '收入', '转账'] as const
@@ -115,6 +117,8 @@ const loadData = async () => {
             payee: record.payee || '',
             remark: record.remark || '',
             record_time: formatRecordTimeForInput(record.record_time),
+            is_large_expense: Boolean(record.is_large_expense),
+            exclude_from_budget: Boolean(record.exclude_from_budget),
         }
     } catch (e) {
         loadFailed.value = true
@@ -147,6 +151,8 @@ const handleSave = async () => {
             payee: form.value.payee?.trim() || '',
             remark: form.value.remark?.trim() || '',
             record_time: recordTime || undefined,
+            is_large_expense: form.value.type === '支出' ? form.value.is_large_expense : false,
+            exclude_from_budget: form.value.type === '支出' ? form.value.exclude_from_budget : false,
         })
         appendOperationLog(
             store.currentBookId,
@@ -329,6 +335,32 @@ onMounted(() => {
               type="datetime-local"
               class="accounting-field"
             />
+          </div>
+
+          <div v-if="form.type === '支出'" class="pt-2 border-t border-slate-100 dark:border-slate-700 space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 dark:text-slate-200">不计入预算</label>
+                <p class="text-[11px] text-slate-400">不占用常规月度预算与专项大额池（如股票对齐、理财投资等）</p>
+              </div>
+              <input
+                v-model="form.exclude_from_budget"
+                type="checkbox"
+                class="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+              />
+            </div>
+
+            <div v-if="!form.exclude_from_budget" class="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 dark:text-slate-200">年度大额专项支出</label>
+                <p class="text-[11px] text-slate-400">计入年度大额专项池，不占用月度常规预算</p>
+              </div>
+              <input
+                v-model="form.is_large_expense"
+                type="checkbox"
+                class="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+              />
+            </div>
           </div>
         </div>
 
