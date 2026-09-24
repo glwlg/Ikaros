@@ -38,7 +38,7 @@ async def execute(ctx, params: dict, runtime=None) -> dict:
         cwd=str(params.get("cwd") or ""),
         instruction=str(params.get("instruction") or user_request(ctx, params)),
         user_reply=str(params.get("user_reply") or ""),
-        backend=str(params.get("backend") or "codex"),
+        backend=str(params.get("backend") or "hermes"),
         transport=str(params.get("transport") or ""),
         timeout_sec=int(params.get("timeout_sec", 2400) or 2400),
         source=str(params.get("source") or ""),
@@ -55,7 +55,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cwd", default="", help="Direct workspace path override")
     parser.add_argument("--instruction", default="", help="Coding instruction")
     parser.add_argument("--user-reply", default="", help="User answer for continue")
-    parser.add_argument("--backend", default="codex", help="Coding backend")
+    parser.add_argument("--backend", default="hermes", help="Coding backend")
     parser.add_argument("--transport", default="", help="Execution transport: cli | acp")
     parser.add_argument("--source", default="", help="Optional session source tag")
     parser.add_argument("--skill-name", default="", help="Optional skill name tag")
@@ -75,7 +75,7 @@ def _params_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "cwd": str(args.cwd or "").strip(),
             "instruction": str(args.instruction or "").strip(),
             "user_reply": str(args.user_reply or "").strip(),
-            "backend": str(args.backend or "codex").strip(),
+            "backend": str(args.backend or "hermes").strip(),
             "transport": str(args.transport or "").strip(),
             "source": str(args.source or "").strip(),
             "skill_name": str(args.skill_name or "").strip(),

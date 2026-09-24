@@ -215,7 +215,7 @@ class CodingSessionService:
     def _should_resume_via_stateful_transport(session: Dict[str, Any]) -> bool:
         return (
             str(session.get("transport") or "").strip().lower()
-            in {"acp", "app-server"}
+            == "acp"
             and bool(str(session.get("transport_session_id") or "").strip())
         )
 
@@ -260,7 +260,7 @@ class CodingSessionService:
             session = {
                 "session_id": session_id,
                 "workspace_id": str(workspace.get("workspace_id") or "").strip(),
-                "backend": str(backend or "codex").strip() or "codex",
+                "backend": str(backend or "hermes").strip() or "hermes",
                 "instruction": instruction,
                 "created_at": _now_iso(),
                 "history": [],
@@ -280,10 +280,10 @@ class CodingSessionService:
             {
                 "workspace_id": str(workspace.get("workspace_id") or "").strip(),
                 "repo_root": repo_root,
-                "backend": str(result.get("backend") or backend or "codex").strip()
-                or "codex",
-                "transport": str(result.get("transport") or transport or "cli").strip()
-                or "cli",
+                "backend": str(result.get("backend") or backend or "hermes").strip()
+                or "hermes",
+                "transport": str(result.get("transport") or transport or "acp").strip()
+                or "acp",
                 "transport_session_id": str(
                     result.get("transport_session_id") or transport_session_id or ""
                 ).strip(),
@@ -307,7 +307,7 @@ class CodingSessionService:
         workspace_id: str = "",
         cwd: str = "",
         instruction: str,
-        backend: str = "codex",
+        backend: str = "hermes",
         transport: str = "",
         timeout_sec: int = 2400,
         source: str = "",
@@ -334,8 +334,8 @@ class CodingSessionService:
             "session_id": session_id,
             "workspace_id": str(workspace.get("workspace_id") or "").strip(),
             "repo_root": str(workspace.get("repo_root") or "").strip(),
-            "backend": str(backend or "codex").strip() or "codex",
-            "transport": str(transport or "cli").strip() or "cli",
+            "backend": str(backend or "hermes").strip() or "hermes",
+            "transport": str(transport or "acp").strip() or "acp",
             "transport_session_id": "",
             "source": str(source or "").strip(),
             "skill_name": str(skill_name or "").strip(),
@@ -354,7 +354,7 @@ class CodingSessionService:
             session_id=session_id,
             workspace=workspace,
             instruction=safe_instruction,
-            backend=str(backend or "codex").strip() or "codex",
+            backend=str(backend or "hermes").strip() or "hermes",
             transport=str(transport or "").strip(),
             timeout_sec=timeout_sec,
             source="coding_session_start",
@@ -425,7 +425,7 @@ class CodingSessionService:
             session_id=session_id,
             workspace=workspace,
             instruction=instruction,
-            backend=str(session.get("backend") or "codex").strip() or "codex",
+            backend=str(session.get("backend") or "hermes").strip() or "hermes",
             transport=str(session.get("transport") or "").strip(),
             timeout_sec=timeout_sec,
             source="coding_session_continue",
@@ -516,7 +516,7 @@ class CodingSessionService:
         cwd: str = "",
         instruction: str = "",
         user_reply: str = "",
-        backend: str = "codex",
+        backend: str = "hermes",
         transport: str = "",
         timeout_sec: int = 2400,
         source: str = "",

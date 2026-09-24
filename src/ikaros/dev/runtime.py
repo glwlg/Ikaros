@@ -8,9 +8,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+import yaml
+
 from core.state_paths import single_user_root
 from ikaros.dev.acp_client import run_acp_backend
-from ikaros.dev.codex_app_server_client import run_codex_app_server_backend
 
 
 MAX_OUTPUT_CHARS = 12000
@@ -83,25 +84,15 @@ def _normalize_backend(raw: Any) -> str:
     token = str(raw or "").strip().lower()
     if token in {"gemini", "gemini_cli", "gemini-cli"}:
         return "gemini-cli"
-    if token in {"opencode", "open-code"}:
-        return "opencode"
-    if token in {"codex", "openai-codex", ""}:
-        return "codex"
-    return "codex"
+    if token in {"hermes", "hermes-agent", ""}:
+        return "hermes"
+    raise ValueError(f"unsupported coding backend: {token}")
 
 
 def _normalize_transport(raw: Any) -> str:
     token = str(raw or "").strip().lower()
     if token in {"acp", "agent-client-protocol"}:
         return "acp"
-    if token in {
-        "app-server",
-        "app_server",
-        "appserver",
-        "codex-app-server",
-        "codex_app_server",
-    }:
-        return "app-server"
     return "cli"
 
 
@@ -109,9 +100,7 @@ def _backend_env_key(backend: str) -> str:
     safe_backend = _normalize_backend(backend)
     if safe_backend == "gemini-cli":
         return "GEMINI"
-    if safe_backend == "opencode":
-        return "OPENCODE"
-    return "CODEX"
+    return "HERMES"
 
 
 def _default_transport_for_backend(backend: str) -> str:
@@ -122,9 +111,7 @@ def _default_transport_for_backend(backend: str) -> str:
     default = str(os.getenv("CODING_BACKEND_TRANSPORT_DEFAULT", "") or "").strip()
     if default:
         return _normalize_transport(default)
-    if _normalize_backend(backend) == "codex":
-        return "app-server"
-    if _normalize_backend(backend) in {"gemini-cli", "opencode"}:
+    if _normalize_backend(backend) in {"hermes", "gemini-cli"}:
         return "acp"
     return "cli"
 
@@ -145,18 +132,7 @@ def _build_coding_command(backend: str, instruction: str) -> tuple[str, List[str
             or ""
         ).strip()
     else:
-        cmd = str(os.getenv("CODING_BACKEND_CODEX_COMMAND", "codex") or "").strip()
-        template = str(
-            os.getenv(
-                "CODING_BACKEND_CODEX_ARGS_TEMPLATE",
-                (
-                    "exec --model gpt-5.3-codex "
-                    '-c model_reasoning_effort="xhigh" '
-                    "--sandbox workspace-write {instruction}"
-                ),
-            )
-            or ""
-        ).strip()
+        raise ValueError(f"CLI transport is not supported for backend: {safe_backend}")
 
     rendered = template.format(instruction=shlex.quote(safe_instruction))
     args = shlex.split(rendered)
@@ -170,21 +146,16 @@ def _build_acp_command(
 ) -> tuple[str, List[str], Dict[str, str]]:
     safe_backend = _normalize_backend(backend)
     safe_cwd = str(cwd or "").strip()
-    if safe_backend == "opencode":
-        cmd = str(os.getenv("CODING_BACKEND_OPENCODE_ACP_COMMAND", "opencode") or "").strip()
+    if safe_backend == "hermes":
+        cmd = str(os.getenv("CODING_BACKEND_HERMES_ACP_COMMAND", "hermes") or "").strip()
         template = str(
             os.getenv(
-                "CODING_BACKEND_OPENCODE_ACP_ARGS_TEMPLATE",
-                "acp --cwd {cwd}",
+                "CODING_BACKEND_HERMES_ACP_ARGS_TEMPLATE",
+                "acp",
             )
             or ""
         ).strip()
-        env_overrides = {
-            "OPENCODE_CLIENT": "ikaros",
-            "OPENCODE_DISABLE_MODELS_FETCH": str(
-                os.getenv("OPENCODE_DISABLE_MODELS_FETCH", "1") or "1"
-            ).strip(),
-        }
+        env_overrides = {}
     elif safe_backend == "gemini-cli":
         cmd = str(
             os.getenv(
@@ -209,145 +180,44 @@ def _build_acp_command(
     return cmd, args, env_overrides
 
 
-def _build_codex_app_server_command(*, cwd: str) -> tuple[str, List[str]]:
-    safe_cwd = str(cwd or "").strip()
-    cmd = str(
-        os.getenv(
-            "CODING_BACKEND_CODEX_APP_SERVER_COMMAND",
-            os.getenv("CODING_BACKEND_CODEX_COMMAND", "codex"),
-        )
-        or ""
+def _prepare_hermes_coding_home() -> Path:
+    source = Path(os.getenv("HERMES_HOME") or Path.home() / ".hermes").resolve()
+    target = (single_user_root() / "coding" / "hermes").resolve()
+    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target.chmod(0o700)
+
+    for child in source.iterdir():
+        if child.name == "config.yaml":
+            continue
+        link = target / child.name
+        if not link.exists() and not link.is_symlink():
+            link.symlink_to(child, target_is_directory=child.is_dir())
+
+    config_path = source / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    model = config.get("model")
+    if not isinstance(model, dict):
+        model = {}
+        config["model"] = model
+    model["default"] = str(
+        os.getenv("CODING_BACKEND_HERMES_MODEL", "gpt-5.6-sol") or "gpt-5.6-sol"
     ).strip()
-    template = str(
-        os.getenv(
-            "CODING_BACKEND_CODEX_APP_SERVER_ARGS_TEMPLATE",
-            "app-server --listen stdio://",
-        )
-        or ""
-    ).strip()
-    rendered = template.format(cwd=shlex.quote(safe_cwd))
-    args = shlex.split(rendered)
-    return cmd, args
-
-
-def _codex_app_server_model() -> str:
-    return str(
-        os.getenv(
-            "CODING_BACKEND_CODEX_APP_SERVER_MODEL",
-            os.getenv("CODING_BACKEND_CODEX_MODEL", "gpt-5.3-codex"),
-        )
-        or ""
-    ).strip()
-
-
-def _codex_app_server_effort() -> str:
-    return str(
-        os.getenv(
-            "CODING_BACKEND_CODEX_APP_SERVER_EFFORT",
-            os.getenv("CODING_BACKEND_CODEX_REASONING_EFFORT", "xhigh"),
-        )
-        or ""
+    agent = config.get("agent")
+    if not isinstance(agent, dict):
+        agent = {}
+        config["agent"] = agent
+    agent["reasoning_effort"] = str(
+        os.getenv("CODING_BACKEND_HERMES_REASONING_EFFORT", "max") or "max"
     ).strip()
 
-
-def _codex_app_server_approval_policy() -> str:
-    return str(
-        os.getenv("CODING_BACKEND_CODEX_APP_SERVER_APPROVAL_POLICY", "never") or ""
-    ).strip()
-
-
-def _codex_app_server_sandbox() -> str:
-    return str(
-        os.getenv("CODING_BACKEND_CODEX_APP_SERVER_SANDBOX", "workspace-write") or ""
-    ).strip()
-
-
-def _codex_app_server_approval_decision() -> str:
-    return str(
-        os.getenv("CODING_BACKEND_CODEX_APP_SERVER_APPROVAL_DECISION", "accept") or ""
-    ).strip()
-
-
-def _is_codex_trust_error(text: str) -> bool:
-    payload = str(text or "").lower()
-    return (
-        "not inside a trusted directory" in payload
-        and "--skip-git-repo-check" in payload
+    target_config = target / "config.yaml"
+    temp_config = target / "config.yaml.tmp"
+    temp_config.write_text(
+        yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
-
-
-def _inject_skip_git_repo_check(args: List[str]) -> List[str]:
-    if "--skip-git-repo-check" in args:
-        return list(args)
-    patched = list(args)
-    if "exec" in patched:
-        idx = patched.index("exec")
-        patched.insert(idx + 1, "--skip-git-repo-check")
-        return patched
-    patched.append("--skip-git-repo-check")
-    return patched
-
-
-def _codex_output_indicates_failure(result: Dict[str, Any]) -> bool:
-    if not isinstance(result, dict) or not bool(result.get("ok")):
-        return False
-    combined = "\n".join(
-        [
-            str(result.get("summary") or ""),
-            str(result.get("stderr") or ""),
-            str(result.get("stdout") or ""),
-        ]
-    ).lower()
-    failure_markers = (
-        "permission denied",
-        "read-only",
-        "mounted read-only",
-        "operation not permitted",
-        "couldn't create",
-        "could not create",
-        "cannot create",
-        "failed to create",
-        "failed to write",
-    )
-    return any(marker in combined for marker in failure_markers)
-
-
-def _force_command_failed(result: Dict[str, Any]) -> Dict[str, Any]:
-    payload = dict(result or {})
-    summary = str(
-        payload.get("summary") or payload.get("stderr") or payload.get("stdout") or ""
-    ).strip()
-    if not summary:
-        summary = "codex reported failure despite zero exit code"
-    payload["ok"] = False
-    payload["error_code"] = "command_failed"
-    payload["message"] = summary
-    payload["summary"] = summary
-    return payload
-
-
-def _codex_app_server_unavailable(result: Dict[str, Any]) -> bool:
-    if not isinstance(result, dict):
-        return False
-    if str(result.get("error_code") or "").strip() == "command_not_found":
-        return True
-    combined = "\n".join(
-        [
-            str(result.get("message") or ""),
-            str(result.get("summary") or ""),
-            str(result.get("stderr") or ""),
-            str(result.get("stdout") or ""),
-        ]
-    ).lower()
-    markers = (
-        "unrecognized subcommand",
-        "invalid subcommand",
-        "unexpected argument 'app-server'",
-        "unexpected argument \"app-server\"",
-        "unknown command app-server",
-        "unknown subcommand app-server",
-    )
-    return any(marker in combined for marker in markers)
+    temp_config.chmod(0o600)
+    temp_config.replace(target_config)
+    return target
 
 
 def _command_to_text(command: List[str]) -> str:
@@ -579,12 +449,28 @@ async def run_coding_backend(
             "message": "instruction is required",
         }
 
-    configured_backend = backend or os.getenv("CODING_BACKEND_DEFAULT") or "codex"
-    backend_name = _normalize_backend(configured_backend)
-    explicit_transport = bool(str(transport or "").strip())
+    configured_backend = backend or os.getenv("CODING_BACKEND_DEFAULT") or "hermes"
+    try:
+        backend_name = _normalize_backend(configured_backend)
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error_code": "unsupported_backend",
+            "message": str(exc),
+            "source": str(source or "").strip(),
+        }
     transport_name = _normalize_transport(
         transport or _default_transport_for_backend(backend_name)
     )
+    if backend_name == "hermes" and transport_name != "acp":
+        return {
+            "ok": False,
+            "error_code": "unsupported_transport",
+            "message": "Hermes coding backend requires ACP transport",
+            "backend": backend_name,
+            "transport": transport_name,
+            "source": str(source or "").strip(),
+        }
     if transport_name == "acp":
         try:
             cmd, args, env_overrides = _build_acp_command(
@@ -602,6 +488,8 @@ async def run_coding_backend(
             }
         env = _subprocess_env()
         env.update(env_overrides)
+        if backend_name == "hermes":
+            env["HERMES_HOME"] = str(_prepare_hermes_coding_home())
         result = await run_acp_backend(
             command=[cmd, *args],
             cwd=str(cwd or "").strip(),
@@ -610,57 +498,37 @@ async def run_coding_backend(
             existing_session_id=str(transport_session_id or "").strip(),
             log_path=log_path,
             env=env,
+            model=(
+                str(os.getenv("CODING_BACKEND_HERMES_MODEL", "gpt-5.6-sol") or "")
+                .strip()
+                if backend_name == "hermes"
+                else ""
+            ),
+            reasoning_effort=(
+                str(
+                    os.getenv("CODING_BACKEND_HERMES_REASONING_EFFORT", "max")
+                    or ""
+                ).strip()
+                if backend_name == "hermes"
+                else ""
+            ),
         )
         result["backend"] = backend_name
         result["transport"] = "acp"
         result["source"] = str(source or "").strip()
         return result
 
-    app_server_error: Dict[str, Any] | None = None
-    if transport_name == "app-server":
-        if backend_name != "codex":
-            return {
-                "ok": False,
-                "error_code": "unsupported_transport",
-                "message": (
-                    f"app-server transport is not supported for backend: {backend_name}"
-                ),
-                "backend": backend_name,
-                "transport": "app-server",
-                "source": str(source or "").strip(),
-            }
-        cmd, args = _build_codex_app_server_command(cwd=str(cwd or "").strip())
-        result = await run_codex_app_server_backend(
-            command=[cmd, *args],
-            cwd=str(cwd or "").strip(),
-            instruction=safe_instruction,
-            timeout_sec=max(60, int(timeout_sec or 1800)),
-            existing_thread_id=str(transport_session_id or "").strip(),
-            log_path=log_path,
-            env=_subprocess_env(),
-            model=_codex_app_server_model(),
-            effort=_codex_app_server_effort(),
-            approval_policy=_codex_app_server_approval_policy(),
-            sandbox=_codex_app_server_sandbox(),
-            approval_decision=_codex_app_server_approval_decision(),
-        )
-        result["backend"] = backend_name
-        result["transport"] = "app-server"
-        result["source"] = str(source or "").strip()
-        fallback_enabled = _as_bool(
-            os.getenv("CODING_BACKEND_CODEX_APP_SERVER_FALLBACK_TO_CLI", "true"),
-            default=True,
-        )
-        if (
-            explicit_transport
-            or bool(result.get("ok"))
-            or not fallback_enabled
-            or not _codex_app_server_unavailable(result)
-        ):
-            return result
-        app_server_error = dict(result)
-
-    cmd, args = _build_coding_command(backend_name, safe_instruction)
+    try:
+        cmd, args = _build_coding_command(backend_name, safe_instruction)
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error_code": "unsupported_transport",
+            "message": str(exc),
+            "backend": backend_name,
+            "transport": transport_name,
+            "source": str(source or "").strip(),
+        }
     first = await run_exec(
         [cmd, *args],
         cwd=str(cwd or "").strip(),
@@ -670,43 +538,4 @@ async def run_coding_backend(
     first["backend"] = backend_name
     first["transport"] = "cli"
     first["source"] = str(source or "").strip()
-    if app_server_error is not None:
-        first["fallback_from_transport"] = "app-server"
-        first["app_server_error"] = app_server_error
-    if backend_name == "codex" and _codex_output_indicates_failure(first):
-        first = _force_command_failed(first)
-
-    auto_skip = _as_bool(
-        os.getenv("CODING_BACKEND_CODEX_AUTO_SKIP_GIT_REPO_CHECK", "true"),
-        default=True,
-    )
-    if backend_name != "codex" or not auto_skip or bool(first.get("ok")):
-        return first
-
-    combined = "\n".join(
-        [
-            str(first.get("summary") or ""),
-            str(first.get("stderr") or ""),
-            str(first.get("stdout") or ""),
-        ]
-    )
-    if not _is_codex_trust_error(combined):
-        return first
-
-    retry_args = _inject_skip_git_repo_check(args)
-    second = await run_exec(
-        [cmd, *retry_args],
-        cwd=str(cwd or "").strip(),
-        timeout_sec=max(60, int(timeout_sec or 1800)),
-        log_path=log_path,
-    )
-    second["backend"] = backend_name
-    second["transport"] = "cli"
-    second["source"] = str(source or "").strip()
-    second["retry_hint"] = "skip_git_repo_check"
-    if app_server_error is not None:
-        second["fallback_from_transport"] = "app-server"
-        second["app_server_error"] = app_server_error
-    if backend_name == "codex" and _codex_output_indicates_failure(second):
-        second = _force_command_failed(second)
-    return second
+    return first

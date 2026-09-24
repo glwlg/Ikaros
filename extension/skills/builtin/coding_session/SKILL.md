@@ -43,10 +43,10 @@ tool_exports:
         description: User answer used when action=continue
       backend:
         type: string
-        description: Coding backend, for example codex, gemini-cli, or opencode; defaults to codex
+        description: Coding backend; defaults to hermes. gemini-cli remains available for compatibility.
       transport:
         type: string
-        description: Optional execution transport, for example cli or acp
+        description: Optional execution transport; Hermes uses ACP
       timeout_sec:
         type: integer
         description: Timeout for each coding round
@@ -69,6 +69,8 @@ entrypoint: scripts/execute.py
 # Coding Session
 
 Ikaros 用这个技能直接驱动编码回合。它支持在用户确认后继续同一逻辑会话，而不是把实现过程硬编码成固定流水线。
+
+默认通过 `hermes acp` 执行，使用 `gpt-5.6-sol` 和 `max` reasoning effort。Codex 与 OpenCode 后端不再支持。
 
 ## CLI
 

@@ -19,8 +19,12 @@ from core.config import (
 )
 from utils import create_progress_bar
 
-from .browser_login_service import detect_login_platform
-from .browser_session_store import materialized_cookie_file
+from .browser_login_service import create_douyin_download_session, detect_login_platform
+from .browser_session_store import (
+    load_browser_cookies,
+    materialized_browser_cookies,
+    materialized_cookie_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,73 @@ def _auth_platform_from_error(url: str, stderr_text: str) -> str | None:
     return platform if any(marker in lowered for marker in markers) else None
 
 
+async def _run_yt_dlp(
+    *,
+    url: str,
+    user_id: int | str,
+    platform: str | None,
+    output_template: str,
+    progress_message: TelegramMessage,
+    audio_only: bool,
+    cookie_file: str | None = None,
+    user_agent: str = "",
+) -> tuple[int, str]:
+    session_args = []
+    if cookie_file:
+        session_args.extend(("--cookies", cookie_file))
+    if user_agent:
+        session_args.extend(("--user-agent", user_agent))
+
+    command = [
+        "yt-dlp",
+        "--progress",
+        "--newline",
+        "--no-playlist",
+        "--js-runtimes",
+        "node",
+    ] + session_args
+    if audio_only:
+        command.extend(
+            (
+                "-x",
+                "--audio-format",
+                "mp3",
+                "--audio-quality",
+                "0",
+                "-o",
+                output_template,
+                url,
+            )
+        )
+    else:
+        command.extend(
+            (
+                "-f",
+                "bestvideo+bestaudio/best",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                output_template,
+                url,
+            )
+        )
+
+    logger.info("[%s] Running yt-dlp for %s", user_id, platform or "URL")
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await _update_download_progress(proc, progress_message)
+    await proc.wait()
+
+    stderr_output = await proc.stderr.read()
+    stderr_text = stderr_output.decode("utf-8", errors="ignore").strip()
+    if stderr_text:
+        logger.warning("[%s] yt-dlp reported an error", user_id)
+    return proc.returncode, stderr_text
+
+
 async def download_video(
     url: str,
     user_id: int | str,
@@ -139,93 +210,105 @@ async def download_video(
         )
 
     platform = detect_login_platform(url)
-    with materialized_cookie_file(user_id, platform) as session_cookie_file:
-        cookie_file = session_cookie_file
-        if not cookie_file and os.path.exists(COOKIES_FILE):
-            cookie_file = COOKIES_FILE
-        cookies_arg = ["--cookies", cookie_file] if cookie_file else []
-        if cookie_file:
-            logger.info("[%s] Using cookies for %s", user_id, platform or "download")
+    returncode: int | None = None
+    stderr_text = ""
 
-        if audio_only:
-            command = [
-                "yt-dlp",
-                "--progress",
-                "--newline",
-                "--no-playlist",
-                "--js-runtimes",
-                "node",
-            ] + cookies_arg + [
-                "-x",  # 提取音频
-                "--audio-format",
-                "mp3",
-                "--audio-quality",
-                "0",  # 最佳质量
-                "-o",
-                output_template,
-                url,
-            ]
-        else:
-            command = [
-                "yt-dlp",
-                "--progress",
-                "--newline",
-                "--no-playlist",
-                "--js-runtimes",
-                "node",
-            ] + cookies_arg + [
-                "-f",
-                "bestvideo+bestaudio/best",
-                "--merge-output-format",
-                "mp4",
-                "-o",
-                output_template,
-                url,
-            ]
-
-        logger.info("[%s] Running yt-dlp for %s", user_id, platform or "URL")
-        proc = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        await _update_download_progress(proc, progress_message)
-        await proc.wait()
-
-        stderr_output = await proc.stderr.read()
-        stderr_text = stderr_output.decode("utf-8", errors="ignore").strip()
-        if stderr_text:
-            logger.warning("[%s] yt-dlp reported an error", user_id)
-
-        if proc.returncode != 0:
-            logger.error(
-                "[%s] yt-dlp failed for %s with return code %s",
-                user_id,
-                platform or "URL",
-                proc.returncode,
-            )
-            auth_platform = _auth_platform_from_error(url, stderr_text)
-            error_line = stderr_text.splitlines()[-1] if stderr_text else "未知下载错误"
-            if auth_platform == "douyin":
-                error_line = DOUYIN_COOKIE_ERROR
+    if platform == "douyin":
+        initial_cookies = None
+        for _attempt in range(2):
+            authenticated = initial_cookies is not None
             try:
-                await _safe_edit_message(progress_message, f"❌ 下载失败\n{error_line}")
-            except Exception:
-                pass
-            return DownloadResult(
-                success=False,
-                error_message=error_line,
-                auth_required=bool(auth_platform),
-                auth_platform=auth_platform,
+                browser_session = await create_douyin_download_session(
+                    url,
+                    initial_cookies=initial_cookies,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Failed to create %s Douyin session: %s",
+                    user_id,
+                    "authenticated" if authenticated else "anonymous",
+                    type(exc).__name__,
+                )
+                break
+
+            logger.info(
+                "[%s] Using a fresh %s Douyin session",
+                user_id,
+                "authenticated" if authenticated else "anonymous",
+            )
+            with materialized_browser_cookies(browser_session.cookies) as cookie_file:
+                returncode, stderr_text = await _run_yt_dlp(
+                    url=url,
+                    user_id=user_id,
+                    platform=platform,
+                    output_template=output_template,
+                    progress_message=progress_message,
+                    audio_only=audio_only,
+                    cookie_file=cookie_file,
+                    user_agent=browser_session.user_agent,
+                )
+
+            if returncode == 0:
+                return await _handle_downloaded_file(
+                    expected_path,
+                    user_id,
+                    progress_message,
+                    delivery_platform=delivery_platform,
+                )
+            if authenticated or not _auth_platform_from_error(url, stderr_text):
+                break
+
+            initial_cookies = load_browser_cookies(user_id, platform)
+            if not initial_cookies:
+                break
+
+    if returncode is None:
+        with materialized_cookie_file(user_id, platform) as session_cookie_file:
+            cookie_file = session_cookie_file
+            if not cookie_file and os.path.exists(COOKIES_FILE):
+                cookie_file = COOKIES_FILE
+            if cookie_file:
+                logger.info(
+                    "[%s] Using cookies for %s", user_id, platform or "download"
+                )
+            returncode, stderr_text = await _run_yt_dlp(
+                url=url,
+                user_id=user_id,
+                platform=platform,
+                output_template=output_template,
+                progress_message=progress_message,
+                audio_only=audio_only,
+                cookie_file=cookie_file,
             )
 
-        return await _handle_downloaded_file(
-            expected_path,
+    if returncode != 0:
+        logger.error(
+            "[%s] yt-dlp failed for %s with return code %s",
             user_id,
-            progress_message,
-            delivery_platform=delivery_platform,
+            platform or "URL",
+            returncode,
         )
+        auth_platform = _auth_platform_from_error(url, stderr_text)
+        error_line = stderr_text.splitlines()[-1] if stderr_text else "未知下载错误"
+        if auth_platform == "douyin":
+            error_line = DOUYIN_COOKIE_ERROR
+        try:
+            await _safe_edit_message(progress_message, f"❌ 下载失败\n{error_line}")
+        except Exception:
+            pass
+        return DownloadResult(
+            success=False,
+            error_message=error_line,
+            auth_required=bool(auth_platform),
+            auth_platform=auth_platform,
+        )
+
+    return await _handle_downloaded_file(
+        expected_path,
+        user_id,
+        progress_message,
+        delivery_platform=delivery_platform,
+    )
 
 
 async def _update_download_progress(proc, progress_message: TelegramMessage) -> None:

@@ -31,6 +31,9 @@ input_schema:
       type: string
     record_time:
       type: string
+    is_large_expense:
+      type: boolean
+      description: 是否属于年度大额专项支出（如房租、车险、大件家电、车位费等低频大额，不占用日常月度预算）
   required: ["type", "amount", "category", "account"]
 permissions:
   filesystem: workspace
@@ -46,6 +49,7 @@ entrypoint: scripts/execute.py
 ## Command
 
 - `python scripts/execute.py --type 支出 --amount 30 --category 餐饮 --account 微信 --payee 麦当劳 --remark 午餐`
+- 大额专项支出：`python scripts/execute.py --type 支出 --amount 6600 --category 房租 --account 招商银行 --is-large-expense true --remark 季度房租`
 - 转账示例：`python scripts/execute.py --type 转账 --amount 500 --category 转账 --account 招商银行 --target-account 支付宝`
 
 ## Rules

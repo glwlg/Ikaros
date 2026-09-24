@@ -31,6 +31,12 @@ class BrowserLoginResult:
     cookies_saved: int = 0
 
 
+@dataclass(frozen=True)
+class BrowserDownloadSession:
+    cookies: list[dict[str, Any]]
+    user_agent: str
+
+
 LOGIN_PROVIDERS = {
     "douyin": LoginProvider(
         key="douyin",
@@ -193,6 +199,84 @@ async def _wait_for_qr_image(
         if loop.time() >= deadline:
             return None
         await page.wait_for_timeout(500)
+
+
+def _cookies_for_browser_context(
+    cookies: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    prepared = []
+    for item in cookies:
+        name = str(item.get("name") or "").strip()
+        domain = str(item.get("domain") or "").strip()
+        if not name or not domain:
+            continue
+        cookie = {
+            "name": name,
+            "value": str(item.get("value") or ""),
+            "domain": domain,
+            "path": str(item.get("path") or "/"),
+            "httpOnly": bool(item.get("httpOnly")),
+            "secure": bool(item.get("secure")),
+        }
+        expires = float(item.get("expires") or 0)
+        if expires > 0:
+            cookie["expires"] = expires
+        same_site = str(item.get("sameSite") or "")
+        if same_site in {"Strict", "Lax", "None"}:
+            cookie["sameSite"] = same_site
+        prepared.append(cookie)
+    return prepared
+
+
+async def create_douyin_download_session(
+    url: str,
+    *,
+    initial_cookies: list[dict[str, Any]] | None = None,
+    timeout_seconds: float = 15,
+) -> BrowserDownloadSession:
+    """Create fresh Douyin anti-bot cookies without requiring account login."""
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError as exc:
+        raise RuntimeError("缺少 Playwright，无法创建抖音匿名会话") from exc
+
+    browser = None
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.firefox.launch(headless=True)
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                locale="zh-CN",
+            )
+            if initial_cookies:
+                await context.add_cookies(_cookies_for_browser_context(initial_cookies))
+
+            page = await context.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            user_agent = str(await page.evaluate("navigator.userAgent"))
+
+            provider = LOGIN_PROVIDERS["douyin"]
+            required_names = {"s_v_web_id", "__ac_signature"}
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max(1, float(timeout_seconds))
+            while True:
+                cookies = [
+                    item
+                    for item in await context.cookies()
+                    if _cookie_matches_provider(item, provider)
+                ]
+                names = {str(item.get("name") or "") for item in cookies}
+                if required_names.issubset(names):
+                    return BrowserDownloadSession(cookies, user_agent)
+                if loop.time() >= deadline:
+                    raise RuntimeError("抖音页面未生成有效的匿名会话 Cookie")
+                await page.wait_for_timeout(500)
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
 
 async def run_browser_login(

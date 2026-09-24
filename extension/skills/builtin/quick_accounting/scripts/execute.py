@@ -460,6 +460,21 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> Dict[str, 
     payee = str(params.get("payee", "")).strip()
     remark = str(params.get("remark", "")).strip()
     record_time_str = str(params.get("record_time", "")).strip()
+    raw_is_large = params.get("is_large_expense")
+    if raw_is_large is None:
+        # Auto-detect via category, keywords or amount threshold (>= 1500)
+        large_keywords = ("房租", "车险", "保险", "车位", "家电", "金锁", "装修", "学费", "准备金")
+        is_large_expense = (
+            rtype == "支出"
+            and (
+                any(k in category_name or k in remark or k in payee for k in large_keywords)
+                or amount >= 1500.0
+            )
+        )
+    elif isinstance(raw_is_large, str):
+        is_large_expense = raw_is_large.lower() in ("true", "1", "yes", "t")
+    else:
+        is_large_expense = bool(raw_is_large)
 
     record_time = _parse_record_time(record_time_str)
     if not account_name:
@@ -568,6 +583,7 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> Dict[str, 
                 target_account_id=to_acc.id if to_acc else None,
                 category_id=cat.id if cat else None,
                 record_time=record_time,
+                is_large_expense=bool(is_large_expense),
                 payee=payee[:100],
                 remark=remark[:500],
                 creator_id=user_id,
@@ -721,6 +737,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remark", default="", help="Optional remark")
     parser.add_argument("--record-time", default="", help="Record time")
     parser.add_argument(
+        "--is-large-expense",
+        default=None,
+        help="Whether this transaction is an annual large expense (true/false)",
+    )
+    parser.add_argument(
         "--accounting-user-id",
         default="",
         help="Force accounting owner id via ctx.user_data",
@@ -743,6 +764,9 @@ def _build_user_data(args: argparse.Namespace) -> str:
 
 
 def _params_from_args(args: argparse.Namespace) -> dict:
+    is_large_val = None
+    if args.is_large_expense is not None:
+        is_large_val = str(args.is_large_expense).lower() in ("true", "1", "yes", "t")
     return merge_params(
         args,
         {
@@ -754,6 +778,7 @@ def _params_from_args(args: argparse.Namespace) -> dict:
             "payee": str(args.payee or "").strip(),
             "remark": str(args.remark or "").strip(),
             "record_time": str(args.record_time or "").strip(),
+            "is_large_expense": is_large_val,
         },
     )
 

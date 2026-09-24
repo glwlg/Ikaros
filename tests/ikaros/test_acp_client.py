@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from ikaros.dev.acp_client import (
+    StdioAcpClient,
     _resolve_workspace_path,
     _select_permission_outcome,
 )
@@ -31,3 +32,27 @@ def test_resolve_workspace_path_rejects_escape(tmp_path: Path):
             raw_path=str(escaped.resolve()),
             allow_missing=False,
         )
+
+
+@pytest.mark.asyncio
+async def test_set_session_model_uses_acp_model_method(monkeypatch, tmp_path):
+    client = StdioAcpClient(
+        command=["hermes", "acp"],
+        cwd=str(tmp_path),
+        env={},
+        timeout_sec=30,
+    )
+    captured = {}
+
+    async def fake_request(method, params):
+        captured.update({"method": method, "params": params})
+        return {}
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    await client.set_session_model(session_id="session-1", model="gpt-5.6-sol")
+
+    assert captured == {
+        "method": "session/set_model",
+        "params": {"sessionId": "session-1", "modelId": "gpt-5.6-sol"},
+    }

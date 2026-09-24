@@ -22,7 +22,7 @@ async def test_coding_session_ledger_creates_expected_files_and_dedupes_events(
         session_id="cs-1",
         workspace_id="ws-1",
         repo_root="/repo",
-        backend="opencode",
+        backend="hermes",
         transport="acp",
     )
     first_event = await ledger.append_event(
@@ -58,7 +58,7 @@ async def test_coding_session_ledger_creates_expected_files_and_dedupes_events(
     assert created["session_id"] == "cs-1"
     assert created["workspace_id"] == "ws-1"
     assert created["repo_root"] == "/repo"
-    assert created["backend"] == "opencode"
+    assert created["backend"] == "hermes"
     assert created["transport"] == "acp"
     assert created["status"] == "running"
     assert created["created_at"]
@@ -91,7 +91,7 @@ async def test_coding_session_ledger_rebuilds_projection_from_events(
         session_id="cs-2",
         workspace_id="ws-2",
         repo_root="/repo-two",
-        backend="opencode",
+        backend="hermes",
         transport="acp",
     )
     await ledger.append_event(
@@ -114,7 +114,7 @@ async def test_coding_session_ledger_rebuilds_projection_from_events(
     assert rebuilt["session_id"] == "cs-2"
     assert rebuilt["workspace_id"] == "ws-2"
     assert rebuilt["repo_root"] == "/repo-two"
-    assert rebuilt["backend"] == "opencode"
+    assert rebuilt["backend"] == "hermes"
     assert rebuilt["transport"] == "acp"
     assert rebuilt["status"] == "running"
     assert rebuilt["current_turn_id"] == "turn-2"
@@ -143,14 +143,14 @@ async def test_coding_session_ledger_create_session_backfills_session_created_ev
         session_id="cs-3",
         workspace_id="ws-3",
         repo_root="/repo-three",
-        backend="opencode",
+        backend="hermes",
         transport="acp",
     )
     events = await ledger.list_events("cs-3")
 
     assert created["workspace_id"] == "ws-3"
     assert created["repo_root"] == "/repo-three"
-    assert created["backend"] == "opencode"
+    assert created["backend"] == "hermes"
     assert created["transport"] == "acp"
     assert created["current_turn_id"] == "turn-3"
     assert len(events) == 2
@@ -168,7 +168,7 @@ async def test_coding_session_ledger_duplicate_event_rebuilds_projection(
         session_id="cs-4",
         workspace_id="ws-4",
         repo_root="/repo-four",
-        backend="opencode",
+        backend="hermes",
         transport="acp",
     )
     await ledger.append_event(

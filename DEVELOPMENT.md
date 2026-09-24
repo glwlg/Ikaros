@@ -50,13 +50,12 @@ Ikaros 侧常用 direct tool：
 - `gh_cli`
 - `task_tracker`
 
-编码后端执行传输默认采用混合模式：
+编码后端默认使用 Hermes ACP：
 
-- `codex`：CLI transport
-- `gemini-cli`：ACP transport
-- `opencode`：ACP transport
+- `hermes`：ACP transport，默认模型 `gpt-5.6-sol`，reasoning effort 为 `max`
+- `gemini-cli`：ACP transport，仅作为兼容后端保留
 
-如需覆盖，可使用 `CODING_BACKEND_CODEX_TRANSPORT`、`CODING_BACKEND_GEMINI_TRANSPORT`、`CODING_BACKEND_OPENCODE_TRANSPORT` 或全局 `CODING_BACKEND_TRANSPORT_DEFAULT`。
+Codex 与 OpenCode 后端不再支持。Hermes 的命令、模型与 reasoning effort 可分别通过 `CODING_BACKEND_HERMES_ACP_COMMAND`、`CODING_BACKEND_HERMES_MODEL`、`CODING_BACKEND_HERMES_REASONING_EFFORT` 覆盖。
 
 约束：
 

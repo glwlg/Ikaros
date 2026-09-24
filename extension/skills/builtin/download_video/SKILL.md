@@ -26,7 +26,7 @@ entrypoint: scripts/execute.py
 
 此技能已经自带完整下载能力，入口是 `scripts/execute.py`，底层由 `scripts/services/download_service.py` 负责下载、路径管理与大文件判断。
 
-支持 `yt-dlp` 可解析的视频站点，包括 X、YouTube、Instagram、TikTok、Bilibili、微博和抖音。抖音、微博和 Bilibili 遇到登录限制时会向当前聊天发送二维码，扫码确认后保存加密会话并自动重试下载。
+支持 `yt-dlp` 可解析的视频站点，包括 X、YouTube、Instagram、TikTok、Bilibili、微博和抖音。抖音公开视频会自动创建临时匿名浏览器会话，不需要扫码；抖音、微博和 Bilibili 确实遇到登录限制时会向当前聊天发送二维码，扫码确认后保存加密会话并自动重试下载。
 
 ## 扫码登录
 

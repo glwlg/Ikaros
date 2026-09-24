@@ -63,22 +63,18 @@ def _normalize_backend(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"gemini", "gemini_cli", "gemini-cli"}:
         return "gemini-cli"
-    if raw in {"opencode", "open-code"}:
-        return "opencode"
-    return "codex"
+    return "hermes"
 
 
 def _resolve_coding_backend(params: dict) -> str:
     if _as_bool(params.get("use_gemini"), default=False):
         return "gemini-cli"
-    if _as_bool(params.get("use_codex"), default=False):
-        return "codex"
 
     for key in ("coding_backend", "backend", "provider"):
         if key in params and str(params.get(key) or "").strip():
             return _normalize_backend(params.get(key))
 
-    env_backend = os.getenv("CODING_BACKEND_DEFAULT", "codex")
+    env_backend = os.getenv("CODING_BACKEND_DEFAULT", "hermes")
     return _normalize_backend(env_backend)
 
 
@@ -829,7 +825,7 @@ def _build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument(
         "--backend",
         default="",
-        help="codex, gemini-cli, or opencode",
+        help="hermes or gemini-cli",
     )
 
     modify_parser = subparsers.add_parser("modify", help="Modify an existing skill")
@@ -838,7 +834,7 @@ def _build_parser() -> argparse.ArgumentParser:
     modify_parser.add_argument(
         "--backend",
         default="",
-        help="codex, gemini-cli, or opencode",
+        help="hermes or gemini-cli",
     )
     return parser
 

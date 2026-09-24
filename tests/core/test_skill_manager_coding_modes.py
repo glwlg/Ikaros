@@ -34,10 +34,10 @@ async def test_skill_manager_create_uses_coding_session(monkeypatch):
 
     async def fake_create_with_coding_session(**kwargs):
         calls.append("coding_session")
-        assert kwargs.get("backend") == "codex"
+        assert kwargs.get("backend") == "hermes"
         return {
             "ok": True,
-            "backend": "codex",
+            "backend": "hermes",
             "resolved_skill_name": "demo_skill",
             "skill_md": "---\nname: demo_skill\n---",
         }
@@ -64,7 +64,7 @@ async def test_skill_manager_create_uses_coding_session(monkeypatch):
 
     assert calls == ["coding_session"]
     assert result["created_skill_name"] == "demo_skill"
-    assert result["used_backend"] == "codex"
+    assert result["used_backend"] == "hermes"
     assert result["has_scripts"] is True
 
 
@@ -113,7 +113,7 @@ async def test_skill_manager_modify_uses_coding_session(monkeypatch):
     async def fake_modify_with_coding_session(**kwargs):
         calls.append("coding_session")
         assert kwargs.get("skill_name") == "demo_skill"
-        return {"ok": True, "backend": "codex"}
+        return {"ok": True, "backend": "hermes"}
 
     monkeypatch.setattr(
         module, "_modify_with_coding_session", fake_modify_with_coding_session
@@ -140,8 +140,8 @@ async def test_skill_manager_modify_ignores_legacy_hint(monkeypatch):
 
     async def fake_modify_with_coding_session(**kwargs):
         calls.append("coding_session")
-        assert kwargs.get("backend") == "codex"
-        return {"ok": True, "backend": "codex"}
+        assert kwargs.get("backend") == "hermes"
+        return {"ok": True, "backend": "hermes"}
 
     monkeypatch.setattr(
         module, "_modify_with_coding_session", fake_modify_with_coding_session
@@ -163,16 +163,16 @@ async def test_skill_manager_modify_ignores_legacy_hint(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_skill_manager_create_accepts_opencode_backend(monkeypatch):
+async def test_skill_manager_create_accepts_hermes_backend(monkeypatch):
     module = _load_module()
     calls: list[str] = []
 
     async def fake_create_with_coding_session(**kwargs):
         calls.append("coding_session")
-        assert kwargs.get("backend") == "opencode"
+        assert kwargs.get("backend") == "hermes"
         return {
             "ok": True,
-            "backend": "opencode",
+            "backend": "hermes",
             "resolved_skill_name": "demo_skill",
             "skill_md": "",
         }
@@ -189,10 +189,10 @@ async def test_skill_manager_create_accepts_opencode_backend(monkeypatch):
             "action": "create",
             "requirement": "create demo skill",
             "skill_name": "demo_skill",
-            "coding_backend": "opencode",
+            "coding_backend": "hermes",
         },
         runtime=object(),
     )
 
     assert calls == ["coding_session"]
-    assert result["used_backend"] == "opencode"
+    assert result["used_backend"] == "hermes"

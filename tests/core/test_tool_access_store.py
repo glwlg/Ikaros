@@ -21,8 +21,9 @@ def test_tool_access_groups_and_defaults(tmp_path):
     coding_tool_groups = store.groups_for_tool("coding_backend", kind="tool")
     assert "group:coding" in coding_tool_groups
 
-    opencode_groups = store.groups_for_tool("opencode", kind="backend")
-    assert "group:coding" in opencode_groups
+    hermes_groups = store.groups_for_tool("hermes", kind="backend")
+    assert "group:coding" in hermes_groups
+    assert "group:coding" not in store.groups_for_tool("opencode", kind="backend")
 
     generic_skill_groups = store.groups_for_tool("ext_internal_dev_tool", kind="tool")
     assert "group:coding" not in generic_skill_groups

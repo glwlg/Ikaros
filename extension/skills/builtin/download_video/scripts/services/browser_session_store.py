@@ -146,11 +146,9 @@ def _render_netscape(cookies: list[dict[str, Any]]) -> str:
 
 
 @contextmanager
-def materialized_cookie_file(
-    user_id: int | str,
-    platform: str | None,
+def materialized_browser_cookies(
+    cookies: list[dict[str, Any]],
 ) -> Iterator[str | None]:
-    cookies = load_browser_cookies(user_id, platform) if platform else []
     if not cookies:
         yield None
         return
@@ -170,3 +168,13 @@ def materialized_cookie_file(
             path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+@contextmanager
+def materialized_cookie_file(
+    user_id: int | str,
+    platform: str | None,
+) -> Iterator[str | None]:
+    cookies = load_browser_cookies(user_id, platform) if platform else []
+    with materialized_browser_cookies(cookies) as path:
+        yield path

@@ -39,6 +39,10 @@ def _build_accounting_draft_tool_declaration() -> dict:
                 "payee": {"type": "string"},
                 "remark": {"type": "string"},
                 "record_time": {"type": "string"},
+                "is_large_expense": {
+                    "type": "boolean",
+                    "description": "是否属于年度大额专项支出（如房租、车险、大件家电、车位费等，或单笔>=1500元）",
+                },
             },
             "required": ["type", "amount", "category", "account"],
         },
@@ -88,16 +92,34 @@ def _normalize_accounting_draft(
     except (TypeError, ValueError):
         book_id = 0
 
+    raw_is_large = data.get("is_large_expense")
+    payee_str = str(data.get("payee") or "").strip()[:100]
+    remark_str = str(data.get("remark") or "").strip()[:500]
+    if raw_is_large is None:
+        large_keywords = ("房租", "车险", "保险", "车位", "家电", "金锁", "装修", "学费", "准备金")
+        is_large_expense = (
+            record_type == "支出"
+            and (
+                any(k in category_name or k in remark_str or k in payee_str for k in large_keywords)
+                or amount >= 1500.0
+            )
+        )
+    elif isinstance(raw_is_large, str):
+        is_large_expense = raw_is_large.lower() in ("true", "1", "yes", "t")
+    else:
+        is_large_expense = bool(raw_is_large)
+
     return {
         "type": record_type,
         "amount": amount,
         "category_name": category_name,
         "account_name": account_name,
         "target_account_name": target_account_name,
-        "payee": str(data.get("payee") or "").strip()[:100],
-        "remark": str(data.get("remark") or "").strip()[:500],
+        "payee": payee_str,
+        "remark": remark_str,
         "record_time": str(data.get("record_time") or "").strip(),
         "book_id": book_id,
+        "is_large_expense": is_large_expense,
     }
 
 

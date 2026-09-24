@@ -377,6 +377,15 @@ class StdioAcpClient:
             },
         )
 
+    async def set_session_model(self, *, session_id: str, model: str) -> Dict[str, Any]:
+        return await self.request(
+            "session/set_model",
+            {
+                "sessionId": str(session_id or "").strip(),
+                "modelId": str(model or "").strip(),
+            },
+        )
+
     async def notify(self, method: str, params: Dict[str, Any]) -> None:
         await self._send_json(
             {
@@ -728,6 +737,8 @@ async def run_acp_backend(
     existing_session_id: str = "",
     log_path: str = "",
     env: Dict[str, str] | None = None,
+    model: str = "",
+    reasoning_effort: str = "",
 ) -> Dict[str, Any]:
     safe_instruction = str(instruction or "").strip()
     safe_cwd = str(cwd or "").strip()
@@ -765,6 +776,11 @@ async def run_acp_backend(
         session_id, loaded_existing = await client.open_session(
             existing_session_id=existing_session_id
         )
+        if str(model or "").strip():
+            await client.set_session_model(
+                session_id=session_id,
+                model=str(model or "").strip(),
+            )
         prompt_result = await asyncio.wait_for(
             client.prompt(session_id=session_id, instruction=safe_instruction),
             timeout=max(30, int(timeout_sec or 0)),
@@ -774,6 +790,8 @@ async def run_acp_backend(
             prompt_result=prompt_result,
             loaded_existing_session=loaded_existing,
         )
+        result["model"] = str(model or "").strip()
+        result["reasoning_effort"] = str(reasoning_effort or "").strip()
         _append_acp_log(
             log_path=log_path,
             command=safe_command,

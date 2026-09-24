@@ -71,6 +71,7 @@ declare global {
         MediaMTXWebRTCReader?: new (
             config: MediaMTXWebRTCReaderConfig
         ) => MediaMTXWebRTCReaderInstance
+        Hls?: any
     }
 
     interface HTMLVideoElement {
@@ -127,9 +128,11 @@ const TIMESTAMP_CROP_WIDTH_RATIO = 0.42
 const TIMESTAMP_CROP_HEIGHT_RATIO = 0.12
 let ptzIdleTimer: ReturnType<typeof window.setTimeout> | null = null
 let mediamtxReader: MediaMTXWebRTCReaderInstance | null = null
+let hlsPlayer: any = null
 let directMediaStream: MediaStream | null = null
 let directStreamGeneration = 0
 let readerScriptPromise: Promise<void> | null = null
+let hlsScriptPromise: Promise<void> | null = null
 let previewFrameId: number | null = null
 let pipFrameId: number | null = null
 let pipCanvasStream: MediaStream | null = null
@@ -171,26 +174,29 @@ const canControlPtz = computed(() =>
 const canUseDirectWebRtc = computed(() =>
     playerMode.value === 'webrtc' && !!stream.value?.webrtc_whep_url
 )
+const canUseDirectHls = computed(() =>
+    playerMode.value === 'hls' && !!stream.value?.hls_url
+)
+const canPlayDirectStream = computed(() =>
+    canUseDirectWebRtc.value || canUseDirectHls.value
+)
 const liveState = computed(() => {
     if (!selectedCamera.value) return { text: '未选择', tone: 'muted' }
     if (streamLoading.value) return { text: '连接中', tone: 'muted' }
     if (streamError.value) return { text: '连接异常', tone: 'danger' }
-    if (playerMode.value === 'webrtc') {
-        if (directStreamReady.value) return { text: 'LIVE', tone: 'live' }
-        if (directStreamError.value) return { text: '播放异常', tone: 'danger' }
-        return { text: '连接中', tone: 'muted' }
-    }
-    return { text: 'HLS', tone: 'live' }
+    if (directStreamReady.value) return { text: playerMode.value === 'webrtc' ? 'LIVE' : 'HLS', tone: 'live' }
+    if (directStreamError.value) return { text: '播放异常', tone: 'danger' }
+    return { text: '连接中', tone: 'muted' }
 })
 const canUseDigitalZoom = computed(() =>
     !!selectedCamera.value &&
     (
-        canUseDirectWebRtc.value ||
+        canPlayDirectStream.value ||
         (playerMode.value === 'hls' && !!stream.value?.hls_page_url)
     )
 )
 const canOpenZoomPip = computed(() =>
-    canUseDirectWebRtc.value && directStreamReady.value && isPictureInPictureSupported()
+    canPlayDirectStream.value && directStreamReady.value && isPictureInPictureSupported()
 )
 const canUseZoomedCanvasPip = () => canUseCanvasCaptureStream()
 
@@ -586,7 +592,7 @@ const startPreviewRenderer = () => {
         if (directStreamReady.value) {
             drawZoomedFrame(previewCanvasRef.value)
             drawOverviewFrame()
-            if (canOpenZoomPip.value && !pipCanvasStream && !prefersNativePictureInPicture()) {
+            if (canOpenZoomPip.value && !pipCanvasStream) {
                 void ensurePipWarmup()
             }
         }
@@ -634,18 +640,51 @@ const loadMediaMTXReader = (scriptUrl: string) => {
     return readerScriptPromise
 }
 
-const stopDirectWebRtc = () => {
+const hlsScriptUrlFor = (hlsUrl: string) => {
+    const url = new URL(hlsUrl, window.location.href)
+    const parts = url.pathname.split('/').filter(Boolean)
+    parts.splice(Math.max(0, parts.length - 1), 1, 'hls.min.js')
+    url.pathname = `/${parts.join('/')}`
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+}
+
+const loadHlsScript = (scriptUrl: string) => {
+    if (window.Hls) return Promise.resolve()
+    if (hlsScriptPromise) return hlsScriptPromise
+    hlsScriptPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = scriptUrl
+        script.async = true
+        script.onload = () => resolve()
+        script.onerror = () => {
+            hlsScriptPromise = null
+            reject(new Error('HLS 播放组件加载失败'))
+        }
+        document.head.appendChild(script)
+    })
+    return hlsScriptPromise
+}
+
+const stopDirectStream = () => {
     directStreamGeneration += 1
     directStreamReady.value = false
     directStreamError.value = ''
     stopPipCanvasStream()
     stopPreviewRenderer()
+    if (hlsPlayer) {
+        hlsPlayer.destroy()
+        hlsPlayer = null
+    }
     if (mediamtxReader) {
         mediamtxReader.close()
         mediamtxReader = null
     }
     if (liveVideoRef.value) {
         liveVideoRef.value.pause()
+        liveVideoRef.value.removeAttribute('src')
+        liveVideoRef.value.load()
         liveVideoRef.value.srcObject = null
     }
     if (directMediaStream) {
@@ -654,8 +693,78 @@ const stopDirectWebRtc = () => {
     }
 }
 
+const startDirectHls = async () => {
+    stopDirectStream()
+    directStreamError.value = ''
+    const currentStream = stream.value
+    const liveVideo = liveVideoRef.value
+    if (!currentStream?.hls_url || !liveVideo) return
+
+    const generation = directStreamGeneration
+    const m3u8Url = new URL(
+        withToken(currentStream.hls_url, currentStream.token),
+        window.location.href
+    ).toString()
+
+    const onPlaying = () => {
+        if (generation !== directStreamGeneration) return
+        directStreamReady.value = true
+        directStreamError.value = ''
+        startPreviewRenderer()
+        void ensurePipWarmup()
+    }
+
+    try {
+        const scriptUrl = withToken(hlsScriptUrlFor(m3u8Url), currentStream.token)
+        await loadHlsScript(scriptUrl)
+        if (generation !== directStreamGeneration) return
+
+        const Hls = window.Hls
+        if (Hls?.isSupported()) {
+            const hls = new Hls({
+                maxLiveSyncPlaybackRate: 1.5,
+                liveSyncDurationCount: 3,
+            })
+            hlsPlayer = hls
+            hls.on(Hls.Events.ERROR, (_: any, data: any) => {
+                if (generation !== directStreamGeneration) return
+                if (data.fatal) {
+                    directStreamError.value = data.details === 'manifestIncompatibleCodecsError'
+                        ? '浏览器不支持当前视频编码'
+                        : (data.error?.message || 'HLS 播放失败')
+                }
+            })
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                if (generation !== directStreamGeneration) return
+                liveVideo.play().catch((error) => {
+                    if (generation !== directStreamGeneration || isBenignPlayError(error)) return
+                    directStreamError.value = error?.message || 'HLS 播放失败'
+                })
+            })
+            hls.attachMedia(liveVideo)
+            hls.loadSource(m3u8Url)
+            liveVideo.onloadeddata = onPlaying
+            liveVideo.onplaying = onPlaying
+        } else if (liveVideo.canPlayType('application/vnd.apple.mpegurl')) {
+            liveVideo.src = m3u8Url
+            liveVideo.onloadeddata = onPlaying
+            liveVideo.onplaying = onPlaying
+            liveVideo.play().catch((error) => {
+                if (generation !== directStreamGeneration || isBenignPlayError(error)) return
+                directStreamError.value = error?.message || 'HLS 播放失败'
+            })
+        } else {
+            throw new Error('当前浏览器不支持 HLS 播放')
+        }
+    } catch (error: any) {
+        if (generation === directStreamGeneration) {
+            directStreamError.value = error?.message || 'HLS 播放失败'
+        }
+    }
+}
+
 const startDirectWebRtc = async () => {
-    stopDirectWebRtc()
+    stopDirectStream()
     directStreamError.value = ''
     const currentStream = stream.value
     const liveVideo = liveVideoRef.value
@@ -879,18 +988,15 @@ const resolvePipTarget = () => {
         isVideoReadyForPictureInPicture(pipVideo)
     )
 
-    // iOS/Safari often never make canvas.captureStream() PiP-ready, so prefer
-    // the real live WebRTC video there. Desktop can keep zoomed canvas PiP.
-    if (prefersNativePictureInPicture()) {
-        if (nativeReady) {
-            return { video: liveVideo as HTMLVideoElement, mode: 'native' as const }
-        }
+    // If zoomed (> 1), we MUST use the zoomed canvas PiP to show the zoomed area and timestamp inset!
+    if (digitalZoom.value > 1) {
         if (zoomedReady) {
             return { video: pipVideo as HTMLVideoElement, mode: 'zoomed' as const }
         }
         return null
     }
 
+    // When not zoomed (1x), prefer zoomedReady canvas if available, or native
     if (zoomedReady) {
         return { video: pipVideo as HTMLVideoElement, mode: 'zoomed' as const }
     }
@@ -915,6 +1021,11 @@ const toggleZoomedPictureInPicture = () => {
             return
         }
 
+        // Prepare/warmup zoomed canvas PiP if not yet ready
+        if (canUseZoomedCanvasPip() && !pipCanvasStream) {
+            void ensurePipWarmup()
+        }
+
         // Keep the click handler free of awaits so iOS still treats this as user activation.
         const target = resolvePipTarget()
         if (!target) {
@@ -930,18 +1041,6 @@ const toggleZoomedPictureInPicture = () => {
         }
 
         void Promise.resolve(enterPictureInPicture(target.video)).catch((error) => {
-            // If zoomed canvas path failed readiness-style, immediately retry native live video
-            // while we still have a user gesture on some browsers.
-            if (
-                target.mode === 'zoomed' &&
-                isVideoReadyForPictureInPicture(liveVideo)
-            ) {
-                void Promise.resolve(enterPictureInPicture(liveVideo)).catch((nativeError) => {
-                    alert(describePipError(nativeError))
-                    void ensurePipWarmup()
-                })
-                return
-            }
             alert(describePipError(error))
             void ensurePipWarmup()
         })
@@ -965,12 +1064,14 @@ const handlePipLeave = () => {
 }
 
 watch(
-    [playerMode, () => stream.value?.webrtc_whep_url, () => stream.value?.token],
+    [playerMode, () => stream.value?.webrtc_whep_url, () => stream.value?.hls_url, () => stream.value?.token],
     () => {
         if (canUseDirectWebRtc.value) {
             startDirectWebRtc()
+        } else if (canUseDirectHls.value) {
+            startDirectHls()
         } else {
-            stopDirectWebRtc()
+            stopDirectStream()
         }
     },
     { flush: 'post' }
@@ -986,7 +1087,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
     clearPtzIdleTimer()
-    stopDirectWebRtc()
+    stopDirectStream()
     stopPipCanvasStream()
 })
 </script>

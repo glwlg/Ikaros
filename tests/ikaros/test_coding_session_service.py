@@ -19,7 +19,7 @@ async def test_coding_session_start_waits_for_user_when_backend_asks(
         assert kwargs["cwd"] == str(workspace_dir)
         return {
             "ok": True,
-            "backend": "codex",
+            "backend": "hermes",
             "summary": "请你选择：\n1. 保留这行\n2. 移除这行",
             "stdout": "请你选择：\n1. 保留这行\n2. 移除这行",
         }
@@ -33,7 +33,7 @@ async def test_coding_session_start_waits_for_user_when_backend_asks(
     result = await service.start(
         cwd=str(workspace_dir),
         instruction="inspect README and implement a new skill",
-        backend="codex",
+        backend="hermes",
     )
 
     assert result["ok"] is True
@@ -63,7 +63,7 @@ async def test_coding_session_continue_injects_question_and_user_reply(
         captured["instructions"].append(kwargs["instruction"])
         return {
             "ok": True,
-            "backend": "codex",
+            "backend": "hermes",
             "summary": "done",
             "stdout": "implemented",
         }
@@ -83,7 +83,7 @@ async def test_coding_session_continue_injects_question_and_user_reply(
             "session_id": "cs-test",
             "workspace_id": "",
             "repo_root": str(workspace_dir),
-            "backend": "codex",
+            "backend": "hermes",
             "instruction": "base instruction",
             "status": "waiting_user",
             "summary": "waiting",
@@ -122,7 +122,7 @@ async def test_coding_session_acp_continue_reuses_transport_session(
         captured["calls"].append(kwargs)
         return {
             "ok": True,
-            "backend": "opencode",
+            "backend": "hermes",
             "transport": "acp",
             "transport_session_id": "acp-session-2",
             "summary": "done",
@@ -140,7 +140,7 @@ async def test_coding_session_acp_continue_reuses_transport_session(
             "session_id": "cs-acp",
             "workspace_id": "",
             "repo_root": str(workspace_dir),
-            "backend": "opencode",
+            "backend": "hermes",
             "transport": "acp",
             "transport_session_id": "acp-session-1",
             "instruction": "base instruction",
@@ -171,67 +171,3 @@ async def test_coding_session_acp_continue_reuses_transport_session(
     )
     assert captured["calls"][0]["transport"] == "acp"
     assert captured["calls"][0]["transport_session_id"] == "acp-session-1"
-
-
-@pytest.mark.asyncio
-async def test_coding_session_app_server_continue_reuses_transport_session(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    captured = {"calls": []}
-
-    async def fake_run_coding_backend(**kwargs):
-        captured["calls"].append(kwargs)
-        return {
-            "ok": True,
-            "backend": "codex",
-            "transport": "app-server",
-            "transport_session_id": "thread-2",
-            "summary": "done",
-            "stdout": "implemented",
-        }
-
-    monkeypatch.setattr(
-        "extension.skills.builtin.coding_session.scripts.service.run_coding_backend",
-        fake_run_coding_backend,
-    )
-
-    service = CodingSessionService()
-    created = await service._save_state(
-        {
-            "session_id": "cs-codex-app",
-            "workspace_id": "",
-            "repo_root": str(workspace_dir),
-            "backend": "codex",
-            "transport": "app-server",
-            "transport_session_id": "thread-1",
-            "instruction": "base instruction",
-            "status": "waiting_user",
-            "summary": "waiting",
-            "pending_question": "请选择是否继续",
-            "result": {},
-            "history": [],
-            "log_path": str(tmp_path / "data" / "log.txt"),
-            "created_at": "2026-03-13T00:00:00+08:00",
-        }
-    )
-    assert created["session_id"] == "cs-codex-app"
-
-    continued = await service.continue_session(
-        session_id="cs-codex-app",
-        user_reply="继续，直接改代码",
-    )
-
-    assert continued["ok"] is True
-    assert continued["data"]["transport"] == "app-server"
-    assert continued["data"]["transport_session_id"] == "thread-2"
-    assert captured["calls"]
-    assert "继续，直接改代码" in captured["calls"][0]["instruction"]
-    assert (
-        "Continue the previous stateful coding session"
-        in captured["calls"][0]["instruction"]
-    )
-    assert captured["calls"][0]["transport"] == "app-server"
-    assert captured["calls"][0]["transport_session_id"] == "thread-1"

@@ -231,7 +231,7 @@ class ToolAccessStore:
             "group:fs": "文件系统工具：read/write/edit",
             "group:primitives": "基础原语：read/write/edit/bash/load_skill",
             "group:execution": "执行类能力：bash/exec/process 与内部执行运行时",
-            "group:coding": "编码类能力：coding_backend(codex/gemini-cli/opencode)",
+            "group:coding": "编码类能力：coding_backend(hermes/gemini-cli)",
             "group:feeds": "信息订阅类：rss/news feed",
             "group:ops": "部署运维类：deployment/docker",
             "group:automation": "自动化类：scheduler/reminder（不含 rss/stock）",
@@ -287,7 +287,7 @@ class ToolAccessStore:
         if kind == "backend":
             groups.add("group:execution")
             groups.add("group:backend")
-            if name in {"codex", "gemini-cli", "gemini", "opencode", "open-code"}:
+            if name in {"hermes", "hermes-agent", "gemini-cli", "gemini"}:
                 groups.add("group:coding")
             if name in {"shell", "bash", "sh", "core-agent"}:
                 groups.add("group:execution")

@@ -33,8 +33,8 @@ entrypoint: scripts/execute.py
 - 列出技能：`python scripts/execute.py list`
 - 搜索技能：`python scripts/execute.py search "<query>"`
 - 安装技能：`python scripts/execute.py install <url_or_owner/repo>`
-- 创建技能：`python scripts/execute.py create "<requirement>" [--skill-name <name>] [--backend codex|gemini-cli|opencode]`
-- 修改技能：`python scripts/execute.py modify <skill_name> "<instruction>" [--backend codex|gemini-cli|opencode]`
+- 创建技能：`python scripts/execute.py create "<requirement>" [--skill-name <name>] [--backend hermes|gemini-cli]`
+- 修改技能：`python scripts/execute.py modify <skill_name> "<instruction>" [--backend hermes|gemini-cli]`
 - 删除 learned skill：`python scripts/execute.py delete <skill_name>`
 
 ## Rules
