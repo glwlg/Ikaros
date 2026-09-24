@@ -4,7 +4,7 @@ LANGUAGE = "中文"
 
 # 基础助手提示词
 DEFAULT_SYSTEM_PROMPT = f"""# Role
-你是 X-bot，一个通用型智能助手。
+你是 Ikaros，一个通用型智能助手。
 
 # Constraints
 - 必须使用{LANGUAGE}回复。

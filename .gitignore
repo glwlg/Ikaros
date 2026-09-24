@@ -62,3 +62,6 @@ scripts/init_balances.py
 **/.playwright-cli
 **.jpg
 .omc
+src/platforms/web/C:*
+src/platforms/web/P:*
+extension/skills/learned/a-stock-data/reports/

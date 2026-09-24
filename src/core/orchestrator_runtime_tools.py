@@ -364,15 +364,15 @@ class ToolCallDispatcher:
         if forced_chat_id:
             chat_id = forced_chat_id
         if runtime_user:
-            export_parts.append(f"X_BOT_RUNTIME_USER_ID={shlex.quote(runtime_user)}")
+            export_parts.append(f"IKAROS_RUNTIME_USER_ID={shlex.quote(runtime_user)}")
         if source_user_id:
             export_parts.append(
-                f"X_BOT_RUNTIME_SOURCE_USER_ID={shlex.quote(source_user_id)}"
+                f"IKAROS_RUNTIME_SOURCE_USER_ID={shlex.quote(source_user_id)}"
             )
         if platform:
-            export_parts.append(f"X_BOT_RUNTIME_PLATFORM={shlex.quote(platform)}")
+            export_parts.append(f"IKAROS_RUNTIME_PLATFORM={shlex.quote(platform)}")
         if chat_id:
-            export_parts.append(f"X_BOT_RUNTIME_CHAT_ID={shlex.quote(chat_id)}")
+            export_parts.append(f"IKAROS_RUNTIME_CHAT_ID={shlex.quote(chat_id)}")
         if not export_parts:
             return args
 

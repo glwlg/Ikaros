@@ -122,8 +122,8 @@ def test_telegram_mapper_supports_all_main_message_types(media_type, expected_fi
 def test_telegram_callback_update_uses_clicker_as_effective_user():
     bot_user = _FakeTelegramObject(
         id=999001,
-        username="x_bot",
-        first_name="X",
+        username="ikaros_bot",
+        first_name="Ikaros",
         last_name="Bot",
         language_code="zh",
         is_bot=True,

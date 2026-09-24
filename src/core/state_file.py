@@ -6,8 +6,8 @@ from typing import Any
 
 import yaml
 
-STATE_BEGIN_MARKER = "<!-- XBOT_STATE_BEGIN -->"
-STATE_END_MARKER = "<!-- XBOT_STATE_END -->"
+STATE_BEGIN_MARKER = "<!-- IKAROS_STATE_BEGIN -->"
+STATE_END_MARKER = "<!-- IKAROS_STATE_END -->"
 
 
 def _strip_yaml_fence(text: str) -> str:

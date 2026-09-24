@@ -65,7 +65,7 @@ def _load_web_search_execute_module():
 
     script_path = _resolve_web_search_execute_path()
     spec = importlib.util.spec_from_file_location(
-        "xbot_builtin_web_search_execute",
+        "ikaros_builtin_web_search_execute",
         script_path,
     )
     if spec is None or spec.loader is None:

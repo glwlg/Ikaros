@@ -63,7 +63,7 @@ playwright-cli close
 ### Example: README/web article summarization
 
 ```bash
-playwright-cli open https://github.com/glwlg/X-bot/blob/master/README.md
+playwright-cli open https://github.com/glwlg/ikaros/blob/master/README.md
 playwright-cli snapshot --filename=readme.yml
 # then read /app/.playwright-cli/readme.yml and summarize
 playwright-cli close

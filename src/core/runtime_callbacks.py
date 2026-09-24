@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-_CALLBACKS_ATTR = "_xbot_runtime_callbacks"
+_CALLBACKS_ATTR = "_ikaros_runtime_callbacks"
 
 
 def _ensure_store(ctx: Any) -> dict[str, Any]:

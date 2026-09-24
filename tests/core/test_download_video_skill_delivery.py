@@ -65,7 +65,7 @@ def test_download_video_resolves_dispatch_platform_when_message_platform_is_empt
     monkeypatch,
     tmp_path,
 ):
-    monkeypatch.delenv("X_BOT_RUNTIME_PLATFORM", raising=False)
+    monkeypatch.delenv("IKAROS_RUNTIME_PLATFORM", raising=False)
     module = _load_download_module("download_video_dispatch_platform_test")
     ctx = _FakeContext(tmp_path)
     ctx.message.platform = ""
@@ -103,7 +103,7 @@ async def test_download_video_cli_uses_runtime_platform(monkeypatch, tmp_path):
             file_size_mb=90.59,
         )
 
-    monkeypatch.setenv("X_BOT_RUNTIME_PLATFORM", "weixin")
+    monkeypatch.setenv("IKAROS_RUNTIME_PLATFORM", "weixin")
     monkeypatch.setattr(module, "download_video", fake_download_video)
     monkeypatch.setattr(module, "get_download_dir", lambda: str(tmp_path))
     monkeypatch.setattr(

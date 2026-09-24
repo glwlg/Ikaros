@@ -845,10 +845,10 @@ async def test_bash_env_prefers_forced_subagent_delivery_target(monkeypatch):
     assert result["ok"] is True
     assert captured["name"] == "bash"
     assert captured["args"]["command"].startswith("export ")
-    assert "X_BOT_RUNTIME_USER_ID=u-telegram-1" in captured["args"]["command"]
-    assert "X_BOT_RUNTIME_SOURCE_USER_ID=user-origin-7" in captured["args"]["command"]
-    assert "X_BOT_RUNTIME_PLATFORM=discord" in captured["args"]["command"]
-    assert "X_BOT_RUNTIME_CHAT_ID=discord-target-8" in captured["args"]["command"]
+    assert "IKAROS_RUNTIME_USER_ID=u-telegram-1" in captured["args"]["command"]
+    assert "IKAROS_RUNTIME_SOURCE_USER_ID=user-origin-7" in captured["args"]["command"]
+    assert "IKAROS_RUNTIME_PLATFORM=discord" in captured["args"]["command"]
+    assert "IKAROS_RUNTIME_CHAT_ID=discord-target-8" in captured["args"]["command"]
     assert captured["args"]["command"].endswith(
         "python scripts/execute.py dispatch do-something"
     )
@@ -909,7 +909,7 @@ async def test_bash_env_export_wraps_chained_commands(monkeypatch):
     assert result["ok"] is True
     assert captured["name"] == "bash"
     assert captured["args"]["command"].startswith("export ")
-    assert "X_BOT_RUNTIME_CHAT_ID=chat-chain-1" in captured["args"]["command"]
+    assert "IKAROS_RUNTIME_CHAT_ID=chat-chain-1" in captured["args"]["command"]
     assert (
         "&& cd skills/builtin/deployment_manager && python scripts/execute.py help"
         in captured["args"]["command"]

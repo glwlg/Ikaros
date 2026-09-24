@@ -91,8 +91,8 @@ async def test_git_ops_push_falls_back_to_fork(monkeypatch):
             "git rev-list --count main..HEAD": {"ok": True, "stdout": "1\n"},
             "git push -u origin feature/fork-me": {
                 "ok": False,
-                "summary": "remote: Permission to Scenx/fuck-skill.git denied to ggg-X-bot.\nfatal: unable to access 'https://github.com/Scenx/fuck-skill.git/': The requested URL returned error: 403",
-                "stderr": "remote: Permission to Scenx/fuck-skill.git denied to ggg-X-bot.\nfatal: unable to access 'https://github.com/Scenx/fuck-skill.git/': The requested URL returned error: 403",
+                "summary": "remote: Permission to Scenx/fuck-skill.git denied to ggg-ikaros-bot.\nfatal: unable to access 'https://github.com/Scenx/fuck-skill.git/': The requested URL returned error: 403",
+                "stderr": "remote: Permission to Scenx/fuck-skill.git denied to ggg-ikaros-bot.\nfatal: unable to access 'https://github.com/Scenx/fuck-skill.git/': The requested URL returned error: 403",
             },
         }
         return responses[command]
@@ -106,11 +106,11 @@ async def test_git_ops_push_falls_back_to_fork(monkeypatch):
             "summary": "pushed to fork",
             "push": {"ok": True, "summary": "pushed to fork"},
             "fork": {
-                "owner": "ggg-X-bot",
+                "owner": "ggg-ikaros-bot",
                 "repo": "fuck-skill",
                 "remote_name": "fork",
-                "remote_url": "https://github.com/ggg-X-bot/fuck-skill.git",
-                "head_ref": "ggg-X-bot:feature/fork-me",
+                "remote_url": "https://github.com/ggg-ikaros-bot/fuck-skill.git",
+                "head_ref": "ggg-ikaros-bot:feature/fork-me",
             },
         }
 
@@ -128,4 +128,4 @@ async def test_git_ops_push_falls_back_to_fork(monkeypatch):
 
     assert result["ok"] is True
     assert result["data"]["remote_name"] == "fork"
-    assert result["data"]["head_ref"] == "ggg-X-bot:feature/fork-me"
+    assert result["data"]["head_ref"] == "ggg-ikaros-bot:feature/fork-me"

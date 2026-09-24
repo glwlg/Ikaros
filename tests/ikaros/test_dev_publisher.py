@@ -118,11 +118,11 @@ async def test_publish_falls_back_to_fork_when_upstream_push_denied(monkeypatch)
             "git rev-parse HEAD": {"ok": True, "stdout": "abc123\n"},
             "git push -u origin feature/outrageous-skill": {
                 "ok": False,
-                "summary": "remote: Permission to Scenx/fuck-skill.git denied to ggg-X-bot.\nfatal: unable to access 'https://github.com/Scenx/fuck-skill.git/': The requested URL returned error: 403",
-                "stderr": "remote: Permission to Scenx/fuck-skill.git denied to ggg-X-bot.\nfatal: unable to access 'https://github.com/Scenx/fuck-skill.git/': The requested URL returned error: 403",
+                "summary": "remote: Permission to Scenx/fuck-skill.git denied to ggg-ikaros-bot.\nfatal: unable to access 'https://github.com/Scenx/fuck-skill.git/': The requested URL returned error: 403",
+                "stderr": "remote: Permission to Scenx/fuck-skill.git denied to ggg-ikaros-bot.\nfatal: unable to access 'https://github.com/Scenx/fuck-skill.git/': The requested URL returned error: 403",
             },
             "git remote get-url fork": {"ok": False, "summary": "no such remote"},
-            "git remote add fork https://github.com/ggg-X-bot/fuck-skill.git": {
+            "git remote add fork https://github.com/ggg-ikaros-bot/fuck-skill.git": {
                 "ok": True,
                 "summary": "remote added",
             },
@@ -136,10 +136,10 @@ async def test_publish_falls_back_to_fork_when_upstream_push_denied(monkeypatch)
     async def fake_ensure_fork(**kwargs):
         assert kwargs == {"owner": "Scenx", "repo": "fuck-skill"}
         return {
-            "owner": "ggg-X-bot",
+            "owner": "ggg-ikaros-bot",
             "repo": "fuck-skill",
-            "full_name": "ggg-X-bot/fuck-skill",
-            "html_url": "https://github.com/ggg-X-bot/fuck-skill",
+            "full_name": "ggg-ikaros-bot/fuck-skill",
+            "html_url": "https://github.com/ggg-ikaros-bot/fuck-skill",
             "created": True,
         }
 
@@ -171,11 +171,11 @@ async def test_publish_falls_back_to_fork_when_upstream_push_denied(monkeypatch)
     )
 
     assert result["ok"] is True
-    assert result["fork"]["owner"] == "ggg-X-bot"
-    assert result["fork"]["head_ref"] == "ggg-X-bot:feature/outrageous-skill"
-    assert pr_calls[0]["head"] == "ggg-X-bot:feature/outrageous-skill"
+    assert result["fork"]["owner"] == "ggg-ikaros-bot"
+    assert result["fork"]["head_ref"] == "ggg-ikaros-bot:feature/outrageous-skill"
+    assert pr_calls[0]["head"] == "ggg-ikaros-bot:feature/outrageous-skill"
     assert (
-        "git remote add fork https://github.com/ggg-X-bot/fuck-skill.git",
+        "git remote add fork https://github.com/ggg-ikaros-bot/fuck-skill.git",
         "/tmp/repo",
     ) in commands
     assert ("git push -u fork feature/outrageous-skill", "/tmp/repo") in commands

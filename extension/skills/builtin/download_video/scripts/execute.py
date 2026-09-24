@@ -67,7 +67,7 @@ def _resolve_delivery_platform(
         target.get("notify_platform"),
         dispatch.get("platform_name"),
         getattr(message, "platform", ""),
-        os.getenv("X_BOT_RUNTIME_PLATFORM", ""),
+        os.getenv("IKAROS_RUNTIME_PLATFORM", ""),
     ):
         platform = _normalize_delivery_platform(candidate)
         if platform:

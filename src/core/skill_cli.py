@@ -42,18 +42,18 @@ def parse_json_object(raw: str, *, option_name: str) -> dict[str, Any]:
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--user-id",
-        default=os.getenv("X_BOT_RUNTIME_USER_ID", "1"),
-        help="Runtime user id. Defaults to X_BOT_RUNTIME_USER_ID or 1.",
+        default=os.getenv("IKAROS_RUNTIME_USER_ID", "1"),
+        help="Runtime user id. Defaults to IKAROS_RUNTIME_USER_ID or 1.",
     )
     parser.add_argument(
         "--platform",
-        default=os.getenv("X_BOT_RUNTIME_PLATFORM", "telegram"),
-        help="Runtime platform. Defaults to X_BOT_RUNTIME_PLATFORM or telegram.",
+        default=os.getenv("IKAROS_RUNTIME_PLATFORM", "telegram"),
+        help="Runtime platform. Defaults to IKAROS_RUNTIME_PLATFORM or telegram.",
     )
     parser.add_argument(
         "--chat-id",
-        default=os.getenv("X_BOT_RUNTIME_CHAT_ID", ""),
-        help="Chat id for the synthetic runtime context. Defaults to X_BOT_RUNTIME_CHAT_ID or user id.",
+        default=os.getenv("IKAROS_RUNTIME_CHAT_ID", ""),
+        help="Chat id for the synthetic runtime context. Defaults to IKAROS_RUNTIME_CHAT_ID or user id.",
     )
     parser.add_argument(
         "--message-text",
@@ -211,7 +211,7 @@ def _resolve_output_dir(args: argparse.Namespace, *, execute_fn: Any) -> str:
     if explicit:
         return explicit
 
-    configured = str(os.getenv("X_BOT_SKILL_OUTPUT_DIR", "") or "").strip()
+    configured = str(os.getenv("IKAROS_SKILL_OUTPUT_DIR", "") or "").strip()
     if configured:
         return configured
 

@@ -117,7 +117,7 @@ export interface StatsPanelConfig {
 }
 
 const STORAGE_PREFIX = 'ikaros:accounting'
-const LEGACY_STORAGE_PREFIX = 'x-bot:accounting'
+const LEGACY_STORAGE_PREFIX = 'ikaros:accounting'
 
 const nowIso = () => new Date().toISOString()
 

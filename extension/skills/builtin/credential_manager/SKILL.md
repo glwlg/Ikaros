@@ -25,7 +25,7 @@ entrypoint: scripts/execute.py
 
 # Credential Manager
 
-通过 `bash` 调用本目录下的 CLI，不要自己实现账号存储逻辑。运行时会自动注入 `X_BOT_RUNTIME_USER_ID` 和 `X_BOT_RUNTIME_PLATFORM`；手工测试时可自行传 `--user-id` / `--platform`。
+通过 `bash` 调用本目录下的 CLI，不要自己实现账号存储逻辑。运行时会自动注入 `IKAROS_RUNTIME_USER_ID` 和 `IKAROS_RUNTIME_PLATFORM`；手工测试时可自行传 `--user-id` / `--platform`。
 
 ## Commands
 

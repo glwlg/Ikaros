@@ -14,13 +14,13 @@ SOURCE_DIRS=(
 )
 
 # 临时存放压缩包的目录和文件名
-WORK_DIR="/tmp/xbot_backups"
+WORK_DIR="/tmp/ikaros_backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="backup_${TIMESTAMP}.tar.gz"
 
 # Rclone 云端目标目录（配置名需要与你在 rclone config 中设置的名称一致，假设配置名为 onedrive）
-# 将上传到 OneDrive 根目录下的 Backups/XBot 文件夹中
-RCLONE_DEST="onedrive:backup/XBot"
+# 将上传到 OneDrive 根目录下的 Backups/Ikaros 文件夹中
+RCLONE_DEST="onedrive:backup/Ikaros"
 
 # 最多保留多少天的备份？
 KEEP_DAYS=14
