@@ -9,10 +9,12 @@ from api.auth.users import current_active_user
 from api.auth.models import User
 from api.core.database import get_async_session
 from api.api.binding_helpers import get_primary_platform_user_id
+from api.models.trade import TradeAccount, TradePosition
 from extension.skills.learned.stock_watch.scripts import store as stock_watch_store
 from extension.skills.learned.stock_watch.scripts.services.stock_service import (
     fetch_stock_quotes,
 )
+from sqlalchemy import select
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -86,14 +88,43 @@ async def get_watchlist(
     except Exception as exc:
         logger.warning("Failed to fetch watchlist stock quotes: %s", exc)
 
+    # 动态聚合 trade_positions 作为唯一事实来源 (方案 A)
+    acc_stmt = select(TradeAccount.id).where(TradeAccount.user_id == current_user.id)
+    acc_ids = (await session.execute(acc_stmt)).scalars().all()
+    db_positions_map: dict[str, tuple[float, float]] = {}
+    if acc_ids:
+        pos_stmt = select(TradePosition).where(
+            TradePosition.account_id.in_(acc_ids),
+            TradePosition.quantity > 0,
+        )
+        all_db_positions = (await session.execute(pos_stmt)).scalars().all()
+        grouped: dict[str, list[TradePosition]] = {}
+        for p in all_db_positions:
+            c = p.stock_code.strip().lower()
+            grouped.setdefault(c, []).append(p)
+        for c, plist in grouped.items():
+            tot_qty = sum(float(p.quantity) for p in plist)
+            if tot_qty > 0:
+                tot_cost_amount = sum(float(p.quantity) * float(p.cost_price) for p in plist)
+                weighted_cost = round(tot_cost_amount / tot_qty, 4)
+                db_positions_map[c] = (tot_qty, weighted_cost)
+
     # Merge quotes into stock list
     result = []
     for s in stocks:
         code = s.get("stock_code", "")
+        norm_code = code.strip().lower()
+        if norm_code in db_positions_map:
+            final_qty, final_cost = db_positions_map[norm_code]
+        else:
+            final_qty = float(s.get("position_quantity") or 0.0)
+            final_cost = float(s.get("cost_price") or 0.0)
         q = quotes_map.get(code, {})
         result.append(
             {
                 **s,
+                "position_quantity": final_qty,
+                "cost_price": final_cost,
                 "price": q.get("price", 0),
                 "change": q.get("change", 0),
                 "percent": q.get("percent", 0),

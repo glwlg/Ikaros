@@ -8,6 +8,12 @@ triggers:
 - 自选股
 - 持仓
 - 股票成本
+- 买入
+- 加仓
+- 卖出
+- 减仓
+- 交易账户
+- 调仓
 - add_stock
 - remove_stock
 policy_groups:
@@ -19,7 +25,10 @@ input_schema:
   properties:
     action:
       type: string
-      description: 操作类型，如 list、add_stock、remove_stock、refresh、set_position、clear_position
+      description: 操作类型，如 list、add_stock、remove_stock、refresh、set_position、clear_position、buy、sell、accounts、transfer
+    query:
+      type: string
+      description: 用户的自然语言交易指令，如“在中信以 1.662 买入 40 手电网”
     stock_name:
       type: string
       description: 股票名称或代码
@@ -44,8 +53,8 @@ entrypoint: scripts/execute.py
 
 - 用户自选股存储由 `core.state_store` 内部管理，数据落在 Bot 自己的数据目录中。
 - **禁止** 自行创建 `~/.ikaros/stocks.json`、临时 SQLite、Markdown 或其他自定义持久化文件。
-- 当前用户默认从运行时注入的 `X_BOT_RUNTIME_USER_ID` 读取；只有注入缺失时才手工传 `--user-id`。
-- 当前平台默认从 `X_BOT_RUNTIME_PLATFORM` 读取；为空或为 `subagent_kernel` 时自动回落到 `telegram`。
+- 当前用户默认从运行时注入的 `IKAROS_RUNTIME_USER_ID` 读取；只有注入缺失时才手工传 `--user-id`。
+- 当前平台默认从 `IKAROS_RUNTIME_PLATFORM` 读取；为空或为 `subagent_kernel` 时自动回落到 `telegram`。
 - **本 skill 只负责自选股管理、持仓记录与行情展示，不提供交易建议。** 深度分析请用 `a-stock-data`，并通过「定时任务」调度。
 
 ## 使用方式
@@ -86,7 +95,7 @@ python scripts/execute.py --user-id 123456 add NVDA
 ## 公共参数
 
 - `--user-id <id>`
-  仅在 `X_BOT_RUNTIME_USER_ID` 缺失时使用。
+  仅在 `IKAROS_RUNTIME_USER_ID` 缺失时使用。
 - `--platform <name>`
   可选，默认读取运行时平台；常见值如 `telegram`、`discord`。
 

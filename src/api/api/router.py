@@ -9,6 +9,7 @@ from api.api.endpoints import (
     scheduler,
     skills,
     subscriptions,
+    trade,
     watchlist,
     web_chat,
 )
@@ -34,3 +35,4 @@ api_router.include_router(
     prefix="/subscriptions",
     tags=["subscriptions"],
 )
+api_router.include_router(trade.router, prefix="/trade", tags=["trade"])

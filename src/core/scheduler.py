@@ -817,3 +817,23 @@ def start_dynamic_skill_scheduler():
         coalesce=True,
         max_instances=1,
     )
+
+    async def _auto_sync_trade_accounts_job():
+        try:
+            from api.core.database import get_session_maker
+            from api.services.accounting_trade_sync import sync_all_trade_accounts_at_market_close
+            now_dt = datetime.datetime.now().astimezone()
+            if not should_run_on_calendar("trading_days", now_dt):
+                return
+            session_maker = get_session_maker()
+            async with session_maker() as session:
+                await sync_all_trade_accounts_at_market_close(session)
+        except Exception:
+            logger.debug("Failed to auto-sync trade accounts at market close", exc_info=True)
+
+    scheduler.add_job(
+        _auto_sync_trade_accounts_job,
+        CronTrigger(minute="10", hour="15", day_of_week="mon-fri"),
+        id="accounting_trade_market_close_sync",
+        replace_existing=True,
+    )

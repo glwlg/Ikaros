@@ -140,6 +140,14 @@ def _parse_stock_subcommand(text: str) -> tuple[str, str]:
         return "position", args
     if sub in {"refresh", "run", "check"}:
         return "refresh", ""
+    if sub in {"buy", "加仓", "买入"}:
+        return "buy", args
+    if sub in {"sell", "减仓", "卖出"}:
+        return "sell", args
+    if sub in {"accounts", "account", "asset", "assets", "账户", "资产"}:
+        return "accounts", args
+    if sub in {"transfer", "转账", "入金", "出金"}:
+        return "transfer", args
     if sub in {"help", "h", "?"}:
         return "help", ""
     return "help", ""
@@ -154,6 +162,9 @@ def _stock_usage_text() -> str:
         "`/stock remove <股票名称或代码>`\n"
         "`/stock position <股票名称或代码> <持仓数量> <单位成本>`\n"
         "`/stock position clear <股票名称或代码>`\n"
+        "`/stock buy [账户] <代码/名称> <单价> <数量/手数>`\n"
+        "`/stock sell [账户] <代码/名称> <单价> <数量/手数>`\n"
+        "`/stock accounts` (查看多账户资产全景)\n"
         "`/stock refresh`\n"
         "`/stock help`"
     )
@@ -424,8 +435,41 @@ async def execute(ctx: UnifiedContext, params: dict, runtime=None) -> str:
         "set_position": "set_position",
         "清除持仓": "clear_position",
         "clear_position": "clear_position",
+        "买入": "buy",
+        "加仓": "buy",
+        "buy": "buy",
+        "卖出": "sell",
+        "减仓": "sell",
+        "sell": "sell",
+        "账户": "accounts",
+        "资产": "accounts",
+        "accounts": "accounts",
+        "转账": "transfer",
+        "入金": "transfer",
+        "出金": "transfer",
+        "transfer": "transfer",
     }
     action = ACTION_MAP.get(raw_action, raw_action)
+
+    # 交易记账与多账户资产管理
+    user_query = str(params.get("query") or ctx.message.text or "")
+    if action in {"buy", "sell", "accounts", "transfer"} or any(k in user_query for k in ["买入", "卖出", "加仓", "减仓", "入金", "出金", "手", "交割"]):
+        from api.services.trade_bot_service import parse_trade_instruction, execute_bot_trade_action
+        parsed = parse_trade_instruction(user_query)
+        if not parsed:
+            parsed = {
+                "action": action,
+                "account_keyword": str(params.get("account") or ""),
+                "stock_keyword": str(params.get("stock_name") or params.get("code") or ""),
+                "price": float(params.get("price") or 0.0),
+                "quantity": float(params.get("quantity") or 0.0),
+            }
+        reply_text = await execute_bot_trade_action(
+            platform=str(ctx.message.platform or "telegram"),
+            platform_uid=str(user_id),
+            parsed=parsed,
+        )
+        return {"text": reply_text, "ui": {}}
 
     if action == "refresh":
         result = await trigger_manual_stock_check(user_id)
@@ -825,6 +869,19 @@ def register_handlers(adapter_manager):
                 }
             return {"text": "📭 您的自选股列表为空，无法刷新。", "ui": _stock_home_ui()}
 
+        if sub in {"buy", "sell", "accounts", "transfer"}:
+            from api.services.trade_bot_service import parse_trade_instruction, execute_bot_trade_action
+            full_cmd = f"/stock {sub} {args}".strip()
+            parsed = parse_trade_instruction(full_cmd)
+            if not parsed:
+                return {"text": f"用法: `/stock {sub} [账户] <股票> <单价> <手数/股数>`", "ui": _stock_home_ui()}
+            reply_text = await execute_bot_trade_action(
+                platform=str(ctx.message.platform or "telegram"),
+                platform_uid=str(user_id),
+                parsed=parsed,
+            )
+            return {"text": reply_text, "ui": _stock_home_ui()}
+
         return {"text": _stock_usage_text(), "ui": {}}
 
     adapter_manager.on_command("stock", cmd_stock, description="自选股管理")
@@ -1141,7 +1198,7 @@ async def handle_stock_select_callback(ctx: UnifiedContext) -> None:
 
 
 def _resolve_cli_user_id(explicit_user_id: str | None) -> str:
-    raw = str(explicit_user_id or os.getenv("X_BOT_RUNTIME_USER_ID") or "").strip()
+    raw = str(explicit_user_id or os.getenv("IKAROS_RUNTIME_USER_ID") or "").strip()
     if raw.startswith("subagent::"):
         parts = raw.split("::")
         if len(parts) >= 3:
@@ -1153,7 +1210,7 @@ def _resolve_cli_user_id(explicit_user_id: str | None) -> str:
 
 def _resolve_cli_platform(explicit_platform: str | None) -> str:
     platform = str(
-        explicit_platform or os.getenv("X_BOT_RUNTIME_PLATFORM") or ""
+        explicit_platform or os.getenv("IKAROS_RUNTIME_PLATFORM") or ""
     ).strip().lower()
     if not platform or platform == "subagent_kernel":
         return "telegram"
@@ -1167,12 +1224,12 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--user-id",
         default="",
-        help="Optional runtime user id. Defaults to X_BOT_RUNTIME_USER_ID.",
+        help="Optional runtime user id. Defaults to IKAROS_RUNTIME_USER_ID.",
     )
     parser.add_argument(
         "--platform",
         default="",
-        help="Optional platform name. Defaults to X_BOT_RUNTIME_PLATFORM or telegram.",
+        help="Optional platform name. Defaults to IKAROS_RUNTIME_PLATFORM or telegram.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1424,7 +1481,7 @@ async def _run_cli() -> int:
     user_id = _resolve_cli_user_id(args.user_id)
     if not user_id:
         print(
-            "missing runtime user id: set X_BOT_RUNTIME_USER_ID or pass --user-id",
+            "missing runtime user id: set IKAROS_RUNTIME_USER_ID or pass --user-id",
             file=sys.stderr,
         )
         return 1
